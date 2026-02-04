@@ -1,21 +1,21 @@
-# Web Framework
+# FastAPI
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
 python-multipart==0.0.6
+jinja2==3.1.3
+
+# Environment
+python-dotenv==1.0.0
 
 # AI
-anthropic==0.18.0
+google-genai==1.0.0
 
-# File Processing
-pypdf==4.0.0
+# PDF Processing
+pymupdf==1.23.8
+pdfplumber==0.10.3
+
+# DOCX Processing
 python-docx==1.1.0
+
+# Image Processing
 Pillow==10.2.0
-pytesseract==0.3.10
-
-# Utils
-python-dotenv==1.0.0
-pydantic==2.5.3
-
-# Dev
-httpx==0.26.0
-jinja2

@@ -3,9 +3,11 @@ Math Exam Parser MVP - OPTIMIZED
 Upload file đề toán → AI phân tích → JSON output
 """
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import uuid
@@ -40,6 +42,7 @@ app.add_middleware(
 
 # Initialize services
 file_handler = FileHandler()
+templates = Jinja2Templates(directory="templates")
 
 # Job tracking
 jobs: Dict[str, Dict] = {}
@@ -71,7 +74,10 @@ class JobStatusResponse(BaseModel):
     filename: Optional[str] = None
     processing_time: Optional[float] = None
 
-
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    """Serve frontend"""
+    return templates.TemplateResponse("index.html", {"request": request})
 # ==================== ENDPOINTS ====================
 
 @app.post("/api/parse", response_model=ParseResponse)
@@ -316,6 +322,6 @@ async def health():
 # ==================== MAIN ====================
 
 if __name__ == "__main__":
-    # import uvicorn
-    # uvicorn.run(app, host="0.0.0.0", port=8000)
-    app.run(debug=True, port=os.getenv("PORT", default=5000))
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # app.run(debug=True, port=os.getenv("PORT", default=8000))
