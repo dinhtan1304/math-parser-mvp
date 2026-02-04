@@ -52,6 +52,7 @@ class AIQuestionParser:
 You are an expert in Mathematics, OCR reasoning, and Educational Data Processing for the SmartEdu System with utmost meticulousness.
 
 Your task: Analyze the provided mathematical document (PDF/image/text) along with the JSON snippet containing the problem, the problem's starting page, and the answer's starting page. Carefully read and understand the file and the JSON extract ALL problems into a clean, fully structured JSON format, with all mathematical expressions converted to LaTeX. Read the document carefully because the answer will be located below or elsewhere. Before answering, list all locations in the document that contain information relevant to the question. Analyze the logic between the sections (e.g., question on page 1, answer on page 40). Don't jump to conclusions until you've reviewed all pages. This is a crucial task; a mistake in missing the answer (if the document actually contains it) will corrupt the entire data system. If you are unsure, use a search tool or reread the document. NEVER say "there is no answer" without checking the appendix at the end of the page. After extracting the information, ask yourself: "Did I miss any pages at the end of the document?" and "Does this answer actually belong to this question?"
+Extract mathematical content from an image to JSON. Do not solve it manually. Preserve the coefficients. Use LaTeX $...$.
 
 MANDATORY RULES:
 
@@ -335,7 +336,7 @@ Extract all visible questions now:"""
 
     def __init__(
         self,
-        provider: AIProvider = AIProvider.AUTO,
+        provider: AIProvider = AIProvider.GEMINI,
         gemini_api_key: Optional[str] = None,
         gemini_model: str = "gemini-2.5-pro",  # Updated to 2.5
         max_tokens: int = 65536,  # Safe limit for output
@@ -343,7 +344,7 @@ Extract all visible questions now:"""
         max_concurrency: int = 3  # Parallel requests
     ):
         self.provider = provider
-        self.gemini_api_key = gemini_api_key or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+        self.gemini_api_key = gemini_api_key or os.getenv("GOOGLE_API_KEY")
         self.gemini_model = gemini_model
         self.max_tokens = max_tokens
         self.max_chunk_size = max_chunk_size
@@ -355,24 +356,26 @@ Extract all visible questions now:"""
         # Store for cross-chunk answer matching
         self._answer_pool: Dict[str, str] = {}
         
-        self._gemini_model = None
+        self._client = None
         self._init_clients()
     
     def _init_clients(self):
+        """Initialize Gemini client using google-genai SDK"""
+        self._client = None
+        
         if not self.gemini_api_key:
             print("⚠️ No GOOGLE_API_KEY found")
             return
 
         try:
             from google import genai
-            from google.genai import types
-
 
             self._client = genai.Client(api_key=self.gemini_api_key)
 
             print(f"✅ Gemini (google-genai) initialized")
             print(f"🤖 Model: {self.gemini_model}")
             print(f"⚡ Concurrency: {self.max_concurrency}")
+            print(f"📦 Max chunk size: {self.max_chunk_size}")
 
         except ImportError:
             print("⚠️ google-genai not installed. Run: pip install google-genai")
@@ -382,7 +385,7 @@ Extract all visible questions now:"""
     
     def _get_available_provider(self) -> Optional[AIProvider]:
         """Get available provider"""
-        if self._gemini_model:
+        if self._client:
             return AIProvider.GEMINI
         return None
     
@@ -462,33 +465,30 @@ Extract all visible questions now:"""
     
     async def _call_gemini_vision(self, images: List[Dict]) -> List[Dict[str, Any]]:
         """Call Gemini Vision API with images"""
-        if not self._gemini_model:
-            print("⚠️ No Gemini model available")
+        if not self._client:
+            print("⚠️ No Gemini client available")
             return []
         
         loop = asyncio.get_event_loop()
         
         def call_api():
+            from google.genai import types
+            
             try:
-                from google.genai import types
+                # Build content parts - text prompt + images
+                parts = [self.VISION_PROMPT]  # Text as string
                 
-                # Build content parts with images
-                parts = []
-                
-                # Add instruction
-                parts.append(types.Part.from_text(self.VISION_PROMPT))
-                
-                # Add images
+                # Add images as Part objects
                 for img in images:
                     parts.append(types.Part.from_bytes(
                         data=base64.b64decode(img["data"]),
                         mime_type=img.get("mime_type", "image/jpeg")
                     ))
                 
-                # Call API
-                response = self._gemini_model.client.models.generate_content(
-                    model=self._gemini_model.model_id,
-                    contents=[types.Content(role="user", parts=parts)],
+                # Call API with JSON mode
+                response = self._client.models.generate_content(
+                    model=self.gemini_model,
+                    contents=parts,  # List of string + Part objects
                     config=types.GenerateContentConfig(
                         system_instruction=self.SYSTEM_PROMPT,
                         temperature=0,
@@ -503,9 +503,9 @@ Extract all visible questions now:"""
                 print(f"❌ Vision API error: {e}")
                 # Retry without JSON mode
                 try:
-                    response = self._gemini_model.client.models.generate_content(
-                        model=self._gemini_model.model_id,
-                        contents=[types.Content(role="user", parts=parts)],
+                    response = self._client.models.generate_content(
+                        model=self.gemini_model,
+                        contents=parts,
                         config=types.GenerateContentConfig(
                             system_instruction=self.SYSTEM_PROMPT,
                             temperature=0,
@@ -583,15 +583,12 @@ Extract all visible questions now:"""
         
         def call_api():
             from google.genai import types
+            
             try:
+                # Primary: with JSON mode
                 response = self._client.models.generate_content(
                     model=self.gemini_model,
-                    contents=[
-                        types.Content(
-                            role="user",
-                            parts=[types.Part.from_text(prompt)]
-                        )
-                    ],
+                    contents=prompt,  # Just pass string directly!
                     config=types.GenerateContentConfig(
                         system_instruction=self.SYSTEM_PROMPT,
                         temperature=0,
@@ -600,16 +597,25 @@ Extract all visible questions now:"""
                     )
                 )
                 return response.text
+                
             except Exception as e:
                 print(f"   JSON mode failed ({e}), trying without...")
-                response = self._gemini_model.generate_content(
-                    prompt,
-                    generation_config={
-                        "temperature": 0,
-                        "max_output_tokens": self.max_tokens,
-                    }
-                )
-                return response.text
+                
+                # Fallback: without JSON mode
+                try:
+                    response = self._client.models.generate_content(
+                        model=self.gemini_model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=self.SYSTEM_PROMPT,
+                            temperature=0,
+                            max_output_tokens=self.max_tokens,
+                        )
+                    )
+                    return response.text
+                except Exception as e2:
+                    print(f"   Fallback also failed: {e2}")
+                    return ""
         
         content = await loop.run_in_executor(None, call_api)
         
