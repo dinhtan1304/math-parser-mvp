@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Math Exam Parser</title>
+    
+    <!-- KaTeX CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            color: white;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 2.5rem;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+        
+        .upload-section {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+            margin-bottom: 30px;
+        }
+        
+        .upload-area {
+            border: 3px dashed #667eea;
+            border-radius: 15px;
+            padding: 60px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: #f8f9ff;
+        }
+        
+        .upload-area:hover {
+            border-color: #764ba2;
+            background: #f0f2ff;
+        }
+        
+        .upload-area.dragover {
+            border-color: #764ba2;
+            background: #e8ebff;
+            transform: scale(1.02);
+        }
+        
+        .upload-icon { font-size: 4rem; margin-bottom: 20px; }
+        .upload-text { color: #666; font-size: 1.2rem; }
+        .file-types { color: #999; font-size: 0.9rem; margin-top: 10px; }
+        #fileInput { display: none; }
+        
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 1.1rem;
+            border-radius: 30px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 20px;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+        
+        .progress-section {
+            display: none;
+            background: white;
+            border-radius: 20px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+        }
+        
+        .progress-bar {
+            height: 20px;
+            background: #e9ecef;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 20px 0;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 10px;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+        
+        .progress-text { text-align: center; color: #666; font-size: 1.1rem; }
+        
+        .results-section {
+            display: none;
+            background: white;
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+        }
+        
+        .results-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #eee;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        
+        .results-count { font-size: 1.5rem; color: #333; }
+        .header-buttons { display: flex; gap: 10px; flex-wrap: wrap; }
+        
+        .question-card {
+            background: #f8f9ff;
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 20px;
+            border-left: 5px solid #667eea;
+        }
+        
+        .question-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        
+        .question-number { font-weight: bold; color: #667eea; font-size: 1.2rem; }
+        .question-badges { display: flex; gap: 10px; flex-wrap: wrap; }
+        
+        .badge {
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+        
+        .badge-type { background: #e3f2fd; color: #1976d2; }
+        .badge-topic { background: #f3e5f5; color: #7b1fa2; }
+        .badge-difficulty { background: #fff3e0; color: #f57c00; }
+        .badge-difficulty.easy { background: #e8f5e9; color: #388e3c; }
+        .badge-difficulty.hard { background: #ffebee; color: #d32f2f; }
+        
+        .question-text {
+            color: #333;
+            line-height: 2;
+            margin-bottom: 15px;
+            font-size: 1.05rem;
+        }
+        
+        /* LaTeX styling */
+        .question-text .katex { font-size: 1.1em; }
+        .katex-display { margin: 15px 0; overflow-x: auto; overflow-y: hidden; }
+        
+        .answer-section {
+            background: #e8f5e9;
+            padding: 15px 20px;
+            border-radius: 10px;
+            margin-top: 15px;
+        }
+        
+        .answer-label { font-weight: bold; color: #388e3c; margin-bottom: 8px; }
+        .answer-text { color: #2e7d32; font-size: 1.05rem; line-height: 1.8; }
+        
+        .solution-section {
+            background: #fff8e1;
+            padding: 15px 20px;
+            border-radius: 10px;
+            margin-top: 10px;
+        }
+        
+        .solution-label { font-weight: bold; color: #f57c00; margin-bottom: 10px; }
+        .solution-steps { list-style: none; padding: 0; }
+        .solution-steps li {
+            padding: 10px 0;
+            border-bottom: 1px dashed #ffe0b2;
+            color: #555;
+            line-height: 1.8;
+        }
+        .solution-steps li:last-child { border-bottom: none; }
+        
+        .json-toggle, .download-btn {
+            background: #f5f5f5;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            color: #666;
+            transition: all 0.2s;
+        }
+        
+        .json-toggle:hover, .download-btn:hover { background: #e0e0e0; }
+        .download-btn { background: #4caf50; color: white; }
+        .download-btn:hover { background: #43a047; }
+        
+        .json-output {
+            display: none;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            border-radius: 10px;
+            overflow-x: auto;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.85rem;
+            margin-top: 20px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .filename { color: #999; font-size: 0.9rem; margin-top: 10px; }
+        
+        /* Options styling */
+        .options-list { margin: 15px 0; padding: 0; }
+        .option-item {
+            display: flex;
+            align-items: flex-start;
+            padding: 10px 15px;
+            margin: 8px 0;
+            background: white;
+            border-radius: 8px;
+            border: 2px solid #e0e0e0;
+            transition: all 0.2s;
+        }
+        .option-item.correct {
+            background: #e8f5e9;
+            border-color: #4caf50;
+        }
+        .option-letter {
+            font-weight: bold;
+            color: #667eea;
+            margin-right: 12px;
+            min-width: 25px;
+            font-size: 1.1rem;
+        }
+        .option-item.correct .option-letter { color: #4caf50; }
+        .option-text { flex: 1; line-height: 1.8; }
+        .correct-mark { color: #4caf50; font-weight: bold; margin-left: 10px; }
+        
+        @media (max-width: 768px) {
+            h1 { font-size: 1.8rem; }
+            .upload-area { padding: 30px; }
+            .upload-icon { font-size: 3rem; }
+            .question-card { padding: 15px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📚 Math Exam Parser</h1>
+        
+        <div class="upload-section">
+            <div class="upload-area" id="uploadArea">
+                <div class="upload-icon">📄</div>
+                <div class="upload-text">Kéo thả file vào đây hoặc click để chọn</div>
+                <div class="file-types">Hỗ trợ: PDF, DOCX, PNG, JPG, TXT</div>
+                <input type="file" id="fileInput" accept=".pdf,.docx,.doc,.png,.jpg,.jpeg,.txt,.md">
+            </div>
+            <div style="text-align: center;">
+                <button class="btn" id="uploadBtn" disabled>🚀 Phân tích đề</button>
+            </div>
+            <div class="filename" id="selectedFile"></div>
+        </div>
+        
+        <div class="progress-section" id="progressSection">
+            <div class="progress-text" id="progressText">Đang xử lý...</div>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+        </div>
+        
+        <div class="results-section" id="resultsSection">
+            <div class="results-header">
+                <div class="results-count" id="resultsCount">0 câu hỏi</div>
+                <div class="header-buttons">
+                    <button class="download-btn" id="downloadBtn">💾 Tải JSON</button>
+                    <button class="json-toggle" id="jsonToggle">📋 Xem JSON</button>
+                </div>
+            </div>
+            <div class="json-output" id="jsonOutput"></div>
+            <div id="questionsContainer"></div>
+        </div>
+    </div>
+
+    <!-- KaTeX JS -->
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+    
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        let currentFile = null;
+        let currentResults = null;
+        
+        // DOM Elements
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const selectedFile = document.getElementById('selectedFile');
+        const progressSection = document.getElementById('progressSection');
+        const progressText = document.getElementById('progressText');
+        const progressFill = document.getElementById('progressFill');
+        const resultsSection = document.getElementById('resultsSection');
+        const resultsCount = document.getElementById('resultsCount');
+        const questionsContainer = document.getElementById('questionsContainer');
+        const jsonToggle = document.getElementById('jsonToggle');
+        const jsonOutput = document.getElementById('jsonOutput');
+        const downloadBtn = document.getElementById('downloadBtn');
+        
+        // Drag & Drop
+        uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.classList.add('dragover'); });
+        uploadArea.addEventListener('dragleave', () => { uploadArea.classList.remove('dragover'); });
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
+        });
+        uploadArea.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length > 0) handleFile(fileInput.files[0]);
+        });
+        
+        function handleFile(file) {
+            currentFile = file;
+            selectedFile.textContent = `📎 ${file.name} (${formatSize(file.size)})`;
+            uploadBtn.disabled = false;
+        }
+        
+        function formatSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        }
+        
+        // Upload
+        uploadBtn.addEventListener('click', async () => {
+            if (!currentFile) return;
+            uploadBtn.disabled = true;
+            progressSection.style.display = 'block';
+            resultsSection.style.display = 'none';
+            
+            try {
+                const formData = new FormData();
+                formData.append('file', currentFile);
+                progressText.textContent = 'Đang upload file...';
+                progressFill.style.width = '10%';
+                
+                const uploadRes = await fetch(`${API_BASE}/api/parse`, { method: 'POST', body: formData });
+                if (!uploadRes.ok) throw new Error('Upload failed');
+                
+                const { job_id } = await uploadRes.json();
+                await pollStatus(job_id);
+            } catch (error) {
+                progressSection.style.display = 'none';
+                alert('Lỗi: ' + error.message);
+                uploadBtn.disabled = false;
+            }
+        });
+        
+        async function pollStatus(jobId) {
+            while (true) {
+                const res = await fetch(`${API_BASE}/api/status/${jobId}`);
+                const data = await res.json();
+
+                progressFill.style.width = (data.progress || 0) + '%';
+
+                if (data.status === 'processing') {
+                    progressText.textContent = `Đang phân tích... ${data.progress || 0}%`;
+                }
+                else if (data.status === 'completed') {
+                    progressSection.style.display = 'none';
+                    displayResults(data.result);
+                    uploadBtn.disabled = false;
+                    return;
+                }
+                else if (data.status === 'failed') {
+                    throw new Error(data.error || 'Processing failed');
+                }
+
+                await new Promise(r => setTimeout(r, 1500)); // nhẹ server hơn
+            }
+        }
+
+        
+        function displayResults(questions) {
+            currentResults = questions;
+            resultsSection.style.display = 'block';
+            resultsCount.textContent = `📝 ${questions.length} câu hỏi`;
+            jsonOutput.textContent = JSON.stringify(questions, null, 2);
+            
+            questionsContainer.innerHTML = questions.map((q, i) => createQuestionCard(q, i)).join('');
+            
+            // Render LaTeX
+            renderMathInElement(questionsContainer, {
+                delimiters: [
+                    {left: '$$', right: '$$', display: true},
+                    {left: '$', right: '$', display: false},
+                    {left: '\\(', right: '\\)', display: false},
+                    {left: '\\[', right: '\\]', display: true}
+                ],
+                throwOnError: false
+            });
+        }
+        
+        function createQuestionCard(q, index) {
+            let optionsHtml = '';
+            if (q.options && Array.isArray(q.options) && q.options.length > 0) {
+                optionsHtml = `<div class="options-list">
+                    ${q.options.map((opt, i) => {
+                        const letter = String.fromCharCode(65 + i);
+                        const isCorrect = q.answer && q.answer.toString().toUpperCase().includes(letter);
+                        const optText = opt.replace(/^[A-D][\.\)]\s*/i, '');
+                        return `<div class="option-item ${isCorrect ? 'correct' : ''}">
+                            <span class="option-letter">${letter}.</span>
+                            <span class="option-text">${escapeHtml(optText)}</span>
+                            ${isCorrect ? '<span class="correct-mark">✓</span>' : ''}
+                        </div>`;
+                    }).join('')}
+                </div>`;
+            }
+            
+            return `
+                <div class="question-card">
+                    <div class="question-header">
+                        <span class="question-number">Câu ${index + 1}</span>
+                        <div class="question-badges">
+                            <span class="badge badge-type">${getTypeLabel(q.type)}</span>
+                            <span class="badge badge-topic">${q.topic || 'Chưa phân loại'}</span>
+                            <span class="badge badge-difficulty ${q.difficulty}">${getDifficultyLabel(q.difficulty)}</span>
+                        </div>
+                    </div>
+                    <div class="question-text">${formatText(q.question)}</div>
+                    ${optionsHtml}
+                    ${q.answer ? `
+                        <div class="answer-section">
+                            <div class="answer-label">✅ Đáp án:</div>
+                            <div class="answer-text">${formatText(q.answer)}</div>
+                        </div>
+                    ` : ''}
+                    ${q.solution_steps && q.solution_steps.length > 0 ? `
+                        <div class="solution-section">
+                            <div class="solution-label">📖 Lời giải:</div>
+                            <ul class="solution-steps">
+                                ${q.solution_steps.map(step => `<li>${formatText(step)}</li>`).join('')}
+                            </ul>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }
+        
+        function escapeHtml(text) {
+            if (!text) return '';
+            return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+        
+        function formatText(text) {
+            if (!text) return '';
+            let result = escapeHtml(text);
+            
+            // Convert Unicode math symbols to LaTeX
+            const replacements = [
+                [/√(\d+)/g, '$\\sqrt{$1}$'],
+                [/(\d+)²/g, '$$$1^2$$'],
+                [/(\d+)³/g, '$$$1^3$$'],
+                [/π/g, '$\\pi$'],
+                [/∞/g, '$\\infty$'],
+                [/±/g, '$\\pm$'],
+                [/≠/g, '$\\neq$'],
+                [/≤/g, '$\\leq$'],
+                [/≥/g, '$\\geq$'],
+                [/→/g, '$\\rightarrow$'],
+                [/⇒/g, '$\\Rightarrow$'],
+                [/∈/g, '$\\in$'],
+                [/∀/g, '$\\forall$'],
+                [/∃/g, '$\\exists$'],
+                [/∅/g, '$\\emptyset$'],
+                [/∩/g, '$\\cap$'],
+                [/∪/g, '$\\cup$'],
+                [/ℝ/g, '$\\mathbb{R}$'],
+                [/ℕ/g, '$\\mathbb{N}$'],
+                [/ℤ/g, '$\\mathbb{Z}$'],
+                [/ℚ/g, '$\\mathbb{Q}$'],
+                [/α/g, '$\\alpha$'],
+                [/β/g, '$\\beta$'],
+                [/γ/g, '$\\gamma$'],
+                [/δ/g, '$\\delta$'],
+                [/θ/g, '$\\theta$'],
+                [/λ/g, '$\\lambda$'],
+                [/μ/g, '$\\mu$'],
+                [/σ/g, '$\\sigma$'],
+                [/φ/g, '$\\phi$'],
+                [/ω/g, '$\\omega$'],
+                [/Δ/g, '$\\Delta$'],
+                [/Σ/g, '$\\Sigma$'],
+                [/Ω/g, '$\\Omega$'],
+            ];
+            
+            for (const [pattern, replacement] of replacements) {
+                result = result.replace(pattern, replacement);
+            }
+            
+            // Convert newlines to <br>
+            result = result.replace(/\n/g, '<br>');
+            
+            return result;
+        }
+        
+        function getTypeLabel(type) {
+            const labels = {
+                'multiple_choice': '🔘 Trắc nghiệm',
+                'essay': '📝 Tự luận',
+                'calculation': '🔢 Tính toán',
+                'fill_blank': '✏️ Điền khuyết',
+                'true_false': '✓✗ Đúng/Sai'
+            };
+            return labels[type] || type || 'Khác';
+        }
+        
+        function getDifficultyLabel(difficulty) {
+            const labels = {
+                'easy': '🟢 Dễ',
+                'medium': '🟡 TB',
+                'hard': '🔴 Khó'
+            };
+            return labels[difficulty] || difficulty || 'N/A';
+        }
+        
+        // JSON Toggle & Download
+        jsonToggle.addEventListener('click', () => {
+            const isVisible = jsonOutput.style.display === 'block';
+            jsonOutput.style.display = isVisible ? 'none' : 'block';
+            jsonToggle.textContent = isVisible ? '📋 Xem JSON' : '📋 Ẩn JSON';
+        });
+        
+        downloadBtn.addEventListener('click', () => {
+            if (!currentResults) return;
+            const blob = new Blob([JSON.stringify(currentResults, null, 2)], {type: 'application/json'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `math_questions_${Date.now()}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+    </script>
+</body>
+</html>

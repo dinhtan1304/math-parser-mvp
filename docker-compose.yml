@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  math-parser:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    volumes:
+      - ./uploads:/tmp/math_parser_uploads
+    restart: unless-stopped
+
+# Usage:
+# 1. Create .env file with ANTHROPIC_API_KEY=your_key
+# 2. Run: docker-compose up -d
+# 3. Open: http://localhost:8000
