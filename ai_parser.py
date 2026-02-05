@@ -91,11 +91,12 @@ MANDATORY RULES:
   - `--- b)`
   - `--- c)`
 4. Questions Without Answers
-- If the document provides no solution:
+- If the document does not provide a solution and answer:
     "answer": ""
     "solution_steps": []
 - Never invent missing solutions
 - DO NOT create your own solution
+- If there is no answer that is null
 
 5. Images / Graphs / Tables
 - DO NOT describe images if not described in original
@@ -217,7 +218,7 @@ CRITICAL OUTPUT RULE:
 - If output is long, you MUST finish the current JSON object before stopping.
 - NEVER cut output in the middle of a string.
 - If you are running out of tokens, STOP AFTER closing the JSON array.
-
+- Do not make up answers if you don't have them.
 If solution steps are very long:
 - Keep solution_steps concise
 - Prefer formulas over text
