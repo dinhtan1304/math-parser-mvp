@@ -89,7 +89,11 @@ class FileHandler:
             else:
                 result = await self._extract_pdf(file_path)
         elif ext == '.docx':
-            result = await self._extract_docx(file_path)
+            if use_vision:
+                # Convert DOCX to PDF first, then to images
+                result = await self._docx_to_images(file_path)
+            else:
+                result = await self._extract_docx(file_path)
         elif ext == '.doc':
             result = await self._extract_doc(file_path)
         elif ext in {'.txt', '.md'}:
@@ -238,16 +242,43 @@ class FileHandler:
         }
     
     async def _pdf_to_images(self, file_path: str) -> Dict[str, Any]:
-        """Convert PDF to images for Vision API"""
+        """Convert PDF to images for Vision API using PyMuPDF (no poppler needed!)"""
         loop = asyncio.get_event_loop()
         
         def convert():
+            # Method 1: PyMuPDF (fitz) - PREFERRED, no external dependencies
+            if self.has_pymupdf:
+                import fitz
+                
+                doc = fitz.open(file_path)
+                base64_images = []
+                
+                # DPI ~150: zoom = 150/72 ≈ 2.08
+                zoom = 2.0
+                matrix = fitz.Matrix(zoom, zoom)
+                
+                for page_num in range(len(doc)):
+                    page = doc[page_num]
+                    pix = page.get_pixmap(matrix=matrix)
+                    img_bytes = pix.tobytes("jpeg")
+                    b64 = base64.b64encode(img_bytes).decode()
+                    
+                    base64_images.append({
+                        "page": page_num + 1,
+                        "data": b64,
+                        "mime_type": "image/jpeg"
+                    })
+                
+                doc.close()
+                print(f"✅ PyMuPDF rendered {len(base64_images)} pages to images")
+                return base64_images, len(base64_images)
+            
+            # Method 2: pdf2image (needs poppler) - FALLBACK
             try:
                 from pdf2image import convert_from_path
+                import io
                 
                 images = convert_from_path(file_path, dpi=150, fmt='jpeg')
-                
-                import io
                 base64_images = []
                 
                 for i, img in enumerate(images):
@@ -260,10 +291,11 @@ class FileHandler:
                         "mime_type": "image/jpeg"
                     })
                 
-                return base64_images, len(images)
+                print(f"✅ pdf2image rendered {len(base64_images)} pages to images")
+                return base64_images, len(base64_images)
                 
             except ImportError:
-                print("⚠️ pdf2image not installed. Run: pip install pdf2image")
+                print("❌ Neither pymupdf nor pdf2image available!")
                 return [], 0
         
         images, page_count = await loop.run_in_executor(self.executor, convert)
@@ -273,10 +305,73 @@ class FileHandler:
             "images": images,
             "page_count": page_count,
             "file_type": "pdf",
-            "method": "vision"
+            "method": "vision-pymupdf" if self.has_pymupdf else "vision-pdf2image"
         }
     
     # ==================== DOCX EXTRACTION ====================
+    
+    async def _docx_to_images(self, file_path: str) -> Dict[str, Any]:
+        """Convert DOCX to images via intermediate PDF using LibreOffice"""
+        loop = asyncio.get_event_loop()
+        
+        def convert():
+            import subprocess
+            import tempfile
+            
+            # Try converting DOCX → PDF → images using LibreOffice
+            try:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    result = subprocess.run(
+                        ['libreoffice', '--headless', '--convert-to', 'pdf', '--outdir', tmpdir, file_path],
+                        capture_output=True, text=True, timeout=60
+                    )
+                    
+                    if result.returncode == 0:
+                        # Find the generated PDF
+                        pdf_name = Path(file_path).stem + '.pdf'
+                        pdf_path = os.path.join(tmpdir, pdf_name)
+                        
+                        if os.path.exists(pdf_path) and self.has_pymupdf:
+                            import fitz
+                            doc = fitz.open(pdf_path)
+                            base64_images = []
+                            zoom = 2.0
+                            matrix = fitz.Matrix(zoom, zoom)
+                            
+                            for page_num in range(len(doc)):
+                                page = doc[page_num]
+                                pix = page.get_pixmap(matrix=matrix)
+                                img_bytes = pix.tobytes("jpeg")
+                                b64 = base64.b64encode(img_bytes).decode()
+                                base64_images.append({
+                                    "page": page_num + 1,
+                                    "data": b64,
+                                    "mime_type": "image/jpeg"
+                                })
+                            
+                            doc.close()
+                            print(f"✅ DOCX → PDF → {len(base64_images)} images")
+                            return base64_images, len(base64_images)
+            except Exception as e:
+                print(f"⚠️ LibreOffice conversion failed: {e}")
+            
+            # Fallback: extract text instead
+            print("⚠️ Cannot convert DOCX to images, falling back to text extraction")
+            return [], 0
+        
+        images, page_count = await loop.run_in_executor(self.executor, convert)
+        
+        if images:
+            return {
+                "text": "",
+                "images": images,
+                "page_count": page_count,
+                "file_type": "docx",
+                "method": "vision-libreoffice"
+            }
+        else:
+            # Fallback to text extraction
+            return await self._extract_docx(file_path)
     
     async def _extract_docx(self, file_path: str) -> Dict[str, Any]:
         """Extract text from DOCX"""

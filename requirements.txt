@@ -1,22 +1,24 @@
-# Web Framework
-fastapi==0.109.0
-uvicorn[standard]==0.27.0
-python-multipart==0.0.6
-jinja2==3.1.3
+# ==================== CORE ====================
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-dotenv>=1.0.0
+python-multipart>=0.0.6
+pydantic>=2.0.0
+jinja2>=3.1.0
 
-# AI - Gemini
-google-genai==1.0.0
+# ==================== AI ====================
+google-genai>=1.0.0
 
-# PDF Processing (pymupdf is better than pypdf for math)
-pymupdf==1.23.8
-pdfplumber==0.10.3
+# ==================== PDF ====================
+# PyMuPDF - CHÍNH: extract text + render PDF → images (Vision mode)
+PyMuPDF>=1.23.0
+# pdfplumber - Fallback: tốt cho bảng biểu
+pdfplumber>=0.10.0
+# pypdf - Fallback cuối cùng
+pypdf>=3.0.0
 
-# DOCX Processing
-python-docx==1.1.0
+# ==================== DOCX ====================
+python-docx>=1.0.0
 
-# Image Processing
-Pillow==10.2.0
-
-# Utils
-python-dotenv==1.0.0
-pydantic==2.5.3
+# ==================== OPTIONAL ====================
+# pdf2image>=1.16.0  # Không bắt buộc - cần poppler-utils, pymupdf đã thay thế

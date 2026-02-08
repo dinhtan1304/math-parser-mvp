@@ -304,14 +304,28 @@ JSON array:"""
 
     # Vision prompt for image-based extraction
     VISION_PROMPT = """
-Analyze these math exam page images and extract ALL questions into a JSON array.
+🎯 CRITICAL TASK: Extract 100% of ALL math questions visible in these page images.
 
-RULES:
-1. Extract EVERY question you can see in the images
-2. Convert all mathematical expressions to proper LaTeX format
-3. COPY formulas EXACTLY as shown - do not modify any numbers or coefficients
-4. Match answers with their corresponding questions if visible
-5. Include solution steps if shown
+⛔ STRICT RULES:
+1. You MUST extract EVERY SINGLE question visible in ALL pages - missing even ONE question is UNACCEPTABLE
+2. ONLY extract questions that are VISIBLE in the images - DO NOT invent or hallucinate
+3. If you cannot read the image clearly, return an empty array []
+4. Scan EACH PAGE carefully from top to bottom, left to right
+5. Count the questions as you go: "Page 1: questions 1-3", "Page 2: questions 4-6", etc.
+
+📋 EXTRACTION CHECKLIST:
+- [ ] Have I checked ALL pages provided?
+- [ ] Have I extracted EVERY question from EACH page?
+- [ ] Have I included questions that span multiple parts (a, b, c)?
+- [ ] Have I checked for questions in margins, footers, or side columns?
+
+📝 FORMAT RULES:
+1. Convert all mathematical expressions to proper LaTeX format
+2. COPY formulas EXACTLY as shown - do not modify any numbers or coefficients
+3. Match answers with their corresponding questions if visible
+4. Include solution steps if shown in the document
+5. If a question has NO answer/solution visible, set answer="" and solution_steps=[]
+6. Keep multi-part questions (a, b, c) as ONE object
 
 For fractions like:
   x + 1
@@ -325,7 +339,7 @@ Return ONLY a valid JSON array, no markdown, no explanation:
 [
   {
     "question": "Full question text with LaTeX math",
-    "type": "TL|TN|Rút gọn biểu thức|So sánh|Chứng minh",
+    "type": "TL|TN|Rút gọn biểu thức|So sánh|Chứng minh|Tìm GTNN|Tìm x|Giải phương trình",
     "topic": "Topic name",
     "difficulty": "NB|TH|VD|VDC",
     "solution_steps": ["step 1", "step 2"],
@@ -333,7 +347,8 @@ Return ONLY a valid JSON array, no markdown, no explanation:
   }
 ]
 
-Extract all visible questions now:"""
+🚨 FINAL CHECK: Before submitting, count your extracted questions and verify you didn't miss any!
+Now extract ALL visible questions:"""
 
     def __init__(
         self,
@@ -433,8 +448,16 @@ Extract all visible questions now:"""
         # Reset answer pool
         self._answer_pool = {}
         
-        # Process images in batches (to avoid rate limits)
-        batch_size = 3  # Process 3 pages at a time
+        # Process images in batches
+        # For small PDFs (<=15 pages), send all at once for better context
+        # For larger PDFs, use batch_size of 10 for better extraction
+        if total_pages <= 15:
+            batch_size = total_pages  # Send all at once
+            print(f"📄 Small PDF detected - sending all {total_pages} pages at once for better accuracy")
+        else:
+            batch_size = 10  # Increased from 3 to 10 for better context
+            print(f"📄 Large PDF detected - processing in batches of {batch_size} pages")
+        
         all_questions = []
         seen_hashes = set()
         
@@ -524,7 +547,11 @@ Extract all visible questions now:"""
             return []
         
         result = self._extract_json(content)
-        print(f"✅ Vision extracted {len(result)} questions")
+        print(f"✅ Vision extracted {len(result)} questions from {len(images)} pages")
+        if len(result) == 0:
+            print(f"⚠️ WARNING: No questions extracted! Response preview: {content[:500]}...")
+        elif len(result) < len(images) * 0.5:  # Less than 0.5 questions per page on average
+            print(f"⚠️ WARNING: Low extraction rate ({len(result)} questions from {len(images)} pages). May need retry.")
         return result
     
     async def _parse_single(self, text: str, chunk_id: int = 0) -> List[Dict[str, Any]]:
