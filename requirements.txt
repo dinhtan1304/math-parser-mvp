@@ -1,24 +1,30 @@
-# ==================== CORE ====================
-fastapi>=0.104.0
+# ==================== CORE FRAMEWORK ====================
+fastapi>=0.104.0,<1.0.0
 uvicorn[standard]>=0.24.0
-python-dotenv>=1.0.0
-python-multipart>=0.0.6
-pydantic>=2.0.0
 jinja2>=3.1.0
+python-multipart>=0.0.6          # Required for UploadFile / form data
+python-dotenv>=1.0.0
+
+# ==================== VALIDATION ====================
+pydantic[email]>=2.0.0           # EmailStr for user schemas
+pydantic-settings>=2.0.0         # BaseSettings + .env loading
+
+# ==================== DATABASE ====================
+sqlalchemy>=2.0.0,<3.0.0         # Async ORM (DeclarativeBase style)
+aiosqlite>=0.19.0                # Async SQLite driver
+
+# ==================== AUTH & SECURITY ====================
+python-jose[cryptography]>=3.3.0 # JWT token encode/decode
+passlib[argon2]>=1.7.4           # Password hashing context
+argon2-cffi>=21.0.0              # Argon2 backend for passlib
 
 # ==================== AI ====================
-google-genai>=1.0.0
+google-genai>=1.0.0              # Gemini 2.5 Pro API (text + vision)
 
-# ==================== PDF ====================
-# PyMuPDF - CHÍNH: extract text + render PDF → images (Vision mode)
-PyMuPDF>=1.23.0
-# pdfplumber - Fallback: tốt cho bảng biểu
-pdfplumber>=0.10.0
-# pypdf - Fallback cuối cùng
-pypdf>=3.0.0
+# ==================== PDF PROCESSING ====================
+PyMuPDF>=1.23.0                  # Primary: text extraction + PDF→image (vision mode)
+pdfplumber>=0.10.0               # Fallback: good for tables
+pypdf>=3.0.0                     # Last resort fallback
 
-# ==================== DOCX ====================
-python-docx>=1.0.0
-
-# ==================== OPTIONAL ====================
-# pdf2image>=1.16.0  # Không bắt buộc - cần poppler-utils, pymupdf đã thay thế
+# ==================== DOCUMENT PROCESSING ====================
+python-docx>=1.0.0               # DOCX text extraction

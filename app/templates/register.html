@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Đăng ký — Math Parser</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #faf9f7;
+            --surface: #ffffff;
+            --primary: #4f46e5;
+            --primary-light: #eef2ff;
+            --primary-dark: #3730a3;
+            --text: #1e1b4b;
+            --text-secondary: #6b7280;
+            --border: #e5e7eb;
+            --error: #dc2626;
+            --error-bg: #fef2f2;
+            --success: #16a34a;
+            --success-bg: #f0fdf4;
+            --radius: 14px;
+            --font: 'Plus Jakarta Sans', -apple-system, sans-serif;
+            --mono: 'JetBrains Mono', monospace;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: var(--font);
+            background: var(--bg);
+            min-height: 100vh;
+            display: flex;
+            overflow: hidden;
+        }
+
+        /* Left hero */
+        .auth-hero {
+            flex: 1;
+            background: linear-gradient(160deg, #312e81 0%, #4f46e5 50%, #6366f1 100%);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 60px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .auth-hero::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background:
+                radial-gradient(circle at 20% 80%, rgba(255,255,255,0.08) 0%, transparent 50%),
+                radial-gradient(circle at 80% 20%, rgba(255,255,255,0.06) 0%, transparent 40%);
+        }
+
+        .hero-content { position: relative; z-index: 1; text-align: center; max-width: 440px; }
+
+        .hero-logo {
+            width: 72px; height: 72px;
+            background: rgba(255,255,255,0.15);
+            backdrop-filter: blur(12px);
+            border-radius: 20px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 32px; margin: 0 auto 28px;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+
+        .hero-title { color: white; font-size: 2rem; font-weight: 800; letter-spacing: -0.03em; margin-bottom: 16px; }
+        .hero-desc { color: rgba(255,255,255,0.75); font-size: 1.05rem; line-height: 1.7; }
+
+        .math-float {
+            position: absolute; font-family: var(--mono); color: rgba(255,255,255,0.07);
+            font-size: 1rem; white-space: nowrap; pointer-events: none;
+            animation: floatUp 20s linear infinite;
+        }
+
+        @keyframes floatUp {
+            0% { transform: translateY(100vh) rotate(0deg); opacity: 0; }
+            10% { opacity: 1; } 90% { opacity: 1; }
+            100% { transform: translateY(-100vh) rotate(15deg); opacity: 0; }
+        }
+
+        /* Feature chips */
+        .features {
+            display: flex;
+            gap: 12px;
+            margin-top: 32px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .feature-chip {
+            background: rgba(255,255,255,0.12);
+            backdrop-filter: blur(8px);
+            padding: 8px 18px;
+            border-radius: 100px;
+            color: rgba(255,255,255,0.9);
+            font-size: 0.82rem;
+            font-weight: 500;
+            border: 1px solid rgba(255,255,255,0.15);
+        }
+
+        /* Right form */
+        .auth-form-panel {
+            width: 520px; min-width: 420px;
+            display: flex; flex-direction: column; justify-content: center;
+            padding: 60px; background: var(--surface);
+            animation: slideIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        .form-header { margin-bottom: 32px; }
+        .form-header h1 { font-size: 1.75rem; font-weight: 800; color: var(--text); letter-spacing: -0.03em; margin-bottom: 8px; }
+        .form-header p { color: var(--text-secondary); font-size: 0.95rem; line-height: 1.5; }
+
+        .form-group { margin-bottom: 20px; }
+
+        .form-label {
+            display: block; font-size: 0.82rem; font-weight: 600;
+            color: var(--text); margin-bottom: 8px;
+            letter-spacing: 0.01em; text-transform: uppercase;
+        }
+
+        .form-input {
+            width: 100%; padding: 13px 16px;
+            border: 1.5px solid var(--border); border-radius: 10px;
+            font-size: 0.95rem; font-family: var(--font);
+            color: var(--text); background: var(--bg);
+            transition: all 0.2s ease; outline: none;
+        }
+
+        .form-input::placeholder { color: #9ca3af; }
+        .form-input:focus { border-color: var(--primary); background: white; box-shadow: 0 0 0 3px var(--primary-light); }
+        .form-input:hover:not(:focus) { border-color: #d1d5db; }
+
+        .password-hint {
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+            margin-top: 6px;
+        }
+
+        .btn-primary {
+            width: 100%; padding: 14px; background: var(--primary);
+            color: white; border: none; border-radius: 10px;
+            font-size: 0.95rem; font-weight: 600; font-family: var(--font);
+            cursor: pointer; transition: all 0.2s ease; margin-top: 6px;
+        }
+
+        .btn-primary:hover { background: var(--primary-dark); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79,70,229,0.3); }
+        .btn-primary:active { transform: translateY(0); }
+        .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+        .btn-primary .spinner {
+            display: none; width: 18px; height: 18px;
+            border: 2px solid rgba(255,255,255,0.3); border-top-color: white;
+            border-radius: 50%; animation: spin 0.6s linear infinite; margin: 0 auto;
+        }
+
+        .btn-primary.loading .btn-text { display: none; }
+        .btn-primary.loading .spinner { display: inline-block; }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .form-footer { text-align: center; margin-top: 28px; font-size: 0.9rem; color: var(--text-secondary); }
+        .form-footer a { color: var(--primary); text-decoration: none; font-weight: 600; transition: color 0.2s; }
+        .form-footer a:hover { color: var(--primary-dark); }
+
+        .alert {
+            padding: 12px 16px; border-radius: 10px;
+            font-size: 0.88rem; margin-bottom: 20px;
+            display: none; font-weight: 500;
+            animation: shake 0.4s ease;
+        }
+
+        .alert.error { background: var(--error-bg); color: var(--error); border: 1px solid #fecaca; }
+        .alert.success { background: var(--success-bg); color: var(--success); border: 1px solid #bbf7d0; }
+        .alert.visible { display: block; }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            20%, 60% { transform: translateX(-6px); }
+            40%, 80% { transform: translateX(6px); }
+        }
+
+        @media (max-width: 900px) {
+            .auth-hero { display: none; }
+            .auth-form-panel { width: 100%; min-width: unset; padding: 40px 24px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="auth-hero">
+        <div class="math-float" style="left:15%;animation-delay:-3s;">x = (−b ± √Δ) / 2a</div>
+        <div class="math-float" style="left:55%;animation-delay:-9s;">∫₀¹ x² dx = 1/3</div>
+        <div class="math-float" style="left:35%;animation-delay:-15s;">P(A∪B) = P(A) + P(B)</div>
+        <div class="math-float" style="left:70%;animation-delay:-6s;font-size:0.9rem;">log₂(xy) = log₂x + log₂y</div>
+
+        <div class="hero-content">
+            <div class="hero-logo">∑</div>
+            <h2 class="hero-title">Math Exam Parser</h2>
+            <p class="hero-desc">Công cụ AI hỗ trợ giáo viên trích xuất và số hóa đề thi toán chỉ trong vài giây.</p>
+            <div class="features">
+                <span class="feature-chip">PDF & DOCX</span>
+                <span class="feature-chip">LaTeX Output</span>
+                <span class="feature-chip">Vision AI</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="auth-form-panel">
+        <div class="form-header">
+            <h1>Tạo tài khoản</h1>
+            <p>Đăng ký miễn phí để bắt đầu phân tích đề thi.</p>
+        </div>
+
+        <div class="alert" id="alertMsg"></div>
+
+        <form id="registerForm" autocomplete="on">
+            <div class="form-group">
+                <label class="form-label" for="full_name">Họ và tên</label>
+                <input class="form-input" type="text" id="full_name" name="name" placeholder="Nguyễn Văn A" required autocomplete="name">
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="email">Email</label>
+                <input class="form-input" type="email" id="email" name="email" placeholder="name@company.com" required autocomplete="email">
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="password">Mật khẩu</label>
+                <input class="form-input" type="password" id="password" name="password" placeholder="••••••••" required minlength="6" autocomplete="new-password">
+                <p class="password-hint">Tối thiểu 6 ký tự</p>
+            </div>
+            <button type="submit" class="btn-primary" id="submitBtn">
+                <span class="btn-text">Tạo tài khoản</span>
+                <div class="spinner"></div>
+            </button>
+        </form>
+
+        <div class="form-footer">
+            Đã có tài khoản? <a href="/login">Đăng nhập</a>
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById('registerForm');
+        const alertMsg = document.getElementById('alertMsg');
+        const submitBtn = document.getElementById('submitBtn');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            alertMsg.classList.remove('visible', 'error', 'success');
+            submitBtn.classList.add('loading');
+            submitBtn.disabled = true;
+
+            try {
+                const res = await fetch('/api/v1/auth/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email: document.getElementById('email').value,
+                        password: document.getElementById('password').value,
+                        full_name: document.getElementById('full_name').value,
+                        role: 'user'
+                    })
+                });
+
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    throw new Error(data.detail || 'Đăng ký thất bại');
+                }
+
+                alertMsg.textContent = '✓ Đăng ký thành công! Đang chuyển sang đăng nhập...';
+                alertMsg.classList.add('visible', 'success');
+                setTimeout(() => window.location.href = '/login', 1500);
+            } catch (err) {
+                alertMsg.textContent = err.message;
+                alertMsg.classList.add('visible', 'error');
+                submitBtn.classList.remove('loading');
+                submitBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>

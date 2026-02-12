@@ -1,224 +1,162 @@
 # 📚 Math Exam Parser MVP
 
-Upload file đề toán → AI phân tích → JSON output
+Upload file đề toán → Gemini AI phân tích → JSON output (LaTeX)
 
 ## 🎯 Output Format
 
 ```json
 [
   {
-    "question": "Giải phương trình x² - 5x + 6 = 0\nA. x = 2, x = 3\nB. x = -2, x = -3\nC. x = 2, x = -3\nD. x = -2, x = 3",
-    "type": "multiple_choice",
+    "question": "Giải phương trình $x^{2} - 5x + 6 = 0$\nA. $x = 2, x = 3$\nB. $x = -2, x = -3$",
+    "type": "TN",
     "topic": "Đại số",
-    "difficulty": "medium",
+    "difficulty": "TH",
     "solution_steps": [
-      "Bước 1: Tính delta = b² - 4ac = 25 - 24 = 1",
-      "Bước 2: x = (5 ± 1) / 2",
-      "Bước 3: x₁ = 2, x₂ = 3"
+      "Tính $\\Delta = b^{2} - 4ac = 25 - 24 = 1$",
+      "$x = \\frac{5 \\pm 1}{2}$",
+      "$x_{1} = 2, x_{2} = 3$"
     ],
     "answer": "A"
   }
 ]
 ```
 
+### Question Types
+| Code | Mô tả |
+|------|-------|
+| `TN` | Trắc nghiệm |
+| `TL` | Tự luận |
+| `Rút gọn biểu thức` | Rút gọn |
+| `So sánh` | So sánh |
+| `Chứng minh` | Chứng minh |
+| `Tính toán` | Tính toán |
+
+### Difficulty Levels
+| Code | Mô tả |
+|------|-------|
+| `NB` | Nhận biết |
+| `TH` | Thông hiểu |
+| `VD` | Vận dụng |
+| `VDC` | Vận dụng cao |
+
 ## 🚀 Quick Start
 
-### 1. Clone & Setup
+### 1. Setup
 
 ```bash
 cd math-parser-mvp
 
-# Create virtual environment
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
-# or: venv\Scripts\activate  # Windows
 
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 2. Install System Dependencies
-
-**Ubuntu/Debian:**
-```bash
-# Tesseract OCR (for image/scanned PDF)
-sudo apt-get update
-sudo apt-get install tesseract-ocr tesseract-ocr-vie
-
-# Poppler (for PDF)
-sudo apt-get install poppler-utils
-```
-
-**MacOS:**
-```bash
-brew install tesseract tesseract-lang poppler
-```
-
-**Windows:**
-- Download Tesseract: https://github.com/UB-Mannheim/tesseract/wiki
-- Add to PATH
-
-### 3. Configure API Key
+### 2. Configure
 
 ```bash
 cp .env.example .env
-# Edit .env and add your ANTHROPIC_API_KEY
+# Edit .env:
+#   SECRET_KEY=<generate with: python -c "import secrets; print(secrets.token_urlsafe(32))">
+#   GOOGLE_API_KEY=<your Gemini API key from https://aistudio.google.com/apikey>
 ```
 
-### 4. Run Server
+### 3. Run
 
 ```bash
-python main.py
-# or
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+python run.py
+# Server starts at http://localhost:8000
 ```
-
-Server will start at: http://localhost:8000
 
 ## 📡 API Endpoints
 
-### Upload & Parse (Async)
+All endpoints require JWT authentication. Register → Login → use Bearer token.
+
+### Auth
 
 ```bash
-# Upload file - returns job_id
-curl -X POST "http://localhost:8000/api/parse" \
-  -F "file=@de_thi.pdf"
+# Register
+curl -X POST http://localhost:8000/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com", "password": "secret", "full_name": "User"}'
 
-# Response:
-# {"job_id": "abc123", "status": "pending", "message": "..."}
+# Login (returns JWT token)
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -d "username=user@example.com&password=secret"
+
+# → {"access_token": "eyJ...", "token_type": "bearer"}
+```
+
+### Parse
+
+```bash
+TOKEN="eyJ..."
+
+# Upload & parse (async, returns job_id)
+curl -X POST "http://localhost:8000/api/v1/parser/parse?speed=balanced&use_vision=false" \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@de_thi.pdf"
 
 # Check status
-curl "http://localhost:8000/api/status/abc123"
+curl "http://localhost:8000/api/v1/parser/status/1" \
+  -H "Authorization: Bearer $TOKEN"
 
-# Response when done:
-# {
-#   "job_id": "abc123",
-#   "status": "completed",
-#   "progress": 100,
-#   "result": [{"question": "...", ...}]
-# }
+# List history (paginated)
+curl "http://localhost:8000/api/v1/parser/history?page=1&page_size=20" \
+  -H "Authorization: Bearer $TOKEN"
+
+# Delete
+curl -X DELETE "http://localhost:8000/api/v1/parser/1" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-### Upload & Parse (Sync)
+### Parse Options
 
-```bash
-# For small files - wait for result
-curl -X POST "http://localhost:8000/api/parse-sync" \
-  -F "file=@de_thi.pdf"
+| Param | Values | Description |
+|-------|--------|-------------|
+| `speed` | `fast`, `balanced`, `quality` | Parser speed preset |
+| `use_vision` | `true`, `false` | Force Vision mode (recommended for scanned PDFs) |
 
-# Response:
-# {
-#   "filename": "de_thi.pdf",
-#   "total_questions": 25,
-#   "questions": [{"question": "...", ...}]
-# }
-```
+## 📁 Supported Files
 
-### Other Endpoints
-
-```bash
-# List all jobs
-curl "http://localhost:8000/api/jobs"
-
-# Delete a job
-curl -X DELETE "http://localhost:8000/api/jobs/abc123"
-
-# Health check
-curl "http://localhost:8000/health"
-```
-
-## 📁 Supported File Types
-
-| Format | Extension | Method |
-|--------|-----------|--------|
-| PDF | .pdf | Text extraction + OCR fallback |
-| Word | .docx, .doc | python-docx |
-| Images | .png, .jpg, .jpeg | Tesseract OCR |
+| Format | Extensions | Method |
+|--------|------------|--------|
+| PDF | .pdf | PyMuPDF text + Vision API fallback |
+| Word | .docx, .doc | python-docx / LibreOffice |
+| Images | .png, .jpg, .jpeg | Gemini Vision API |
 | Text | .txt, .md | Direct read |
 
-## 🔧 Configuration
+## 🐳 Docker
 
-Environment variables in `.env`:
+```bash
+cp .env.example .env
+# Fill in GOOGLE_API_KEY and SECRET_KEY in .env
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `ANTHROPIC_API_KEY` | Claude API key | Required |
-| `ANTHROPIC_MODEL` | Model to use | claude-sonnet-4-20250514 |
-
-## 📊 Question Types
-
-| Type | Description |
-|------|-------------|
-| `multiple_choice` | Trắc nghiệm A, B, C, D |
-| `essay` | Tự luận |
-| `calculation` | Tính toán |
-| `fill_blank` | Điền khuyết |
-| `true_false` | Đúng/Sai |
-
-## 🎓 Topics (Auto-detected)
-
-- Đại số
-- Hình học
-- Giải tích
-- Lượng giác
-- Xác suất thống kê
-- Số học
-- Tổ hợp
-
-## ⚡ Performance Tips
-
-1. **Batch Processing**: Upload nhiều file nhỏ tốt hơn 1 file lớn
-2. **Clear Text**: File text-based PDF nhanh hơn scanned PDF
-3. **Image Quality**: Ảnh rõ nét cho OCR chính xác hơn
-
-## 🐛 Troubleshooting
-
-### "Could not extract text from file"
-- Check file không bị corrupted
-- Đảm bảo file có nội dung text (không phải ảnh)
-- Với scanned PDF/image: cài Tesseract OCR
-
-### "API Error"
-- Check ANTHROPIC_API_KEY trong .env
-- Check API quota/billing
-
-### OCR không chính xác
-- Tăng độ phân giải ảnh
-- Đảm bảo tesseract-ocr-vie đã cài
-
-## 📝 Example Usage with Python
-
-```python
-import httpx
-
-# Async upload
-async def parse_exam(file_path: str):
-    async with httpx.AsyncClient() as client:
-        # Upload
-        with open(file_path, 'rb') as f:
-            response = await client.post(
-                "http://localhost:8000/api/parse",
-                files={"file": f}
-            )
-        job_id = response.json()["job_id"]
-        
-        # Poll for result
-        while True:
-            status = await client.get(f"http://localhost:8000/api/status/{job_id}")
-            data = status.json()
-            
-            if data["status"] == "completed":
-                return data["result"]
-            elif data["status"] == "failed":
-                raise Exception(data["error"])
-            
-            await asyncio.sleep(1)
-
-# Usage
-import asyncio
-questions = asyncio.run(parse_exam("de_thi_toan_10.pdf"))
-print(f"Found {len(questions)} questions")
+docker-compose up -d
+# → http://localhost:8000
 ```
+
+## 🏗️ Project Structure
+
+```
+app/
+├── api/            # Endpoints (auth, parser)
+├── core/           # Config, security
+├── db/             # SQLAlchemy models, session
+├── schemas/        # Pydantic schemas
+├── services/       # AI parser, file handler
+└── templates/      # Jinja2 HTML
+```
+
+## ⚙️ Environment Variables
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `SECRET_KEY` | JWT signing key | ✅ |
+| `GOOGLE_API_KEY` | Gemini API key | ✅ |
+| `DATABASE_URL` | Database connection | No (default: SQLite) |
+| `ENV` | `development` or `production` | No (default: production) |
+| `PORT` | Server port | No (default: 8000) |
 
 ## 📄 License
 

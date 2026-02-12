@@ -493,7 +493,7 @@ Now extract ALL visible questions:"""
             print("⚠️ No Gemini client available")
             return []
         
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         
         def call_api():
             from google.genai import types
@@ -607,7 +607,7 @@ Now extract ALL visible questions:"""
         """Call Gemini API with JSON mode"""
         prompt = prompt_template.format(text=text)
         
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         
         def call_api():
             from google.genai import types

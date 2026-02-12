@@ -13,7 +13,7 @@ import re
 import base64
 import asyncio
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 
@@ -134,7 +134,7 @@ class FileHandler:
     
     async def _extract_pdf_pymupdf(self, file_path: str) -> Dict[str, Any]:
         """Extract using PyMuPDF - BEST for math documents"""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         
         def extract():
             import fitz
@@ -180,7 +180,7 @@ class FileHandler:
     
     async def _extract_pdf_pdfplumber(self, file_path: str) -> Dict[str, Any]:
         """Extract using pdfplumber"""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         
         def extract():
             import pdfplumber
@@ -215,7 +215,7 @@ class FileHandler:
     
     async def _extract_pdf_pypdf(self, file_path: str) -> Dict[str, Any]:
         """Extract using pypdf (basic fallback)"""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         
         def extract():
             from pypdf import PdfReader
@@ -243,7 +243,7 @@ class FileHandler:
     
     async def _pdf_to_images(self, file_path: str) -> Dict[str, Any]:
         """Convert PDF to images for Vision API using PyMuPDF (no poppler needed!)"""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         
         def convert():
             # Method 1: PyMuPDF (fitz) - PREFERRED, no external dependencies
@@ -312,7 +312,7 @@ class FileHandler:
     
     async def _docx_to_images(self, file_path: str) -> Dict[str, Any]:
         """Convert DOCX to images via intermediate PDF using LibreOffice"""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         
         def convert():
             import subprocess
@@ -378,7 +378,7 @@ class FileHandler:
         if not self.has_docx:
             return {"text": "", "error": "python-docx not installed", "file_type": "docx", "page_count": 0}
         
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         
         def extract():
             from docx import Document
@@ -418,7 +418,7 @@ class FileHandler:
         """Extract text from old .doc file"""
         import subprocess
         
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         
         def extract():
             # Try antiword

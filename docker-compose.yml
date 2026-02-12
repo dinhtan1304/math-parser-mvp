@@ -2,16 +2,20 @@ version: '3.8'
 
 services:
   math-parser:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.local
     ports:
       - "8000:8000"
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - SECRET_KEY=${SECRET_KEY}
+      - ENV=production
     volumes:
-      - ./uploads:/tmp/math_parser_uploads
+      - ./uploads:/app/uploads
     restart: unless-stopped
 
 # Usage:
-# 1. Create .env file with ANTHROPIC_API_KEY=your_key
+# 1. Copy .env.example to .env and fill in values
 # 2. Run: docker-compose up -d
 # 3. Open: http://localhost:8000

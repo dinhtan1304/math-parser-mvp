@@ -51,8 +51,14 @@ coverage.xml
 *.cover
 .hypothesis/
 
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
 # Uploads and temporary files
-uploads/
+uploads/*
+!uploads/.gitkeep
 *.tmp
 *.temp
 *.log
@@ -71,8 +77,3 @@ Thumbs.db
 
 # mypy
 .mypy_cache/
-
-# Byte-compiled / optimized / DLL files
-*.pyc
-*.pyo
-*.pyd
