@@ -14,6 +14,7 @@ from app.services import file_handler, ai_parser_service as ai_parser
 from app.api import deps
 from app.db.session import AsyncSessionLocal, get_db
 from app.db.models.exam import Exam
+from app.db.models.question import Question
 from app.db.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,47 @@ def _is_math_text_poor_quality(text: str) -> bool:
     return False
 
 
+async def _save_questions_to_bank(
+    db: AsyncSession,
+    exam_id: int,
+    user_id: int,
+    questions: list,
+):
+    """Tách parsed questions thành individual Question records.
+
+    Chạy sau khi parse thành công. Nếu exam đã có questions (re-parse),
+    xóa cũ rồi insert mới.
+    """
+    try:
+        # Xóa questions cũ nếu re-parse
+        from sqlalchemy import delete
+        await db.execute(
+            delete(Question).where(Question.exam_id == exam_id)
+        )
+
+        # Insert từng câu
+        for i, q in enumerate(questions):
+            question = Question(
+                exam_id=exam_id,
+                user_id=user_id,
+                question_text=q.get("question", ""),
+                question_type=q.get("type"),
+                topic=q.get("topic"),
+                difficulty=q.get("difficulty"),
+                answer=q.get("answer"),
+                solution_steps=json.dumps(q.get("solution_steps", []), ensure_ascii=False),
+                question_order=i + 1,
+            )
+            db.add(question)
+
+        await db.commit()
+        logger.info(f"Exam {exam_id}: Saved {len(questions)} questions to bank")
+
+    except Exception as e:
+        logger.error(f"Exam {exam_id}: Failed to save questions to bank: {e}")
+        await db.rollback()
+
+
 async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool = False):
     """Background task: extract text from file and parse with AI."""
     async with AsyncSessionLocal() as db:
@@ -120,6 +162,9 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
             exam.status = "completed"
             exam.result_json = json.dumps(questions, ensure_ascii=False)
             await db.commit()
+
+            # Step 4: Populate Question Bank
+            await _save_questions_to_bank(db, exam.id, exam.user_id, questions)
 
         except Exception as e:
             logger.error(f"Error processing exam {exam_id}: {e}", exc_info=True)

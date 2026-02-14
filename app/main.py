@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 import os
 
 from app.core.config import settings
-from app.api import auth, parser
+from app.api import auth, parser, questions, generator
 from app.db.session import engine
 from app.db.base import Base
 
@@ -44,6 +44,8 @@ app.add_middleware(
 # Include Routers
 app.include_router(auth.router, prefix=f"{settings.API_V1_STR}/auth", tags=["auth"])
 app.include_router(parser.router, prefix=f"{settings.API_V1_STR}/parser", tags=["parser"])
+app.include_router(questions.router, prefix=f"{settings.API_V1_STR}/questions", tags=["questions"])
+app.include_router(generator.router, prefix=f"{settings.API_V1_STR}/generate", tags=["generator"])
 
 # Templates
 templates = Jinja2Templates(directory="app/templates")

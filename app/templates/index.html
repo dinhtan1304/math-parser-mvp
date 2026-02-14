@@ -11,7 +11,6 @@
         :root {
             --bg: #f5f5f3;
             --surface: #ffffff;
-            --surface-raised: #ffffff;
             --sidebar-bg: #0f172a;
             --sidebar-hover: rgba(255,255,255,0.06);
             --sidebar-active: rgba(99,102,241,0.2);
@@ -44,397 +43,221 @@
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
-        body {
-            font-family: var(--font);
-            background: var(--bg);
-            min-height: 100vh;
-            display: flex;
-            color: var(--text);
-        }
+        body { font-family: var(--font); background: var(--bg); min-height: 100vh; display: flex; color: var(--text); }
 
         /* ==================== SIDEBAR ==================== */
         .sidebar {
-            width: var(--sidebar-width);
-            background: var(--sidebar-bg);
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-            position: fixed;
-            left: 0; top: 0;
-            z-index: 100;
+            width: var(--sidebar-width); background: var(--sidebar-bg);
+            display: flex; flex-direction: column; height: 100vh;
+            position: fixed; left: 0; top: 0; z-index: 100;
             transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
 
-        .sidebar-header {
-            padding: 24px 20px 20px;
-            border-bottom: 1px solid rgba(255,255,255,0.08);
-        }
+        .sidebar-header { padding: 24px 20px 20px; border-bottom: 1px solid rgba(255,255,255,0.08); }
 
-        .sidebar-brand {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 20px;
-        }
+        .sidebar-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
 
         .brand-icon {
-            width: 38px; height: 38px;
-            background: var(--primary);
-            border-radius: 10px;
+            width: 38px; height: 38px; background: var(--primary); border-radius: 10px;
             display: flex; align-items: center; justify-content: center;
-            font-size: 18px; color: white; font-weight: 700;
-            font-family: var(--mono);
+            font-size: 18px; color: white; font-weight: 700; font-family: var(--mono);
         }
 
-        .brand-name {
-            color: white;
-            font-size: 1.05rem;
-            font-weight: 700;
-            letter-spacing: -0.02em;
-        }
+        .brand-name { color: white; font-size: 1.05rem; font-weight: 700; letter-spacing: -0.02em; }
 
         .user-info {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 10px 12px;
-            background: rgba(255,255,255,0.05);
-            border-radius: 10px;
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px 12px; background: rgba(255,255,255,0.05); border-radius: 10px;
         }
 
         .user-avatar {
-            width: 32px; height: 32px;
-            background: linear-gradient(135deg, #6366f1, #8b5cf6);
-            border-radius: 8px;
-            display: flex; align-items: center; justify-content: center;
+            width: 32px; height: 32px; background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            border-radius: 8px; display: flex; align-items: center; justify-content: center;
             color: white; font-weight: 700; font-size: 0.8rem;
         }
 
         .user-name {
-            color: rgba(255,255,255,0.9);
-            font-size: 0.88rem;
-            font-weight: 500;
-            flex: 1;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            color: rgba(255,255,255,0.9); font-size: 0.88rem; font-weight: 500;
+            flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
 
         .sidebar-section-label {
-            padding: 16px 20px 8px;
-            font-size: 0.7rem;
-            font-weight: 700;
-            color: rgba(255,255,255,0.3);
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
+            padding: 16px 20px 8px; font-size: 0.7rem; font-weight: 700;
+            color: rgba(255,255,255,0.3); text-transform: uppercase; letter-spacing: 0.08em;
         }
 
         .history-list {
-            flex: 1;
-            overflow-y: auto;
-            padding: 4px 12px;
-            scrollbar-width: thin;
-            scrollbar-color: rgba(255,255,255,0.1) transparent;
+            flex: 1; overflow-y: auto; padding: 4px 12px;
+            scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.1) transparent;
         }
 
         .history-list::-webkit-scrollbar { width: 4px; }
-        .history-list::-webkit-scrollbar-track { background: transparent; }
         .history-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 
         .history-item {
-            padding: 12px 14px;
-            border-radius: 10px;
-            cursor: pointer;
-            transition: background var(--transition);
-            margin-bottom: 2px;
+            padding: 12px 14px; border-radius: 10px; cursor: pointer;
+            transition: background var(--transition); margin-bottom: 2px;
         }
 
         .history-item:hover { background: var(--sidebar-hover); }
         .history-item.active { background: var(--sidebar-active); }
 
         .history-item-name {
-            color: rgba(255,255,255,0.85);
-            font-size: 0.85rem;
-            font-weight: 500;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            margin-bottom: 4px;
+            color: rgba(255,255,255,0.85); font-size: 0.85rem; font-weight: 500;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px;
         }
 
-        .history-item-meta {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
+        .history-item-meta { display: flex; align-items: center; gap: 8px; }
+        .history-item-date { color: rgba(255,255,255,0.35); font-size: 0.75rem; }
 
-        .history-item-date {
-            color: rgba(255,255,255,0.35);
-            font-size: 0.75rem;
-        }
-
-        .status-dot {
-            width: 7px; height: 7px;
-            border-radius: 50%;
-            flex-shrink: 0;
-        }
-
+        .status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
         .status-dot.completed { background: #22c55e; }
         .status-dot.pending, .status-dot.processing { background: #f59e0b; }
         .status-dot.failed { background: #ef4444; }
 
-        .history-empty {
-            padding: 30px 20px;
-            text-align: center;
-            color: rgba(255,255,255,0.25);
-            font-size: 0.85rem;
-        }
+        .history-empty { padding: 30px 20px; text-align: center; color: rgba(255,255,255,0.25); font-size: 0.85rem; }
 
-        .sidebar-footer {
-            padding: 16px 12px;
-            border-top: 1px solid rgba(255,255,255,0.08);
-        }
+        .sidebar-footer { padding: 16px 12px; border-top: 1px solid rgba(255,255,255,0.08); }
 
         .logout-btn {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            padding: 10px;
-            width: 100%;
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 10px;
-            color: rgba(255,255,255,0.5);
-            font-size: 0.85rem;
-            font-weight: 500;
-            font-family: var(--font);
-            cursor: pointer;
-            transition: all var(--transition);
+            display: flex; align-items: center; justify-content: center; gap: 8px;
+            padding: 10px; width: 100%;
+            background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 10px; color: rgba(255,255,255,0.5);
+            font-size: 0.85rem; font-weight: 500; font-family: var(--font);
+            cursor: pointer; transition: all var(--transition);
         }
 
-        .logout-btn:hover {
-            background: rgba(239,68,68,0.1);
-            border-color: rgba(239,68,68,0.2);
-            color: #fca5a5;
-        }
+        .logout-btn:hover { background: rgba(239,68,68,0.1); border-color: rgba(239,68,68,0.2); color: #fca5a5; }
 
         /* ==================== MAIN ==================== */
-        .main {
-            flex: 1;
-            margin-left: var(--sidebar-width);
-            min-height: 100vh;
-        }
+        .main { flex: 1; margin-left: var(--sidebar-width); min-height: 100vh; }
 
         .main-header {
-            padding: 24px 40px;
-            background: var(--surface);
-            border-bottom: 1px solid var(--border);
-            position: sticky;
-            top: 0;
-            z-index: 50;
+            padding: 0 40px; background: var(--surface); border-bottom: 1px solid var(--border);
+            position: sticky; top: 0; z-index: 50;
         }
 
-        .main-header h1 {
-            font-size: 1.4rem;
-            font-weight: 800;
-            letter-spacing: -0.03em;
-            color: var(--text);
+        .main-body { padding: 32px 40px; max-width: 960px; }
+
+        /* ==================== TABS ==================== */
+        .tabs {
+            display: flex; gap: 0; padding-top: 16px;
         }
 
-        .main-body {
-            padding: 32px 40px;
-            max-width: 960px;
+        .tab-btn {
+            padding: 12px 24px; border: none; background: none;
+            font-family: var(--font); font-size: 0.9rem; font-weight: 600;
+            color: var(--text-muted); cursor: pointer;
+            border-bottom: 2px solid transparent; transition: all var(--transition);
+            display: flex; align-items: center; gap: 8px;
         }
 
-        /* ==================== UPLOAD ==================== */
+        .tab-btn:hover { color: var(--text-secondary); }
+
+        .tab-btn.active {
+            color: var(--primary); border-bottom-color: var(--primary);
+        }
+
+        .tab-btn .tab-count {
+            background: var(--border-light); color: var(--text-muted);
+            font-size: 0.72rem; font-weight: 700; padding: 2px 8px;
+            border-radius: 10px; min-width: 24px; text-align: center;
+        }
+
+        .tab-btn.active .tab-count { background: var(--primary-light); color: var(--primary); }
+
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; animation: fadeUp 0.3s ease; }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* ==================== UPLOAD (tab 1) ==================== */
         .upload-card {
-            background: var(--surface);
-            border-radius: var(--radius);
-            border: 1px solid var(--border);
-            padding: 0;
-            margin-bottom: 24px;
-            overflow: hidden;
+            background: var(--surface); border-radius: var(--radius);
+            border: 1px solid var(--border); margin-bottom: 24px; overflow: hidden;
         }
 
         .upload-dropzone {
-            padding: 48px 40px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.25s ease;
-            position: relative;
-            border-bottom: 1px solid var(--border-light);
+            padding: 48px 40px; text-align: center; cursor: pointer;
+            transition: all 0.25s ease; border-bottom: 1px solid var(--border-light);
         }
 
         .upload-dropzone:hover { background: #fafaf8; }
         .upload-dropzone.dragover { background: var(--primary-light); }
-
-        .upload-dropzone.has-file {
-            padding: 24px 40px;
-        }
+        .upload-dropzone.has-file { padding: 24px 40px; }
 
         .dropzone-icon {
-            width: 64px; height: 64px;
-            background: var(--primary-light);
-            border-radius: 16px;
+            width: 64px; height: 64px; background: var(--primary-light); border-radius: 16px;
             display: flex; align-items: center; justify-content: center;
-            margin: 0 auto 20px;
-            transition: all 0.25s ease;
+            margin: 0 auto 20px; transition: all 0.25s ease;
         }
 
-        .dropzone-icon svg {
-            width: 28px; height: 28px;
-            color: var(--primary);
-        }
-
-        .upload-dropzone:hover .dropzone-icon {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 16px rgba(79,70,229,0.15);
-        }
-
-        .dropzone-title {
-            font-size: 1rem;
-            font-weight: 600;
-            color: var(--text);
-            margin-bottom: 6px;
-        }
-
+        .dropzone-icon svg { width: 28px; height: 28px; color: var(--primary); }
+        .upload-dropzone:hover .dropzone-icon { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(79,70,229,0.15); }
+        .dropzone-title { font-size: 1rem; font-weight: 600; color: var(--text); margin-bottom: 6px; }
         .dropzone-title span { color: var(--primary); }
+        .dropzone-subtitle { color: var(--text-muted); font-size: 0.85rem; }
 
-        .dropzone-subtitle {
-            color: var(--text-muted);
-            font-size: 0.85rem;
-        }
-
-        /* File selected state */
-        .file-preview {
-            display: none;
-            align-items: center;
-            gap: 14px;
-        }
-
+        .file-preview { display: none; align-items: center; gap: 14px; }
         .file-preview.visible { display: flex; }
 
         .file-thumb {
-            width: 44px; height: 44px;
-            background: var(--primary-light);
-            border-radius: 10px;
-            display: flex; align-items: center; justify-content: center;
-            font-size: 1.2rem;
-            flex-shrink: 0;
+            width: 44px; height: 44px; background: var(--primary-light); border-radius: 10px;
+            display: flex; align-items: center; justify-content: center; font-size: 1.2rem; flex-shrink: 0;
         }
 
         .file-info { flex: 1; text-align: left; min-width: 0; }
-
-        .file-name {
-            font-weight: 600;
-            font-size: 0.9rem;
-            color: var(--text);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
+        .file-name { font-weight: 600; font-size: 0.9rem; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .file-size { color: var(--text-muted); font-size: 0.8rem; }
 
         .file-remove {
-            width: 32px; height: 32px;
-            border: none; background: none;
-            color: var(--text-muted);
-            cursor: pointer;
-            border-radius: 8px;
-            display: flex; align-items: center; justify-content: center;
-            transition: all var(--transition);
-            flex-shrink: 0;
+            width: 32px; height: 32px; border: none; background: none; color: var(--text-muted);
+            cursor: pointer; border-radius: 8px; display: flex; align-items: center; justify-content: center;
+            transition: all var(--transition); flex-shrink: 0;
         }
 
         .file-remove:hover { background: var(--error-bg); color: var(--error); }
 
-        /* Upload controls */
         .upload-controls {
-            padding: 16px 24px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 16px;
-            flex-wrap: wrap;
+            padding: 16px 24px; display: flex; align-items: center;
+            justify-content: space-between; gap: 16px; flex-wrap: wrap;
         }
 
-        .vision-toggle {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            cursor: pointer;
-            user-select: none;
-        }
-
+        .vision-toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
         .vision-toggle input { display: none; }
 
         .toggle-track {
-            width: 40px; height: 22px;
-            background: #d1d5db;
-            border-radius: 11px;
-            position: relative;
-            transition: background var(--transition);
-            flex-shrink: 0;
+            width: 40px; height: 22px; background: #d1d5db; border-radius: 11px;
+            position: relative; transition: background var(--transition); flex-shrink: 0;
         }
 
         .toggle-track::after {
-            content: '';
-            position: absolute;
-            width: 16px; height: 16px;
-            background: white;
-            border-radius: 50%;
-            top: 3px; left: 3px;
-            transition: transform var(--transition);
-            box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+            content: ''; position: absolute; width: 16px; height: 16px;
+            background: white; border-radius: 50%; top: 3px; left: 3px;
+            transition: transform var(--transition); box-shadow: 0 1px 3px rgba(0,0,0,0.15);
         }
 
-        .vision-toggle input:checked + .toggle-track {
-            background: var(--primary);
-        }
-
-        .vision-toggle input:checked + .toggle-track::after {
-            transform: translateX(18px);
-        }
-
-        .toggle-text {
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-            font-weight: 500;
-        }
+        .vision-toggle input:checked + .toggle-track { background: var(--primary); }
+        .vision-toggle input:checked + .toggle-track::after { transform: translateX(18px); }
+        .toggle-text { font-size: 0.85rem; color: var(--text-secondary); font-weight: 500; }
 
         .btn-parse {
-            padding: 10px 28px;
-            background: var(--primary);
-            color: white;
-            border: none;
-            border-radius: 10px;
-            font-size: 0.9rem;
-            font-weight: 600;
-            font-family: var(--font);
-            cursor: pointer;
-            transition: all var(--transition);
-            display: flex;
-            align-items: center;
-            gap: 8px;
+            padding: 10px 28px; background: var(--primary); color: white; border: none;
+            border-radius: 10px; font-size: 0.9rem; font-weight: 600; font-family: var(--font);
+            cursor: pointer; transition: all var(--transition); display: flex; align-items: center; gap: 8px;
         }
 
-        .btn-parse:hover:not(:disabled) {
-            background: var(--primary-dark);
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(79,70,229,0.3);
-        }
-
+        .btn-parse:hover:not(:disabled) { background: var(--primary-dark); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79,70,229,0.3); }
         .btn-parse:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 
         .btn-parse .spinner {
-            display: none;
-            width: 16px; height: 16px;
-            border: 2px solid rgba(255,255,255,0.3);
-            border-top-color: white;
-            border-radius: 50%;
-            animation: spin 0.6s linear infinite;
+            display: none; width: 16px; height: 16px;
+            border: 2px solid rgba(255,255,255,0.3); border-top-color: white;
+            border-radius: 50%; animation: spin 0.6s linear infinite;
         }
 
         .btn-parse.loading .parse-text { display: none; }
@@ -442,40 +265,23 @@
         .btn-parse.loading { pointer-events: none; }
 
         @keyframes spin { to { transform: rotate(360deg); } }
-
         #fileInput { display: none; }
 
         /* ==================== PROGRESS ==================== */
         .progress-card {
-            display: none;
-            background: var(--surface);
-            border-radius: var(--radius);
-            border: 1px solid var(--border);
-            padding: 28px 32px;
-            margin-bottom: 24px;
+            display: none; background: var(--surface); border-radius: var(--radius);
+            border: 1px solid var(--border); padding: 28px 32px; margin-bottom: 24px;
         }
 
         .progress-card.visible { display: block; animation: fadeUp 0.3s ease; }
 
-        @keyframes fadeUp {
-            from { opacity: 0; transform: translateY(8px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
         .progress-label {
-            font-size: 0.9rem;
-            font-weight: 600;
-            color: var(--text);
-            margin-bottom: 14px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
+            font-size: 0.9rem; font-weight: 600; color: var(--text); margin-bottom: 14px;
+            display: flex; align-items: center; gap: 10px;
         }
 
         .pulse-dot {
-            width: 8px; height: 8px;
-            background: var(--primary);
-            border-radius: 50%;
+            width: 8px; height: 8px; background: var(--primary); border-radius: 50%;
             animation: pulse 1.5s infinite;
         }
 
@@ -484,246 +290,315 @@
             50% { opacity: 0.5; transform: scale(0.8); }
         }
 
-        .progress-bar {
-            height: 6px;
-            background: var(--border-light);
-            border-radius: 3px;
-            overflow: hidden;
-        }
+        .progress-bar { height: 6px; background: var(--border-light); border-radius: 3px; overflow: hidden; }
 
         .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, var(--primary), #818cf8);
-            border-radius: 3px;
-            transition: width 0.5s ease;
-            width: 0%;
-            position: relative;
+            height: 100%; background: linear-gradient(90deg, var(--primary), #818cf8);
+            border-radius: 3px; transition: width 0.5s ease; width: 0%; position: relative;
         }
 
         .progress-fill::after {
-            content: '';
-            position: absolute;
-            inset: 0;
+            content: ''; position: absolute; inset: 0;
             background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
             animation: shimmer 1.5s infinite;
         }
 
-        @keyframes shimmer {
-            0% { transform: translateX(-100%); }
-            100% { transform: translateX(100%); }
-        }
+        @keyframes shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
 
-        /* ==================== RESULTS ==================== */
+        /* ==================== RESULTS (parse output) ==================== */
         .results-card {
-            display: none;
-            background: var(--surface);
-            border-radius: var(--radius);
-            border: 1px solid var(--border);
-            overflow: hidden;
+            display: none; background: var(--surface); border-radius: var(--radius);
+            border: 1px solid var(--border); overflow: hidden;
         }
 
         .results-card.visible { display: block; animation: fadeUp 0.4s ease; }
 
         .results-toolbar {
-            padding: 18px 28px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            border-bottom: 1px solid var(--border-light);
-            flex-wrap: wrap;
-            gap: 12px;
+            padding: 18px 28px; display: flex; align-items: center;
+            justify-content: space-between; border-bottom: 1px solid var(--border-light);
+            flex-wrap: wrap; gap: 12px;
         }
 
-        .results-count {
-            font-size: 0.95rem;
-            font-weight: 700;
-            color: var(--text);
-        }
+        .results-count { font-size: 0.95rem; font-weight: 700; color: var(--text); }
+        .results-count span { color: var(--primary); }
 
-        .results-count span {
-            color: var(--primary);
-        }
-
-        .toolbar-actions {
-            display: flex;
-            gap: 8px;
-        }
+        .toolbar-actions { display: flex; gap: 8px; }
 
         .btn-toolbar {
-            padding: 8px 16px;
-            border-radius: var(--radius-sm);
-            font-size: 0.82rem;
-            font-weight: 600;
-            font-family: var(--font);
-            cursor: pointer;
-            transition: all var(--transition);
-            border: 1px solid var(--border);
-            background: var(--surface);
-            color: var(--text-secondary);
-            display: flex;
-            align-items: center;
-            gap: 6px;
+            padding: 8px 16px; border-radius: var(--radius-sm); font-size: 0.82rem;
+            font-weight: 600; font-family: var(--font); cursor: pointer;
+            transition: all var(--transition); border: 1px solid var(--border);
+            background: var(--surface); color: var(--text-secondary);
+            display: flex; align-items: center; gap: 6px;
         }
 
         .btn-toolbar:hover { background: var(--bg); border-color: #d1d5db; }
-
-        .btn-toolbar.primary {
-            background: var(--success);
-            color: white;
-            border-color: var(--success);
-        }
-
+        .btn-toolbar.primary { background: var(--success); color: white; border-color: var(--success); }
         .btn-toolbar.primary:hover { background: #15803d; }
 
         .questions-list { padding: 8px 16px 16px; }
 
-        /* Question Card */
+        /* ==================== SHARED Q-CARD (used in both tabs) ==================== */
         .q-card {
-            padding: 24px;
-            border: 1px solid var(--border-light);
-            border-radius: 12px;
-            margin-top: 12px;
-            transition: border-color var(--transition), box-shadow var(--transition);
+            padding: 24px; border: 1px solid var(--border-light); border-radius: 12px;
+            margin-top: 12px; transition: border-color var(--transition), box-shadow var(--transition);
         }
 
-        .q-card:hover {
-            border-color: #d1d5db;
-            box-shadow: var(--shadow-sm);
-        }
+        .q-card:hover { border-color: #d1d5db; box-shadow: var(--shadow-sm); }
 
-        .q-top {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 14px;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
+        .q-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; gap: 8px; flex-wrap: wrap; }
 
         .q-num {
-            font-size: 0.82rem;
-            font-weight: 700;
-            color: var(--primary);
-            background: var(--primary-light);
-            padding: 4px 12px;
-            border-radius: 6px;
+            font-size: 0.82rem; font-weight: 700; color: var(--primary);
+            background: var(--primary-light); padding: 4px 12px; border-radius: 6px;
         }
 
         .q-badges { display: flex; gap: 6px; flex-wrap: wrap; }
 
         .q-badge {
-            padding: 3px 10px;
-            border-radius: 6px;
-            font-size: 0.72rem;
-            font-weight: 600;
-            letter-spacing: 0.02em;
-            text-transform: uppercase;
+            padding: 3px 10px; border-radius: 6px; font-size: 0.72rem;
+            font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase;
         }
 
         .q-badge.type { background: #eff6ff; color: #2563eb; }
         .q-badge.topic { background: #faf5ff; color: #7c3aed; }
         .q-badge.diff { background: var(--accent-light); color: #d97706; }
 
-        .q-text {
-            font-size: 0.95rem;
-            line-height: 1.85;
-            color: #374151;
-            margin-bottom: 4px;
-        }
+        .q-text { font-size: 0.95rem; line-height: 1.85; color: #374151; margin-bottom: 4px; }
 
         .q-answer {
-            margin-top: 14px;
-            padding: 14px 16px;
-            background: var(--success-bg);
-            border-radius: 10px;
-            border-left: 3px solid var(--success);
+            margin-top: 14px; padding: 14px 16px; background: var(--success-bg);
+            border-radius: 10px; border-left: 3px solid var(--success);
         }
 
-        .q-answer-label {
-            font-size: 0.78rem;
-            font-weight: 700;
-            color: var(--success);
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-            margin-bottom: 4px;
-        }
-
+        .q-answer-label { font-size: 0.78rem; font-weight: 700; color: var(--success); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
         .q-answer-text { color: #166534; font-size: 0.9rem; line-height: 1.6; }
 
         .q-solution {
-            margin-top: 10px;
-            padding: 14px 16px;
-            background: var(--accent-light);
-            border-radius: 10px;
-            border-left: 3px solid var(--accent);
+            margin-top: 10px; padding: 14px 16px; background: var(--accent-light);
+            border-radius: 10px; border-left: 3px solid var(--accent);
         }
 
-        .q-solution-label {
-            font-size: 0.78rem;
-            font-weight: 700;
-            color: var(--warning);
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-            margin-bottom: 8px;
-        }
-
+        .q-solution-label { font-size: 0.78rem; font-weight: 700; color: var(--warning); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; }
         .q-steps { list-style: none; padding: 0; }
-
-        .q-steps li {
-            padding: 6px 0;
-            border-bottom: 1px dashed #fde68a;
-            color: #78350f;
-            font-size: 0.88rem;
-            line-height: 1.7;
-        }
-
+        .q-steps li { padding: 6px 0; border-bottom: 1px dashed #fde68a; color: #78350f; font-size: 0.88rem; line-height: 1.7; }
         .q-steps li:last-child { border-bottom: none; }
 
-        /* JSON output */
-        .json-panel {
-            display: none;
-            margin: 0 16px 16px;
-            background: #0f172a;
-            border-radius: 10px;
-            overflow: hidden;
+        /* JSON panel */
+        .json-panel { display: none; margin: 0 16px 16px; background: #0f172a; border-radius: 10px; overflow: hidden; }
+        .json-panel.visible { display: block; }
+        .json-panel pre { padding: 20px; color: #a5b4fc; font-family: var(--mono); font-size: 0.78rem; line-height: 1.7; overflow: auto; max-height: 400px; }
+
+        /* ==================== QUESTION BANK (tab 2) ==================== */
+        .bank-toolbar {
+            background: var(--surface); border-radius: var(--radius);
+            border: 1px solid var(--border); padding: 20px 24px; margin-bottom: 20px;
         }
 
-        .json-panel.visible { display: block; }
+        .bank-stats {
+            display: flex; gap: 20px; margin-bottom: 18px; flex-wrap: wrap;
+        }
 
-        .json-panel pre {
-            padding: 20px;
-            color: #a5b4fc;
-            font-family: var(--mono);
-            font-size: 0.78rem;
-            line-height: 1.7;
-            overflow: auto;
-            max-height: 400px;
+        .stat-chip {
+            display: flex; align-items: center; gap: 8px;
+            padding: 8px 16px; background: var(--bg); border-radius: 10px;
+            font-size: 0.85rem; color: var(--text-secondary); font-weight: 500;
+        }
+
+        .stat-chip strong { color: var(--text); font-weight: 700; }
+
+        .bank-filters {
+            display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+        }
+
+        .filter-select {
+            padding: 9px 14px; border: 1.5px solid var(--border); border-radius: 10px;
+            font-family: var(--font); font-size: 0.85rem; color: var(--text);
+            background: white; outline: none; cursor: pointer;
+            transition: border-color var(--transition);
+            min-width: 140px;
+        }
+
+        .filter-select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+
+        .filter-input {
+            flex: 1; min-width: 180px; padding: 9px 14px;
+            border: 1.5px solid var(--border); border-radius: 10px;
+            font-family: var(--font); font-size: 0.85rem; color: var(--text);
+            background: white; outline: none; transition: border-color var(--transition);
+        }
+
+        .filter-input::placeholder { color: var(--text-muted); }
+        .filter-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+
+        .btn-filter {
+            padding: 9px 20px; background: var(--primary); color: white; border: none;
+            border-radius: 10px; font-family: var(--font); font-size: 0.85rem;
+            font-weight: 600; cursor: pointer; transition: all var(--transition);
+        }
+
+        .btn-filter:hover { background: var(--primary-dark); }
+
+        .btn-reset {
+            padding: 9px 16px; background: none; color: var(--text-muted); border: 1.5px solid var(--border);
+            border-radius: 10px; font-family: var(--font); font-size: 0.85rem;
+            font-weight: 500; cursor: pointer; transition: all var(--transition);
+        }
+
+        .btn-reset:hover { background: var(--bg); border-color: #d1d5db; color: var(--text-secondary); }
+
+        .bank-results {
+            background: var(--surface); border-radius: var(--radius);
+            border: 1px solid var(--border); overflow: hidden;
+        }
+
+        .bank-results-header {
+            padding: 18px 24px; border-bottom: 1px solid var(--border-light);
+            display: flex; align-items: center; justify-content: space-between;
+        }
+
+        .bank-results-count { font-size: 0.9rem; font-weight: 700; color: var(--text); }
+        .bank-results-count span { color: var(--primary); }
+
+        .bank-questions-list { padding: 8px 16px 16px; }
+
+        .bank-empty {
+            padding: 48px 24px; text-align: center; color: var(--text-muted);
+        }
+
+        .bank-empty-icon { font-size: 2.5rem; margin-bottom: 16px; opacity: 0.5; }
+        .bank-empty-text { font-size: 0.95rem; font-weight: 500; margin-bottom: 6px; color: var(--text-secondary); }
+        .bank-empty-hint { font-size: 0.85rem; }
+
+        .bank-pagination {
+            padding: 16px 24px; border-top: 1px solid var(--border-light);
+            display: flex; align-items: center; justify-content: center; gap: 8px;
+        }
+
+        .page-btn {
+            padding: 8px 14px; border: 1px solid var(--border); border-radius: 8px;
+            background: white; font-family: var(--font); font-size: 0.82rem;
+            font-weight: 600; color: var(--text-secondary); cursor: pointer;
+            transition: all var(--transition);
+        }
+
+        .page-btn:hover:not(:disabled) { background: var(--bg); border-color: #d1d5db; }
+        .page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .page-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
+
+        .page-info { font-size: 0.82rem; color: var(--text-muted); padding: 0 8px; }
+
+        /* Source exam badge */
+        .q-source {
+            font-size: 0.72rem; color: var(--text-muted); font-weight: 500;
+            display: flex; align-items: center; gap: 4px; margin-top: 8px;
+        }
+
+        .q-source-name { color: var(--text-secondary); font-weight: 600; }
+
+        /* ==================== GENERATOR (tab 3) ==================== */
+        .gen-form-card {
+            background: var(--surface); border-radius: var(--radius);
+            border: 1px solid var(--border); padding: 28px 32px; margin-bottom: 24px;
+        }
+
+        .gen-form-title {
+            font-size: 1rem; font-weight: 700; color: var(--text); margin-bottom: 20px;
+        }
+
+        .gen-form-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px; margin-bottom: 20px;
+        }
+
+        .gen-field label {
+            display: block; font-size: 0.78rem; font-weight: 600; color: var(--text-secondary);
+            text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 6px;
+        }
+
+        .gen-field select, .gen-field input {
+            width: 100%; padding: 10px 14px; border: 1.5px solid var(--border); border-radius: 10px;
+            font-family: var(--font); font-size: 0.9rem; color: var(--text);
+            background: white; outline: none; transition: border-color var(--transition);
+        }
+
+        .gen-field select:focus, .gen-field input:focus {
+            border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light);
+        }
+
+        .gen-actions {
+            display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+        }
+
+        .btn-generate {
+            padding: 11px 32px; background: linear-gradient(135deg, #7c3aed, #6d28d9);
+            color: white; border: none; border-radius: 10px; font-family: var(--font);
+            font-size: 0.9rem; font-weight: 600; cursor: pointer;
+            transition: all var(--transition); display: flex; align-items: center; gap: 8px;
+        }
+
+        .btn-generate:hover:not(:disabled) {
+            transform: translateY(-1px); box-shadow: 0 4px 16px rgba(124,58,237,0.3);
+        }
+
+        .btn-generate:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+        .btn-generate .spinner {
+            display: none; width: 16px; height: 16px;
+            border: 2px solid rgba(255,255,255,0.3); border-top-color: white;
+            border-radius: 50%; animation: spin 0.6s linear infinite;
+        }
+
+        .btn-generate.loading .gen-btn-text { display: none; }
+        .btn-generate.loading .spinner { display: inline-block; }
+
+        .gen-hint {
+            font-size: 0.82rem; color: var(--text-muted); font-weight: 400;
+        }
+
+        .gen-results {
+            display: none; background: var(--surface); border-radius: var(--radius);
+            border: 1px solid var(--border); overflow: hidden;
+        }
+
+        .gen-results.visible { display: block; animation: fadeUp 0.4s ease; }
+
+        .gen-results-header {
+            padding: 18px 24px; border-bottom: 1px solid var(--border-light);
+            display: flex; align-items: center; justify-content: space-between;
+            flex-wrap: wrap; gap: 12px;
+        }
+
+        .gen-results-info {
+            font-size: 0.9rem; font-weight: 600; color: var(--text);
+        }
+
+        .gen-results-info span { color: #7c3aed; }
+
+        .gen-results-list { padding: 8px 16px 16px; }
+
+        .gen-q-card {
+            padding: 24px; border: 1px solid var(--border-light); border-radius: 12px;
+            margin-top: 12px; border-left: 4px solid #7c3aed;
+            transition: border-color var(--transition), box-shadow var(--transition);
+        }
+
+        .gen-q-card:hover { box-shadow: var(--shadow-sm); }
+
+        .gen-tag {
+            display: inline-block; padding: 2px 10px; border-radius: 6px;
+            font-size: 0.7rem; font-weight: 700; background: #f3e8ff; color: #7c3aed;
+            text-transform: uppercase; letter-spacing: 0.03em;
         }
 
         /* ==================== TOAST ==================== */
-        .toast-container {
-            position: fixed;
-            bottom: 24px;
-            right: 24px;
-            z-index: 1000;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
+        .toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 1000; display: flex; flex-direction: column; gap: 8px; }
 
         .toast {
-            padding: 14px 20px;
-            background: var(--sidebar-bg);
-            color: white;
-            border-radius: 12px;
-            font-size: 0.88rem;
-            font-weight: 500;
-            box-shadow: var(--shadow-lg);
-            animation: toastIn 0.3s ease;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            max-width: 400px;
+            padding: 14px 20px; background: var(--sidebar-bg); color: white;
+            border-radius: 12px; font-size: 0.88rem; font-weight: 500;
+            box-shadow: var(--shadow-lg); animation: toastIn 0.3s ease;
+            display: flex; align-items: center; gap: 10px; max-width: 400px;
         }
 
         .toast.error { background: var(--error); }
@@ -736,61 +611,28 @@
 
         /* ==================== MOBILE ==================== */
         .mobile-bar {
-            display: none;
-            position: fixed; top: 0; left: 0; right: 0;
-            height: 56px;
-            background: var(--sidebar-bg);
-            z-index: 101;
-            padding: 0 16px;
-            align-items: center;
-            gap: 14px;
+            display: none; position: fixed; top: 0; left: 0; right: 0; height: 56px;
+            background: var(--sidebar-bg); z-index: 101; padding: 0 16px; align-items: center; gap: 14px;
         }
 
         .mobile-bar .brand-icon { width: 32px; height: 32px; font-size: 14px; border-radius: 8px; }
         .mobile-bar .brand-name { color: white; font-size: 0.95rem; font-weight: 700; flex: 1; }
 
-        .mobile-menu-btn {
-            display: none;
-            background: none; border: none;
-            color: rgba(255,255,255,0.7);
-            cursor: pointer; padding: 8px;
-        }
-
-        .sidebar-overlay {
-            display: none;
-            position: fixed; inset: 0;
-            background: rgba(0,0,0,0.4);
-            z-index: 99;
-        }
+        .mobile-menu-btn { display: none; background: none; border: none; color: rgba(255,255,255,0.7); cursor: pointer; padding: 8px; }
+        .sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 99; }
 
         @media (max-width: 860px) {
-            .sidebar {
-                transform: translateX(-100%);
-                width: 280px;
-            }
-
-            .sidebar.open {
-                transform: translateX(0);
-                box-shadow: 4px 0 24px rgba(0,0,0,0.2);
-            }
-
+            .sidebar { transform: translateX(-100%); width: 280px; }
+            .sidebar.open { transform: translateX(0); box-shadow: 4px 0 24px rgba(0,0,0,0.2); }
             .sidebar-overlay.visible { display: block; }
-
             .mobile-bar { display: flex; }
-
-            .main {
-                margin-left: 0;
-                padding-top: 56px;
-            }
-
-            .main-header { padding: 20px 20px; }
+            .main { margin-left: 0; padding-top: 56px; }
+            .main-header { padding: 0 20px; }
             .main-body { padding: 20px; }
-
             .upload-dropzone { padding: 32px 20px; }
             .upload-controls { padding: 14px 16px; }
-            .results-toolbar { padding: 14px 16px; }
-            .questions-list { padding: 8px 12px 12px; }
-            .q-card { padding: 18px 16px; }
+            .bank-filters { flex-direction: column; }
+            .filter-select, .filter-input { width: 100%; min-width: unset; }
         }
     </style>
 </head>
@@ -832,76 +674,167 @@
     <!-- Main -->
     <main class="main">
         <div class="main-header">
-            <h1>Phân tích đề thi</h1>
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="upload" onclick="switchTab('upload')">
+                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+                    Upload & Parse
+                </button>
+                <button class="tab-btn" data-tab="bank" onclick="switchTab('bank')">
+                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 10h16M4 14h10"/></svg>
+                    Ngân hàng câu hỏi
+                    <span class="tab-count" id="bankCount">0</span>
+                </button>
+                <button class="tab-btn" data-tab="generate" onclick="switchTab('generate')">
+                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 12l4 4L16 6zM9 5l4 4"/></svg>
+                    Sinh đề mới
+                </button>
+            </div>
         </div>
 
         <div class="main-body">
-            <!-- Upload -->
-            <div class="upload-card">
-                <div class="upload-dropzone" id="uploadArea">
-                    <div id="dropzoneDefault">
-                        <div class="dropzone-icon">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
-                            </svg>
+            <!-- ===== TAB 1: Upload & Parse ===== -->
+            <div class="tab-panel active" id="tabUpload">
+                <div class="upload-card">
+                    <div class="upload-dropzone" id="uploadArea">
+                        <div id="dropzoneDefault">
+                            <div class="dropzone-icon">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+                                </svg>
+                            </div>
+                            <p class="dropzone-title">Kéo thả file hoặc <span>chọn từ máy</span></p>
+                            <p class="dropzone-subtitle">PDF, DOCX, PNG, JPG, TXT — tối đa 50MB</p>
                         </div>
-                        <p class="dropzone-title">Kéo thả file hoặc <span>chọn từ máy</span></p>
-                        <p class="dropzone-subtitle">PDF, DOCX, PNG, JPG, TXT — tối đa 50MB</p>
+                        <div class="file-preview" id="filePreview">
+                            <div class="file-thumb" id="fileThumb">📄</div>
+                            <div class="file-info">
+                                <div class="file-name" id="fileName"></div>
+                                <div class="file-size" id="fileSize"></div>
+                            </div>
+                            <button class="file-remove" id="fileRemove" title="Xóa file">
+                                <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                            </button>
+                        </div>
+                        <input type="file" id="fileInput" accept=".pdf,.docx,.doc,.png,.jpg,.jpeg,.txt,.md">
                     </div>
-                    <div class="file-preview" id="filePreview">
-                        <div class="file-thumb" id="fileThumb">📄</div>
-                        <div class="file-info">
-                            <div class="file-name" id="fileName"></div>
-                            <div class="file-size" id="fileSize"></div>
-                        </div>
-                        <button class="file-remove" id="fileRemove" title="Xóa file">
-                            <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                    <div class="upload-controls">
+                        <label class="vision-toggle">
+                            <input type="checkbox" id="visionMode">
+                            <div class="toggle-track"></div>
+                            <span class="toggle-text">Vision mode</span>
+                        </label>
+                        <button class="btn-parse" id="uploadBtn" disabled>
+                            <span class="parse-text">Phân tích</span>
+                            <div class="spinner"></div>
                         </button>
                     </div>
-                    <input type="file" id="fileInput" accept=".pdf,.docx,.doc,.png,.jpg,.jpeg,.txt,.md">
                 </div>
 
-                <div class="upload-controls">
-                    <label class="vision-toggle">
-                        <input type="checkbox" id="visionMode">
-                        <div class="toggle-track"></div>
-                        <span class="toggle-text">Vision mode</span>
-                    </label>
-                    <button class="btn-parse" id="uploadBtn" disabled>
-                        <span class="parse-text">Phân tích</span>
-                        <div class="spinner"></div>
-                    </button>
+                <div class="progress-card" id="progressSection">
+                    <div class="progress-label">
+                        <div class="pulse-dot"></div>
+                        <span id="progressText">Đang xử lý...</span>
+                    </div>
+                    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+                </div>
+
+                <div class="results-card" id="resultsSection">
+                    <div class="results-toolbar">
+                        <div class="results-count" id="resultsCount"><span>0</span> câu hỏi</div>
+                        <div class="toolbar-actions">
+                            <button class="btn-toolbar" id="jsonToggle">JSON</button>
+                            <button class="btn-toolbar primary" id="downloadBtn">Tải xuống</button>
+                        </div>
+                    </div>
+                    <div class="json-panel" id="jsonPanel"><pre id="jsonOutput"></pre></div>
+                    <div class="questions-list" id="questionsContainer"></div>
                 </div>
             </div>
 
-            <!-- Progress -->
-            <div class="progress-card" id="progressSection">
-                <div class="progress-label">
-                    <div class="pulse-dot"></div>
-                    <span id="progressText">Đang xử lý...</span>
+            <!-- ===== TAB 2: Question Bank ===== -->
+            <div class="tab-panel" id="tabBank">
+                <div class="bank-toolbar">
+                    <div class="bank-stats" id="bankStats">
+                        <div class="stat-chip"><strong id="statTotal">0</strong> câu hỏi</div>
+                        <div class="stat-chip"><strong id="statTypes">0</strong> dạng bài</div>
+                        <div class="stat-chip"><strong id="statTopics">0</strong> chủ đề</div>
+                    </div>
+                    <div class="bank-filters">
+                        <select class="filter-select" id="filterType">
+                            <option value="">Tất cả dạng</option>
+                        </select>
+                        <select class="filter-select" id="filterTopic">
+                            <option value="">Tất cả chủ đề</option>
+                        </select>
+                        <select class="filter-select" id="filterDiff">
+                            <option value="">Tất cả độ khó</option>
+                        </select>
+                        <input class="filter-input" type="text" id="filterKeyword" placeholder="Tìm theo nội dung câu hỏi...">
+                        <button class="btn-filter" onclick="searchBank()">Tìm</button>
+                        <button class="btn-reset" onclick="resetFilters()">Xóa lọc</button>
+                    </div>
                 </div>
-                <div class="progress-bar">
-                    <div class="progress-fill" id="progressFill"></div>
+
+                <div class="bank-results" id="bankResults">
+                    <div class="bank-results-header">
+                        <div class="bank-results-count" id="bankResultsCount">Kết quả: <span>0</span> câu</div>
+                    </div>
+                    <div class="bank-questions-list" id="bankQuestionsList"></div>
+                    <div class="bank-pagination" id="bankPagination"></div>
                 </div>
             </div>
 
-            <!-- Results -->
-            <div class="results-card" id="resultsSection">
-                <div class="results-toolbar">
-                    <div class="results-count" id="resultsCount"><span>0</span> câu hỏi</div>
-                    <div class="toolbar-actions">
-                        <button class="btn-toolbar" id="jsonToggle">
-                            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2V4a2 2 0 00-2-2z"/><path d="M4 8H2a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-2"/></svg>
-                            JSON
+            <!-- ===== TAB 3: Generate ===== -->
+            <div class="tab-panel" id="tabGenerate">
+                <div class="gen-form-card">
+                    <div class="gen-form-title">Chon tieu chi de sinh</div>
+                    <div class="gen-form-grid">
+                        <div class="gen-field">
+                            <label>Dang bai</label>
+                            <select id="genType">
+                                <option value="">Dang bat ky</option>
+                            </select>
+                        </div>
+                        <div class="gen-field">
+                            <label>Chu de</label>
+                            <select id="genTopic">
+                                <option value="">Chu de bat ky</option>
+                            </select>
+                        </div>
+                        <div class="gen-field">
+                            <label>Do kho</label>
+                            <select id="genDiff">
+                                <option value="">Do kho bat ky</option>
+                                <option value="NB">NB - Nhan biet</option>
+                                <option value="TH">TH - Thong hieu</option>
+                                <option value="VD">VD - Van dung</option>
+                                <option value="VDC">VDC - Van dung cao</option>
+                            </select>
+                        </div>
+                        <div class="gen-field">
+                            <label>So luong cau</label>
+                            <input type="number" id="genCount" value="5" min="1" max="20">
+                        </div>
+                    </div>
+                    <div class="gen-actions">
+                        <button class="btn-generate" id="genBtn" onclick="doGenerate()">
+                            <span class="gen-btn-text">Sinh de</span>
+                            <div class="spinner"></div>
                         </button>
-                        <button class="btn-toolbar primary" id="downloadBtn">
-                            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 10v4H4v-4M8 3v9M5 9l3 3 3-3"/></svg>
-                            Tải xuống
-                        </button>
+                        <span class="gen-hint" id="genHint">AI se tham khao cau mau tu ngan hang de cua ban</span>
                     </div>
                 </div>
-                <div class="json-panel" id="jsonPanel"><pre id="jsonOutput"></pre></div>
-                <div class="questions-list" id="questionsContainer"></div>
+
+                <div class="gen-results" id="genResults">
+                    <div class="gen-results-header">
+                        <div class="gen-results-info" id="genResultsInfo"><span>0</span> cau da sinh</div>
+                        <div class="toolbar-actions">
+                            <button class="btn-toolbar" onclick="downloadGenerated()">JSON</button>
+                            <button class="btn-toolbar primary" onclick="exportPDF()">Xuat PDF</button>
+                        </div>
+                    </div>
+                    <div class="gen-results-list" id="genResultsList"></div>
+                </div>
             </div>
         </div>
     </main>
@@ -915,42 +848,36 @@
         /* ===== Auth ===== */
         const token = localStorage.getItem('token');
         if (!token) { window.location.href = '/login'; return; }
+        const authHeaders = { 'Authorization': 'Bearer ' + token };
 
         /* ===== State ===== */
         let currentFile = null;
         let currentResults = null;
         let isProcessing = false;
+        let bankPage = 1;
+        const bankPageSize = 20;
 
         /* ===== Elements ===== */
         const $ = id => document.getElementById(id);
-        const uploadArea = $('uploadArea');
-        const fileInput = $('fileInput');
-        const uploadBtn = $('uploadBtn');
-        const filePreview = $('filePreview');
-        const dropzoneDefault = $('dropzoneDefault');
-        const progressSection = $('progressSection');
-        const progressText = $('progressText');
-        const progressFill = $('progressFill');
-        const resultsSection = $('resultsSection');
-        const resultsCount = $('resultsCount');
-        const questionsContainer = $('questionsContainer');
-        const jsonToggle = $('jsonToggle');
-        const jsonPanel = $('jsonPanel');
-        const jsonOutput = $('jsonOutput');
-        const downloadBtn = $('downloadBtn');
-        const visionMode = $('visionMode');
-        const sidebar = $('sidebar');
-        const sidebarOverlay = $('sidebarOverlay');
-        const historyList = $('historyList');
 
         /* ===== Init ===== */
         loadUserInfo();
         loadHistory();
 
+        /* ===== Tabs ===== */
+        window.switchTab = function(tab) {
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+            $('tab' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('active');
+
+            if (tab === 'bank') loadBank();
+            if (tab === 'generate') loadGenFilters();
+        };
+
         /* ===== User ===== */
         async function loadUserInfo() {
             try {
-                const res = await fetch('/api/v1/auth/me', { headers: { 'Authorization': 'Bearer ' + token } });
+                const res = await fetch('/api/v1/auth/me', { headers: authHeaders });
                 if (!res.ok) throw new Error();
                 const user = await res.json();
                 $('userName').textContent = user.full_name;
@@ -961,21 +888,18 @@
         /* ===== History ===== */
         async function loadHistory() {
             try {
-                const res = await fetch('/api/v1/parser/history', { headers: { 'Authorization': 'Bearer ' + token } });
+                const res = await fetch('/api/v1/parser/history', { headers: authHeaders });
                 if (!res.ok) return;
                 const data = await res.json();
-                const exams = data.items || data;
-                renderHistory(exams);
+                renderHistory(data.items || data);
             } catch (e) { console.error('History error', e); }
         }
 
         function renderHistory(exams) {
-            if (!exams.length) {
-                historyList.innerHTML = '<div class="history-empty">Chưa có bài phân tích nào</div>';
-                return;
-            }
-            historyList.innerHTML = exams.map(e => `
-                <div class="history-item" onclick="window._loadExam(${e.id})" title="${e.filename}">
+            const list = $('historyList');
+            if (!exams.length) { list.innerHTML = '<div class="history-empty">Chưa có bài phân tích nào</div>'; return; }
+            list.innerHTML = exams.map(e => `
+                <div class="history-item" onclick="window._loadExam(${e.id})" title="${esc(e.filename)}">
                     <div class="history-item-name">${esc(e.filename)}</div>
                     <div class="history-item-meta">
                         <div class="status-dot ${e.status}"></div>
@@ -993,53 +917,42 @@
 
         window._loadExam = async (id) => {
             try {
-                const res = await fetch('/api/v1/parser/status/' + id, { headers: { 'Authorization': 'Bearer ' + token } });
+                const res = await fetch('/api/v1/parser/status/' + id, { headers: authHeaders });
                 if (!res.ok) return;
                 const exam = await res.json();
                 if (exam.status === 'completed' && exam.result_json) {
+                    switchTab('upload');
                     displayResults(JSON.parse(exam.result_json));
-                    progressSection.classList.remove('visible');
-                    // highlight active
-                    document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
-                    event.target.closest('.history-item')?.classList.add('active');
+                    $('progressSection').classList.remove('visible');
                 }
                 closeSidebarMobile();
             } catch (e) { console.error(e); }
         };
 
-        function logout() {
-            localStorage.removeItem('token');
-            window.location.href = '/login';
-        }
-        window.logout = logout;
+        window.logout = function() { localStorage.removeItem('token'); window.location.href = '/login'; };
 
         /* ===== Sidebar mobile ===== */
-        function toggleSidebar() {
-            sidebar.classList.toggle('open');
-            sidebarOverlay.classList.toggle('visible');
-        }
-        window.toggleSidebar = toggleSidebar;
+        window.toggleSidebar = function() {
+            $('sidebar').classList.toggle('open');
+            $('sidebarOverlay').classList.toggle('visible');
+        };
 
         function closeSidebarMobile() {
             if (window.innerWidth <= 860) {
-                sidebar.classList.remove('open');
-                sidebarOverlay.classList.remove('visible');
+                $('sidebar').classList.remove('open');
+                $('sidebarOverlay').classList.remove('visible');
             }
         }
 
         /* ===== File handling ===== */
         const fileIcons = { pdf:'📕', docx:'📘', doc:'📘', png:'🖼️', jpg:'🖼️', jpeg:'🖼️', txt:'📝', md:'📝' };
 
-        uploadArea.addEventListener('click', (e) => { if (!e.target.closest('.file-remove')) fileInput.click(); });
-        uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('dragover'); });
-        uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
-        uploadArea.addEventListener('drop', e => { e.preventDefault(); uploadArea.classList.remove('dragover'); if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]); });
-        fileInput.addEventListener('change', () => { if (fileInput.files.length) setFile(fileInput.files[0]); });
-
-        $('fileRemove').addEventListener('click', (e) => {
-            e.stopPropagation();
-            clearFile();
-        });
+        $('uploadArea').addEventListener('click', (e) => { if (!e.target.closest('.file-remove')) $('fileInput').click(); });
+        $('uploadArea').addEventListener('dragover', e => { e.preventDefault(); $('uploadArea').classList.add('dragover'); });
+        $('uploadArea').addEventListener('dragleave', () => $('uploadArea').classList.remove('dragover'));
+        $('uploadArea').addEventListener('drop', e => { e.preventDefault(); $('uploadArea').classList.remove('dragover'); if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]); });
+        $('fileInput').addEventListener('change', () => { if ($('fileInput').files.length) setFile($('fileInput').files[0]); });
+        $('fileRemove').addEventListener('click', (e) => { e.stopPropagation(); clearFile(); });
 
         function setFile(file) {
             currentFile = file;
@@ -1047,47 +960,39 @@
             $('fileThumb').textContent = fileIcons[ext] || '📄';
             $('fileName').textContent = file.name;
             $('fileSize').textContent = fmtSize(file.size);
-            dropzoneDefault.style.display = 'none';
-            filePreview.classList.add('visible');
-            uploadArea.classList.add('has-file');
-            uploadBtn.disabled = false;
+            $('dropzoneDefault').style.display = 'none';
+            $('filePreview').classList.add('visible');
+            $('uploadArea').classList.add('has-file');
+            $('uploadBtn').disabled = false;
         }
 
         function clearFile() {
-            currentFile = null;
-            fileInput.value = '';
-            dropzoneDefault.style.display = '';
-            filePreview.classList.remove('visible');
-            uploadArea.classList.remove('has-file');
-            uploadBtn.disabled = true;
+            currentFile = null; $('fileInput').value = '';
+            $('dropzoneDefault').style.display = '';
+            $('filePreview').classList.remove('visible');
+            $('uploadArea').classList.remove('has-file');
+            $('uploadBtn').disabled = true;
         }
 
-        function fmtSize(b) {
-            if (b < 1024) return b + ' B';
-            if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
-            return (b/1048576).toFixed(1) + ' MB';
-        }
+        function fmtSize(b) { return b < 1024 ? b+' B' : b < 1048576 ? (b/1024).toFixed(1)+' KB' : (b/1048576).toFixed(1)+' MB'; }
 
         /* ===== Upload ===== */
-        uploadBtn.addEventListener('click', async () => {
+        $('uploadBtn').addEventListener('click', async () => {
             if (!currentFile || isProcessing) return;
             isProcessing = true;
-            uploadBtn.classList.add('loading');
-            uploadBtn.disabled = true;
-            progressSection.classList.add('visible');
-            resultsSection.classList.remove('visible');
-            progressText.textContent = 'Đang tải lên...';
-            progressFill.style.width = '10%';
+            $('uploadBtn').classList.add('loading');
+            $('uploadBtn').disabled = true;
+            $('progressSection').classList.add('visible');
+            $('resultsSection').classList.remove('visible');
+            $('progressText').textContent = 'Đang tải lên...';
+            $('progressFill').style.width = '10%';
 
             try {
                 const form = new FormData();
                 form.append('file', currentFile);
-                const url = '/api/v1/parser/parse?speed=balanced&use_vision=' + visionMode.checked;
+                const url = '/api/v1/parser/parse?speed=balanced&use_vision=' + $('visionMode').checked;
 
-                const res = await fetch(url, {
-                    method: 'POST', body: form,
-                    headers: { 'Authorization': 'Bearer ' + token }
-                });
+                const res = await fetch(url, { method: 'POST', body: form, headers: authHeaders });
 
                 if (!res.ok) {
                     if (res.status === 401) { logout(); return; }
@@ -1099,11 +1004,11 @@
                 loadHistory();
                 await pollStatus(job_id);
             } catch (e) {
-                progressSection.classList.remove('visible');
+                $('progressSection').classList.remove('visible');
                 toast(e.message, 'error');
             } finally {
-                uploadBtn.classList.remove('loading');
-                uploadBtn.disabled = !currentFile;
+                $('uploadBtn').classList.remove('loading');
+                $('uploadBtn').disabled = !currentFile;
                 isProcessing = false;
             }
         });
@@ -1112,71 +1017,77 @@
             let tries = 0;
             while (tries < 300) {
                 tries++;
-                const res = await fetch('/api/v1/parser/status/' + jobId, {
-                    headers: { 'Authorization': 'Bearer ' + token }
-                });
+                const res = await fetch('/api/v1/parser/status/' + jobId, { headers: authHeaders });
                 if (!res.ok) { if (res.status === 401) logout(); throw new Error('Kiểm tra trạng thái thất bại'); }
-
                 const data = await res.json();
 
                 if (data.status === 'processing') {
-                    progressFill.style.width = '50%';
-                    progressText.textContent = 'AI đang phân tích câu hỏi...';
+                    $('progressFill').style.width = '50%';
+                    $('progressText').textContent = 'AI đang phân tích câu hỏi...';
                 } else if (data.status === 'completed') {
-                    progressFill.style.width = '100%';
-                    progressText.textContent = 'Hoàn tất!';
-                    setTimeout(() => progressSection.classList.remove('visible'), 600);
-
+                    $('progressFill').style.width = '100%';
+                    $('progressText').textContent = 'Hoàn tất!';
+                    setTimeout(() => $('progressSection').classList.remove('visible'), 600);
                     if (data.result_json) displayResults(JSON.parse(data.result_json));
                     loadHistory();
-                    toast('Phân tích hoàn tất!', 'success');
+                    toast('Phân tích hoàn tất! Câu hỏi đã lưu vào ngân hàng.', 'success');
+                    // Update bank count
+                    loadBankFilters();
                     return;
                 } else if (data.status === 'failed') {
-                    progressSection.classList.remove('visible');
+                    $('progressSection').classList.remove('visible');
                     loadHistory();
                     throw new Error(data.error_message || 'Phân tích thất bại');
                 }
-
                 await new Promise(r => setTimeout(r, 2000));
             }
         }
 
-        /* ===== Display results ===== */
+        /* ===== Display parse results ===== */
         function displayResults(questions) {
             currentResults = questions;
-            resultsSection.classList.add('visible');
-            resultsCount.innerHTML = '<span>' + questions.length + '</span> câu hỏi';
-            jsonOutput.textContent = JSON.stringify(questions, null, 2);
+            $('resultsSection').classList.add('visible');
+            $('resultsCount').innerHTML = '<span>' + questions.length + '</span> câu hỏi';
+            $('jsonOutput').textContent = JSON.stringify(questions, null, 2);
+            $('questionsContainer').innerHTML = questions.map((q, i) => renderQCard(q, i + 1)).join('');
+            renderMath($('questionsContainer'));
+        }
 
-            questionsContainer.innerHTML = questions.map((q, i) => `
-                <div class="q-card">
-                    <div class="q-top">
-                        <span class="q-num">Câu ${i+1}</span>
-                        <div class="q-badges">
-                            <span class="q-badge type">${esc(q.type || 'TL')}</span>
-                            <span class="q-badge topic">${esc(q.topic || 'Toán')}</span>
-                            <span class="q-badge diff">${esc(q.difficulty || 'TH')}</span>
-                        </div>
+        /* ===== Shared Q-card renderer ===== */
+        function renderQCard(q, num, showSource) {
+            const text = q.question_text || q.question || '';
+            const type = q.question_type || q.type || 'TL';
+            const topic = q.topic || 'Toán';
+            const diff = q.difficulty || 'TH';
+            const ans = q.answer || '';
+
+            let steps = q.solution_steps || [];
+            if (typeof steps === 'string') { try { steps = JSON.parse(steps); } catch { steps = []; } }
+
+            return `<div class="q-card">
+                <div class="q-top">
+                    <span class="q-num">Câu ${num}</span>
+                    <div class="q-badges">
+                        <span class="q-badge type">${esc(type)}</span>
+                        <span class="q-badge topic">${esc(topic)}</span>
+                        <span class="q-badge diff">${esc(diff)}</span>
                     </div>
-                    <div class="q-text">${esc(q.question || '')}</div>
-                    ${q.answer ? `
-                    <div class="q-answer">
-                        <div class="q-answer-label">Đáp án</div>
-                        <div class="q-answer-text">${esc(q.answer)}</div>
-                    </div>` : ''}
-                    ${q.solution_steps?.length ? `
-                    <div class="q-solution">
-                        <div class="q-solution-label">Lời giải</div>
-                        <ul class="q-steps">
-                            ${q.solution_steps.map(s => '<li>' + esc(s) + '</li>').join('')}
-                        </ul>
-                    </div>` : ''}
                 </div>
-            `).join('');
+                <div class="q-text">${esc(text)}</div>
+                ${ans ? `<div class="q-answer"><div class="q-answer-label">Đáp án</div><div class="q-answer-text">${esc(ans)}</div></div>` : ''}
+                ${steps.length ? `<div class="q-solution"><div class="q-solution-label">Lời giải</div><ul class="q-steps">${steps.map(s => '<li>' + esc(s) + '</li>').join('')}</ul></div>` : ''}
+                ${showSource ? `<div class="q-source">Nguồn: <span class="q-source-name">${esc(showSource)}</span></div>` : ''}
+            </div>`;
+        }
 
-            // Render LaTeX
+        function esc(t) {
+            if (!t) return '';
+            return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\n/g,'<br>').replace(/\n/g,'<br>');
+        }
+
+        function renderMath(el) {
             if (typeof renderMathInElement === 'function') {
-                renderMathInElement(questionsContainer, {
+                renderMathInElement(el, {
                     delimiters: [
                         { left: '$$', right: '$$', display: true },
                         { left: '$', right: '$', display: false },
@@ -1188,27 +1099,355 @@
             }
         }
 
-        function esc(t) {
-            if (!t) return '';
-            return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\n/g,'<br>').replace(/\n/g,'<br>');
-        }
-
-        /* ===== Toolbar ===== */
-        jsonToggle.addEventListener('click', () => {
-            const open = jsonPanel.classList.toggle('visible');
-            jsonToggle.querySelector('span')?.remove();
-        });
-
-        downloadBtn.addEventListener('click', () => {
+        /* ===== Parse tab toolbar ===== */
+        $('jsonToggle').addEventListener('click', () => $('jsonPanel').classList.toggle('visible'));
+        $('downloadBtn').addEventListener('click', () => {
             if (!currentResults) return;
             const blob = new Blob([JSON.stringify(currentResults, null, 2)], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url;
+            a.download = 'math_questions_' + Date.now() + '.json';
+            a.click(); URL.revokeObjectURL(url);
+        });
+
+        /* =============================================================
+           QUESTION BANK (Tab 2)
+           ============================================================= */
+
+        async function loadBank() {
+            await loadBankFilters();
+            await loadBankQuestions();
+        }
+
+        async function loadBankFilters() {
+            try {
+                const res = await fetch('/api/v1/questions/filters', { headers: authHeaders });
+                if (!res.ok) return;
+                const f = await res.json();
+
+                // Update tab count
+                $('bankCount').textContent = f.total_questions;
+
+                // Stats
+                $('statTotal').textContent = f.total_questions;
+                $('statTypes').textContent = f.types.length;
+                $('statTopics').textContent = f.topics.length;
+
+                // Populate dropdowns (preserve current selection)
+                populateSelect($('filterType'), f.types, 'Tất cả dạng');
+                populateSelect($('filterTopic'), f.topics, 'Tất cả chủ đề');
+                populateSelect($('filterDiff'), f.difficulties, 'Tất cả độ khó');
+
+            } catch (e) { console.error('Bank filters error', e); }
+        }
+
+        function populateSelect(el, values, placeholder) {
+            const current = el.value;
+            el.innerHTML = `<option value="">${placeholder}</option>` +
+                values.map(v => `<option value="${esc(v)}" ${v === current ? 'selected' : ''}>${esc(v)}</option>`).join('');
+        }
+
+        async function loadBankQuestions() {
+            const params = new URLSearchParams();
+            params.set('page', bankPage);
+            params.set('page_size', bankPageSize);
+
+            const type = $('filterType').value;
+            const topic = $('filterTopic').value;
+            const diff = $('filterDiff').value;
+            const keyword = $('filterKeyword').value.trim();
+
+            if (type) params.set('type', type);
+            if (topic) params.set('topic', topic);
+            if (diff) params.set('difficulty', diff);
+            if (keyword) params.set('keyword', keyword);
+
+            try {
+                const res = await fetch('/api/v1/questions?' + params.toString(), { headers: authHeaders });
+                if (!res.ok) return;
+                const data = await res.json();
+
+                $('bankResultsCount').innerHTML = `Kết quả: <span>${data.total}</span> câu`;
+
+                const list = $('bankQuestionsList');
+                if (!data.items.length) {
+                    list.innerHTML = `
+                        <div class="bank-empty">
+                            <div class="bank-empty-icon">📚</div>
+                            <div class="bank-empty-text">${keyword || type || topic || diff ? 'Không tìm thấy câu hỏi phù hợp' : 'Ngân hàng câu hỏi trống'}</div>
+                            <div class="bank-empty-hint">${keyword || type || topic || diff ? 'Thử thay đổi bộ lọc' : 'Upload đề thi để bắt đầu tích lũy câu hỏi'}</div>
+                        </div>`;
+                    $('bankPagination').innerHTML = '';
+                    return;
+                }
+
+                list.innerHTML = data.items.map((q, i) => {
+                    const num = (data.page - 1) * data.page_size + i + 1;
+                    return renderQCard(q, num, false);
+                }).join('');
+
+                renderMath(list);
+                renderPagination(data.total, data.page, data.page_size);
+
+            } catch (e) { console.error('Bank questions error', e); }
+        }
+
+        function renderPagination(total, page, pageSize) {
+            const totalPages = Math.ceil(total / pageSize);
+            if (totalPages <= 1) { $('bankPagination').innerHTML = ''; return; }
+
+            let html = '';
+            html += `<button class="page-btn" ${page <= 1 ? 'disabled' : ''} onclick="window._bankPage(${page - 1})">‹</button>`;
+
+            const start = Math.max(1, page - 2);
+            const end = Math.min(totalPages, page + 2);
+
+            if (start > 1) html += `<button class="page-btn" onclick="window._bankPage(1)">1</button>`;
+            if (start > 2) html += `<span class="page-info">...</span>`;
+
+            for (let i = start; i <= end; i++) {
+                html += `<button class="page-btn ${i === page ? 'active' : ''}" onclick="window._bankPage(${i})">${i}</button>`;
+            }
+
+            if (end < totalPages - 1) html += `<span class="page-info">...</span>`;
+            if (end < totalPages) html += `<button class="page-btn" onclick="window._bankPage(${totalPages})">${totalPages}</button>`;
+
+            html += `<button class="page-btn" ${page >= totalPages ? 'disabled' : ''} onclick="window._bankPage(${page + 1})">›</button>`;
+
+            $('bankPagination').innerHTML = html;
+        }
+
+        window._bankPage = function(p) { bankPage = p; loadBankQuestions(); };
+
+        window.searchBank = function() { bankPage = 1; loadBankQuestions(); };
+
+        window.resetFilters = function() {
+            $('filterType').value = '';
+            $('filterTopic').value = '';
+            $('filterDiff').value = '';
+            $('filterKeyword').value = '';
+            bankPage = 1;
+            loadBankQuestions();
+        };
+
+        // Enter key in search
+        $('filterKeyword').addEventListener('keydown', e => { if (e.key === 'Enter') searchBank(); });
+
+        // Load bank count on startup
+        loadBankFilters();
+
+        /* =============================================================
+           GENERATOR (Tab 3)
+           ============================================================= */
+
+        let generatedResults = null;
+
+        // Populate gen dropdowns from bank filters
+        async function loadGenFilters() {
+            try {
+                const res = await fetch('/api/v1/questions/filters', { headers: authHeaders });
+                if (!res.ok) return;
+                const f = await res.json();
+
+                populateSelect($('genType'), f.types, 'Dang bat ky');
+                // genTopic populated from actual data
+                const topicEl = $('genTopic');
+                const currentTopic = topicEl.value;
+                topicEl.innerHTML = '<option value="">Chu de bat ky</option>' +
+                    f.topics.map(t => `<option value="${esc(t)}" ${t === currentTopic ? 'selected' : ''}>${esc(t)}</option>`).join('');
+
+                // Update hint
+                const hint = $('genHint');
+                if (f.total_questions > 0) {
+                    hint.textContent = `Ngan hang hien co ${f.total_questions} cau — AI se tham khao de sinh cau tuong tu`;
+                } else {
+                    hint.textContent = 'Chua co cau mau. Upload de thi truoc de AI sinh cau chinh xac hon.';
+                }
+            } catch (e) { console.error('Gen filters error', e); }
+        }
+
+        window.doGenerate = async function() {
+            const btn = $('genBtn');
+            btn.classList.add('loading');
+            btn.disabled = true;
+            $('genResults').classList.remove('visible');
+
+            try {
+                const body = {
+                    question_type: $('genType').value,
+                    topic: $('genTopic').value,
+                    difficulty: $('genDiff').value,
+                    count: parseInt($('genCount').value) || 5,
+                };
+
+                const res = await fetch('/api/v1/generate', {
+                    method: 'POST',
+                    headers: { ...authHeaders, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || 'Sinh de that bai');
+                }
+
+                const data = await res.json();
+                generatedResults = data.questions;
+                displayGenerated(data);
+                toast(`Da sinh ${data.questions.length} cau hoi moi!`, 'success');
+
+            } catch (e) {
+                toast(e.message, 'error');
+            } finally {
+                btn.classList.remove('loading');
+                btn.disabled = false;
+            }
+        };
+
+        function displayGenerated(data) {
+            $('genResults').classList.add('visible');
+            $('genResultsInfo').innerHTML = `<span>${data.questions.length}</span> cau da sinh` +
+                (data.sample_count > 0 ? ` (tham khao ${data.sample_count} cau mau)` : '');
+
+            const list = $('genResultsList');
+            list.innerHTML = data.questions.map((q, i) => {
+                const steps = q.solution_steps || [];
+                return `<div class="gen-q-card">
+                    <div class="q-top">
+                        <span class="q-num">Cau ${i + 1}</span>
+                        <div class="q-badges">
+                            <span class="gen-tag">AI Generated</span>
+                            <span class="q-badge type">${esc(q.type || '')}</span>
+                            <span class="q-badge topic">${esc(q.topic || '')}</span>
+                            <span class="q-badge diff">${esc(q.difficulty || '')}</span>
+                        </div>
+                    </div>
+                    <div class="q-text">${esc(q.question || '')}</div>
+                    ${q.answer ? `<div class="q-answer"><div class="q-answer-label">Dap an</div><div class="q-answer-text">${esc(q.answer)}</div></div>` : ''}
+                    ${steps.length ? `<div class="q-solution"><div class="q-solution-label">Loi giai</div><ul class="q-steps">${steps.map(s => '<li>' + esc(s) + '</li>').join('')}</ul></div>` : ''}
+                </div>`;
+            }).join('');
+
+            renderMath(list);
+        }
+
+        window.downloadGenerated = function() {
+            if (!generatedResults) return;
+            const blob = new Blob([JSON.stringify(generatedResults, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'math_questions_' + Date.now() + '.json';
+            a.download = 'generated_questions_' + Date.now() + '.json';
             a.click();
             URL.revokeObjectURL(url);
-        });
+        };
+
+        window.exportPDF = function() {
+            if (!generatedResults || !generatedResults.length) {
+                toast('Chua co cau hoi de xuat', 'error');
+                return;
+            }
+
+            const type = $('genType').value || 'Toan';
+            const topic = $('genTopic').value || '';
+            const diff = $('genDiff').value || '';
+            const now = new Date();
+            const dateStr = now.toLocaleDateString('vi-VN');
+
+            let questionsHTML = '';
+            generatedResults.forEach((q, i) => {
+                const steps = q.solution_steps || [];
+                questionsHTML += `
+                    <div class="question">
+                        <div class="q-header">
+                            <strong>Cau ${i + 1}.</strong>
+                            <span class="badge">${q.type || ''}</span>
+                            <span class="badge">${q.difficulty || ''}</span>
+                        </div>
+                        <div class="q-body">${escHTML(q.question || '')}</div>
+                        ${q.answer ? `
+                        <div class="answer-section">
+                            <div class="section-label">Dap an:</div>
+                            <div>${escHTML(q.answer)}</div>
+                        </div>` : ''}
+                        ${steps.length ? `
+                        <div class="solution-section">
+                            <div class="section-label">Loi giai:</div>
+                            ${steps.map((s, j) => `<div class="step">Buoc ${j+1}: ${escHTML(s)}</div>`).join('')}
+                        </div>` : ''}
+                    </div>`;
+            });
+
+            const html = `<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>De thi - ${topic || type}</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"><\/script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"><\/script>
+<style>
+@page { size: A4; margin: 20mm 25mm; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Times New Roman', serif; font-size: 12pt; line-height: 1.6; color: #000; padding: 20px; }
+.exam-header { text-align: center; margin-bottom: 24px; border-bottom: 2px solid #000; padding-bottom: 16px; }
+.school-name { font-size: 13pt; font-weight: bold; text-transform: uppercase; }
+.exam-title { font-size: 16pt; font-weight: bold; margin-top: 8px; text-transform: uppercase; }
+.exam-meta { font-size: 11pt; margin-top: 6px; color: #333; }
+.question { margin-bottom: 16px; page-break-inside: avoid; }
+.q-header { margin-bottom: 4px; }
+.q-header strong { font-size: 12pt; }
+.badge { font-size: 9pt; background: #eee; padding: 1px 6px; border-radius: 3px; margin-left: 4px; }
+.q-body { font-size: 12pt; line-height: 1.8; margin-left: 8px; }
+.answer-section { margin: 8px 0 4px 8px; padding: 8px 12px; background: #f0fff0; border-left: 3px solid #2a7; }
+.solution-section { margin: 4px 0 0 8px; padding: 8px 12px; background: #fffaf0; border-left: 3px solid #d90; }
+.section-label { font-weight: bold; font-size: 11pt; margin-bottom: 4px; }
+.step { font-size: 11pt; line-height: 1.7; padding: 2px 0; }
+.footer { text-align: center; margin-top: 32px; font-size: 10pt; color: #666; border-top: 1px solid #ccc; padding-top: 8px; }
+@media print {
+    .no-print { display: none; }
+    .answer-section { background: #f0fff0 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .solution-section { background: #fffaf0 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+</style>
+</head>
+<body>
+<div class="no-print" style="background:#4f46e5;color:#fff;padding:12px 20px;margin:-20px -20px 20px;text-align:center;font-family:sans-serif;">
+    Nhan <strong>Ctrl+P</strong> (hoac Cmd+P) de in/xuat PDF &nbsp;|&nbsp;
+    <button onclick="window.print()" style="background:#fff;color:#4f46e5;border:none;padding:6px 16px;border-radius:6px;font-weight:bold;cursor:pointer;">In ngay</button>
+</div>
+<div class="exam-header">
+    <div class="school-name">De thi toan hoc</div>
+    <div class="exam-title">${escHTML(topic || type)}</div>
+    <div class="exam-meta">Do kho: ${escHTML(diff || 'Tong hop')} | So cau: ${generatedResults.length} | Ngay: ${dateStr}</div>
+</div>
+${questionsHTML}
+<div class="footer">De thi duoc sinh tu dong boi Math Exam Parser AI</div>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    renderMathInElement(document.body, {
+        delimiters: [
+            {left: '$$', right: '$$', display: true},
+            {left: '$', right: '$', display: false},
+            {left: '\\\\(', right: '\\\\)', display: false},
+            {left: '\\\\[', right: '\\\\]', display: true}
+        ],
+        throwOnError: false
+    });
+});
+<\/script>
+</body>
+</html>`;
+
+            const w = window.open('', '_blank');
+            w.document.write(html);
+            w.document.close();
+        };
+
+        function escHTML(t) {
+            if (!t) return '';
+            return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+        }
 
         /* ===== Toast ===== */
         function toast(msg, type = 'info') {
