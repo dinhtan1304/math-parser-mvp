@@ -552,6 +552,14 @@
         .btn-generate.loading .gen-btn-text { display: none; }
         .btn-generate.loading .spinner { display: inline-block; }
 
+        .dist-input {
+            width: 100%; padding: 8px 12px; border: 1.5px solid var(--border); border-radius: 8px;
+            font-family: var(--font); font-size: 0.95rem; font-weight: 600; color: var(--text);
+            text-align: center; outline: none; margin-top: 6px;
+            transition: border-color var(--transition);
+        }
+        .dist-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+
         .gen-hint {
             font-size: 0.82rem; color: var(--text-muted); font-weight: 400;
         }
@@ -787,41 +795,91 @@
             <!-- ===== TAB 3: Generate ===== -->
             <div class="tab-panel" id="tabGenerate">
                 <div class="gen-form-card">
-                    <div class="gen-form-title">Chon tieu chi de sinh</div>
-                    <div class="gen-form-grid">
+                    <div class="gen-form-title">Chế độ sinh đề</div>
+                    <div class="gen-form-grid" style="grid-template-columns: 1fr 1fr; margin-bottom: 16px;">
                         <div class="gen-field">
-                            <label>Dang bai</label>
-                            <select id="genType">
-                                <option value="">Dang bat ky</option>
+                            <label>Chế độ</label>
+                            <select id="genMode" onchange="toggleGenMode()">
+                                <option value="single">Sinh câu hỏi (1 mức độ)</option>
+                                <option value="exam">Đề kiểm tra tổng hợp</option>
                             </select>
                         </div>
                         <div class="gen-field">
-                            <label>Chu de</label>
+                            <label>Chủ đề</label>
                             <select id="genTopic">
-                                <option value="">Chu de bat ky</option>
+                                <option value="">Chủ đề bất kỳ</option>
                             </select>
-                        </div>
-                        <div class="gen-field">
-                            <label>Do kho</label>
-                            <select id="genDiff">
-                                <option value="">Do kho bat ky</option>
-                                <option value="NB">NB - Nhan biet</option>
-                                <option value="TH">TH - Thong hieu</option>
-                                <option value="VD">VD - Van dung</option>
-                                <option value="VDC">VDC - Van dung cao</option>
-                            </select>
-                        </div>
-                        <div class="gen-field">
-                            <label>So luong cau</label>
-                            <input type="number" id="genCount" value="5" min="1" max="20">
                         </div>
                     </div>
-                    <div class="gen-actions">
+
+                    <!-- Single mode fields -->
+                    <div id="singleModeFields">
+                        <div class="gen-form-grid">
+                            <div class="gen-field">
+                                <label>Dạng bài</label>
+                                <select id="genType">
+                                    <option value="">Dạng bất kỳ</option>
+                                </select>
+                            </div>
+                            <div class="gen-field">
+                                <label>Độ khó</label>
+                                <select id="genDiff">
+                                    <option value="">Độ khó bất kỳ</option>
+                                    <option value="NB">NB - Nhận biết</option>
+                                    <option value="TH">TH - Thông hiểu</option>
+                                    <option value="VD">VD - Vận dụng</option>
+                                    <option value="VDC">VDC - Vận dụng cao</option>
+                                </select>
+                            </div>
+                            <div class="gen-field">
+                                <label>Số lượng câu</label>
+                                <input type="number" id="genCount" value="5" min="1" max="20">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Exam mode fields -->
+                    <div id="examModeFields" style="display:none;">
+                        <div class="gen-form-grid" style="grid-template-columns: 1fr;">
+                            <div class="gen-field">
+                                <label>Dạng bài</label>
+                                <select id="genTypeExam">
+                                    <option value="">Kết hợp TN và TL</option>
+                                    <option value="TN">Chỉ trắc nghiệm</option>
+                                    <option value="TL">Chỉ tự luận</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div style="margin-top: 12px;">
+                            <label style="font-size:0.78rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.03em;">Phân bổ câu hỏi</label>
+                            <div class="exam-dist" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:8px;">
+                                <div class="dist-item">
+                                    <div class="dist-label" style="font-size:0.82rem;font-weight:600;color:#16a34a;">NB - Nhận biết</div>
+                                    <input type="number" id="distNB" value="3" min="0" max="20" class="dist-input" onchange="updateExamTotal()">
+                                </div>
+                                <div class="dist-item">
+                                    <div class="dist-label" style="font-size:0.82rem;font-weight:600;color:#2563eb;">TH - Thông hiểu</div>
+                                    <input type="number" id="distTH" value="3" min="0" max="20" class="dist-input" onchange="updateExamTotal()">
+                                </div>
+                                <div class="dist-item">
+                                    <div class="dist-label" style="font-size:0.82rem;font-weight:600;color:#d97706;">VD - Vận dụng</div>
+                                    <input type="number" id="distVD" value="2" min="0" max="20" class="dist-input" onchange="updateExamTotal()">
+                                </div>
+                                <div class="dist-item">
+                                    <div class="dist-label" style="font-size:0.82rem;font-weight:600;color:#dc2626;">VDC - Vận dụng cao</div>
+                                    <input type="number" id="distVDC" value="2" min="0" max="20" class="dist-input" onchange="updateExamTotal()">
+                                </div>
+                            </div>
+                            <div class="exam-total" id="examTotal" style="margin-top:10px;font-size:0.88rem;font-weight:600;color:var(--text);">Tổng: 10 câu</div>
+                        </div>
+                    </div>
+
+                    <div class="gen-actions" style="margin-top: 16px;">
                         <button class="btn-generate" id="genBtn" onclick="doGenerate()">
-                            <span class="gen-btn-text">Sinh de</span>
+                            <span class="gen-btn-text">Sinh đề</span>
                             <div class="spinner"></div>
                         </button>
-                        <span class="gen-hint" id="genHint">AI se tham khao cau mau tu ngan hang de cua ban</span>
+                        <span class="gen-hint" id="genHint">AI sẽ tham khảo câu mẫu từ ngân hàng đề của bạn</span>
                     </div>
                 </div>
 
@@ -830,7 +888,8 @@
                         <div class="gen-results-info" id="genResultsInfo"><span>0</span> cau da sinh</div>
                         <div class="toolbar-actions">
                             <button class="btn-toolbar" onclick="downloadGenerated()">JSON</button>
-                            <button class="btn-toolbar primary" onclick="exportPDF()">Xuat PDF</button>
+                            <button class="btn-toolbar primary" onclick="exportPDF('exam')">Đề thi (PDF)</button>
+                            <button class="btn-toolbar" onclick="exportPDF('answer')" style="background:#f0fff0;color:#16a34a;border-color:#16a34a;">Đáp án (PDF)</button>
                         </div>
                     </div>
                     <div class="gen-results-list" id="genResultsList"></div>
@@ -1249,22 +1308,34 @@
                 if (!res.ok) return;
                 const f = await res.json();
 
-                populateSelect($('genType'), f.types, 'Dang bat ky');
-                // genTopic populated from actual data
+                populateSelect($('genType'), f.types, 'Dạng bất kỳ');
                 const topicEl = $('genTopic');
                 const currentTopic = topicEl.value;
-                topicEl.innerHTML = '<option value="">Chu de bat ky</option>' +
+                topicEl.innerHTML = '<option value="">Chủ đề bất kỳ</option>' +
                     f.topics.map(t => `<option value="${esc(t)}" ${t === currentTopic ? 'selected' : ''}>${esc(t)}</option>`).join('');
 
-                // Update hint
                 const hint = $('genHint');
                 if (f.total_questions > 0) {
-                    hint.textContent = `Ngan hang hien co ${f.total_questions} cau — AI se tham khao de sinh cau tuong tu`;
+                    hint.textContent = `Ngân hàng hiện có ${f.total_questions} câu — AI sẽ tham khảo để sinh câu tương tự`;
                 } else {
-                    hint.textContent = 'Chua co cau mau. Upload de thi truoc de AI sinh cau chinh xac hon.';
+                    hint.textContent = 'Chưa có câu mẫu. Upload đề thi trước để AI sinh câu chính xác hơn.';
                 }
             } catch (e) { console.error('Gen filters error', e); }
         }
+
+        window.toggleGenMode = function() {
+            const mode = $('genMode').value;
+            $('singleModeFields').style.display = mode === 'single' ? '' : 'none';
+            $('examModeFields').style.display = mode === 'exam' ? '' : 'none';
+        };
+
+        window.updateExamTotal = function() {
+            const nb = parseInt($('distNB').value) || 0;
+            const th = parseInt($('distTH').value) || 0;
+            const vd = parseInt($('distVD').value) || 0;
+            const vdc = parseInt($('distVDC').value) || 0;
+            $('examTotal').textContent = `Tổng: ${nb + th + vd + vdc} câu`;
+        };
 
         window.doGenerate = async function() {
             const btn = $('genBtn');
@@ -1272,15 +1343,45 @@
             btn.disabled = true;
             $('genResults').classList.remove('visible');
 
-            try {
-                const body = {
-                    question_type: $('genType').value,
-                    topic: $('genTopic').value,
-                    difficulty: $('genDiff').value,
-                    count: parseInt($('genCount').value) || 5,
-                };
+            const mode = $('genMode').value;
 
-                const res = await fetch('/api/v1/generate', {
+            try {
+                let url, body;
+
+                if (mode === 'exam') {
+                    // Exam mode - mixed difficulty
+                    const sections = [];
+                    const nb = parseInt($('distNB').value) || 0;
+                    const th = parseInt($('distTH').value) || 0;
+                    const vd = parseInt($('distVD').value) || 0;
+                    const vdc = parseInt($('distVDC').value) || 0;
+                    if (nb > 0) sections.push({ difficulty: 'NB', count: nb });
+                    if (th > 0) sections.push({ difficulty: 'TH', count: th });
+                    if (vd > 0) sections.push({ difficulty: 'VD', count: vd });
+                    if (vdc > 0) sections.push({ difficulty: 'VDC', count: vdc });
+
+                    if (sections.length === 0) {
+                        throw new Error('Chưa chọn số câu nào');
+                    }
+
+                    url = '/api/v1/generate/exam';
+                    body = {
+                        topic: $('genTopic').value,
+                        question_type: $('genTypeExam').value,
+                        sections: sections,
+                    };
+                } else {
+                    // Single mode
+                    url = '/api/v1/generate';
+                    body = {
+                        question_type: $('genType').value,
+                        topic: $('genTopic').value,
+                        difficulty: $('genDiff').value,
+                        count: parseInt($('genCount').value) || 5,
+                    };
+                }
+
+                const res = await fetch(url, {
                     method: 'POST',
                     headers: { ...authHeaders, 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
@@ -1288,13 +1389,13 @@
 
                 if (!res.ok) {
                     const err = await res.json().catch(() => ({}));
-                    throw new Error(err.detail || 'Sinh de that bai');
+                    throw new Error(err.detail || 'Sinh đề thất bại');
                 }
 
                 const data = await res.json();
                 generatedResults = data.questions;
                 displayGenerated(data);
-                toast(`Da sinh ${data.questions.length} cau hoi moi!`, 'success');
+                toast(`Đã sinh ${data.questions.length} câu hỏi mới!`, 'success');
 
             } catch (e) {
                 toast(e.message, 'error');
@@ -1304,31 +1405,68 @@
             }
         };
 
+        const DIFF_LABELS = { NB: 'Nhận biết', TH: 'Thông hiểu', VD: 'Vận dụng', VDC: 'Vận dụng cao' };
+        const DIFF_COLORS = { NB: '#16a34a', TH: '#2563eb', VD: '#d97706', VDC: '#dc2626' };
+
         function displayGenerated(data) {
             $('genResults').classList.add('visible');
-            $('genResultsInfo').innerHTML = `<span>${data.questions.length}</span> cau da sinh` +
-                (data.sample_count > 0 ? ` (tham khao ${data.sample_count} cau mau)` : '');
+            $('genResultsInfo').innerHTML = `<span>${data.questions.length}</span> câu đã sinh` +
+                (data.sample_count > 0 ? ` (tham khảo ${data.sample_count} câu mẫu)` : '');
 
             const list = $('genResultsList');
-            list.innerHTML = data.questions.map((q, i) => {
-                const steps = q.solution_steps || [];
-                return `<div class="gen-q-card">
-                    <div class="q-top">
-                        <span class="q-num">Cau ${i + 1}</span>
-                        <div class="q-badges">
-                            <span class="gen-tag">AI Generated</span>
-                            <span class="q-badge type">${esc(q.type || '')}</span>
-                            <span class="q-badge topic">${esc(q.topic || '')}</span>
-                            <span class="q-badge diff">${esc(q.difficulty || '')}</span>
-                        </div>
-                    </div>
-                    <div class="q-text">${esc(q.question || '')}</div>
-                    ${q.answer ? `<div class="q-answer"><div class="q-answer-label">Dap an</div><div class="q-answer-text">${esc(q.answer)}</div></div>` : ''}
-                    ${steps.length ? `<div class="q-solution"><div class="q-solution-label">Loi giai</div><ul class="q-steps">${steps.map(s => '<li>' + esc(s) + '</li>').join('')}</ul></div>` : ''}
-                </div>`;
-            }).join('');
+            const isExam = $('genMode').value === 'exam';
+            let html = '';
 
+            if (isExam) {
+                // Group by difficulty
+                const groups = {};
+                const order = ['NB', 'TH', 'VD', 'VDC'];
+                data.questions.forEach(q => {
+                    const d = q.difficulty || 'TH';
+                    if (!groups[d]) groups[d] = [];
+                    groups[d].push(q);
+                });
+
+                let num = 0;
+                for (const diff of order) {
+                    if (!groups[diff] || !groups[diff].length) continue;
+                    const color = DIFF_COLORS[diff] || '#666';
+                    const label = DIFF_LABELS[diff] || diff;
+                    html += `<div style="margin-top:16px;padding:8px 14px;background:${color}11;border-left:4px solid ${color};border-radius:0 8px 8px 0;">
+                        <span style="font-weight:700;color:${color};font-size:0.92rem;">${label}</span>
+                        <span style="color:#666;font-size:0.82rem;margin-left:8px;">${groups[diff].length} câu</span>
+                    </div>`;
+                    for (const q of groups[diff]) {
+                        num++;
+                        html += renderGenCard(q, num);
+                    }
+                }
+            } else {
+                data.questions.forEach((q, i) => {
+                    html += renderGenCard(q, i + 1);
+                });
+            }
+
+            list.innerHTML = html;
             renderMath(list);
+        }
+
+        function renderGenCard(q, num) {
+            const steps = q.solution_steps || [];
+            const color = DIFF_COLORS[q.difficulty] || '#7c3aed';
+            return `<div class="gen-q-card" style="border-left-color:${color}">
+                <div class="q-top">
+                    <span class="q-num">Câu ${num}</span>
+                    <div class="q-badges">
+                        <span class="gen-tag">AI</span>
+                        <span class="q-badge type">${esc(q.type || '')}</span>
+                        <span class="q-badge diff" style="background:${color}18;color:${color}">${esc(q.difficulty || '')}</span>
+                    </div>
+                </div>
+                <div class="q-text">${esc(q.question || '')}</div>
+                ${q.answer ? `<div class="q-answer"><div class="q-answer-label">Đáp án</div><div class="q-answer-text">${esc(q.answer)}</div></div>` : ''}
+                ${steps.length ? `<div class="q-solution"><div class="q-solution-label">Lời giải</div><ul class="q-steps">${steps.map(s => '<li>' + esc(s) + '</li>').join('')}</ul></div>` : ''}
+            </div>`;
         }
 
         window.downloadGenerated = function() {
@@ -1342,106 +1480,116 @@
             URL.revokeObjectURL(url);
         };
 
-        window.exportPDF = function() {
+        window.exportPDF = function(pdfMode) {
+            // pdfMode: 'exam' = questions only, 'answer' = answer key + solutions
             if (!generatedResults || !generatedResults.length) {
-                toast('Chua co cau hoi de xuat', 'error');
+                toast('Chưa có câu hỏi để xuất', 'error');
                 return;
             }
 
-            const type = $('genType').value || 'Toan';
+            const isExamMode = $('genMode').value === 'exam';
             const topic = $('genTopic').value || '';
-            const diff = $('genDiff').value || '';
+            const type = isExamMode ? ($('genTypeExam').value || 'Tổng hợp') : ($('genType').value || 'Toán');
             const now = new Date();
             const dateStr = now.toLocaleDateString('vi-VN');
+            const DL = { NB: 'Nhận biết', TH: 'Thông hiểu', VD: 'Vận dụng', VDC: 'Vận dụng cao' };
+            const isAnswerFile = pdfMode === 'answer';
 
+            // === Build question card HTML ===
+            function buildQ(q, num) {
+                if (isAnswerFile) {
+                    // Answer file: question + answer + solution
+                    const steps = q.solution_steps || [];
+                    return '<div class="question">' +
+                        '<div class="q-header"><strong>Câu ' + num + '.</strong></div>' +
+                        '<div class="q-body">' + escHTML(q.question || '') + '</div>' +
+                        (q.answer ? '<div class="answer-section"><div class="section-label">Đáp án:</div><div>' + escHTML(q.answer) + '</div></div>' : '') +
+                        (steps.length ? '<div class="solution-section"><div class="section-label">Lời giải:</div>' + steps.map(function(s,j){ return '<div class="step"><b>Bước '+(j+1)+':</b> ' + escHTML(s) + '</div>'; }).join('') + '</div>' : '') +
+                        '</div>';
+                } else {
+                    // Exam file: question only, no answer
+                    return '<div class="question">' +
+                        '<div class="q-header"><strong>Câu ' + num + '.</strong></div>' +
+                        '<div class="q-body">' + escHTML(q.question || '') + '</div>' +
+                        '</div>';
+                }
+            }
+
+            // === Build answer summary table (for answer file) ===
+            function buildAnswerTable() {
+                let rows = '';
+                generatedResults.forEach(function(q, i) {
+                    const short = (q.answer || '').substring(0, 80);
+                    rows += '<tr><td style="text-align:center;font-weight:bold;">' + (i+1) + '</td>' +
+                        '<td style="text-align:center;">' + escHTML(q.difficulty || '') + '</td>' +
+                        '<td>' + escHTML(short) + '</td></tr>';
+                });
+                return '<table class="answer-table"><thead><tr><th>Câu</th><th>Mức độ</th><th>Đáp án</th></tr></thead><tbody>' + rows + '</tbody></table>';
+            }
+
+            // === Group questions by difficulty ===
             let questionsHTML = '';
-            generatedResults.forEach((q, i) => {
-                const steps = q.solution_steps || [];
-                questionsHTML += `
-                    <div class="question">
-                        <div class="q-header">
-                            <strong>Cau ${i + 1}.</strong>
-                            <span class="badge">${q.type || ''}</span>
-                            <span class="badge">${q.difficulty || ''}</span>
-                        </div>
-                        <div class="q-body">${escHTML(q.question || '')}</div>
-                        ${q.answer ? `
-                        <div class="answer-section">
-                            <div class="section-label">Dap an:</div>
-                            <div>${escHTML(q.answer)}</div>
-                        </div>` : ''}
-                        ${steps.length ? `
-                        <div class="solution-section">
-                            <div class="section-label">Loi giai:</div>
-                            ${steps.map((s, j) => `<div class="step">Buoc ${j+1}: ${escHTML(s)}</div>`).join('')}
-                        </div>` : ''}
-                    </div>`;
-            });
+            if (isExamMode) {
+                const groups = {};
+                generatedResults.forEach(function(q) { const d = q.difficulty || 'TH'; if (!groups[d]) groups[d] = []; groups[d].push(q); });
+                let num = 0;
+                ['NB','TH','VD','VDC'].forEach(function(diff) {
+                    if (!groups[diff] || !groups[diff].length) return;
+                    questionsHTML += '<div class="section-header">' + (DL[diff]||diff) + ' (' + groups[diff].length + ' câu)</div>';
+                    groups[diff].forEach(function(q) { num++; questionsHTML += buildQ(q, num); });
+                });
+            } else {
+                generatedResults.forEach(function(q, i) { questionsHTML += buildQ(q, i + 1); });
+            }
 
-            const html = `<!DOCTYPE html>
-<html lang="vi">
-<head>
-<meta charset="UTF-8">
-<title>De thi - ${topic || type}</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
-<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"><\/script>
-<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"><\/script>
-<style>
-@page { size: A4; margin: 20mm 25mm; }
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: 'Times New Roman', serif; font-size: 12pt; line-height: 1.6; color: #000; padding: 20px; }
-.exam-header { text-align: center; margin-bottom: 24px; border-bottom: 2px solid #000; padding-bottom: 16px; }
-.school-name { font-size: 13pt; font-weight: bold; text-transform: uppercase; }
-.exam-title { font-size: 16pt; font-weight: bold; margin-top: 8px; text-transform: uppercase; }
-.exam-meta { font-size: 11pt; margin-top: 6px; color: #333; }
-.question { margin-bottom: 16px; page-break-inside: avoid; }
-.q-header { margin-bottom: 4px; }
-.q-header strong { font-size: 12pt; }
-.badge { font-size: 9pt; background: #eee; padding: 1px 6px; border-radius: 3px; margin-left: 4px; }
-.q-body { font-size: 12pt; line-height: 1.8; margin-left: 8px; }
-.answer-section { margin: 8px 0 4px 8px; padding: 8px 12px; background: #f0fff0; border-left: 3px solid #2a7; }
-.solution-section { margin: 4px 0 0 8px; padding: 8px 12px; background: #fffaf0; border-left: 3px solid #d90; }
-.section-label { font-weight: bold; font-size: 11pt; margin-bottom: 4px; }
-.step { font-size: 11pt; line-height: 1.7; padding: 2px 0; }
-.footer { text-align: center; margin-top: 32px; font-size: 10pt; color: #666; border-top: 1px solid #ccc; padding-top: 8px; }
-@media print {
-    .no-print { display: none; }
-    .answer-section { background: #f0fff0 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .solution-section { background: #fffaf0 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-}
-</style>
-</head>
-<body>
-<div class="no-print" style="background:#4f46e5;color:#fff;padding:12px 20px;margin:-20px -20px 20px;text-align:center;font-family:sans-serif;">
-    Nhan <strong>Ctrl+P</strong> (hoac Cmd+P) de in/xuat PDF &nbsp;|&nbsp;
-    <button onclick="window.print()" style="background:#fff;color:#4f46e5;border:none;padding:6px 16px;border-radius:6px;font-weight:bold;cursor:pointer;">In ngay</button>
-</div>
-<div class="exam-header">
-    <div class="school-name">De thi toan hoc</div>
-    <div class="exam-title">${escHTML(topic || type)}</div>
-    <div class="exam-meta">Do kho: ${escHTML(diff || 'Tong hop')} | So cau: ${generatedResults.length} | Ngay: ${dateStr}</div>
-</div>
-${questionsHTML}
-<div class="footer">De thi duoc sinh tu dong boi Math Exam Parser AI</div>
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-    renderMathInElement(document.body, {
-        delimiters: [
-            {left: '$$', right: '$$', display: true},
-            {left: '$', right: '$', display: false},
-            {left: '\\\\(', right: '\\\\)', display: false},
-            {left: '\\\\[', right: '\\\\]', display: true}
-        ],
-        throwOnError: false
-    });
-});
-<\/script>
-</body>
-</html>`;
+            const diffSum = Object.keys(generatedResults.reduce(function(a,q){a[q.difficulty]=(a[q.difficulty]||0)+1;return a;},{})).map(function(k){return k;}).join(', ');
+
+            const titleText = isAnswerFile ? 'ĐÁP ÁN VÀ LỜI GIẢI' : (isExamMode ? 'ĐỀ KIỂM TRA' : 'ĐỀ THI TOÁN HỌC');
+            const fileName = isAnswerFile ? 'Đáp án' : 'Đề thi';
+
+            const html = '<!DOCTYPE html><html lang="vi"><head><meta charset="UTF-8"><title>' + fileName + ' - ' + escHTML(topic||type) + '</title>' +
+'<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">' +
+'<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"><\/script>' +
+'<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"><\/script>' +
+'<style>' +
+'@page{size:A4;margin:20mm 25mm}*{margin:0;padding:0;box-sizing:border-box}' +
+'body{font-family:"Times New Roman",serif;font-size:12pt;line-height:1.6;color:#000;padding:24px 32px}' +
+'.exam-header{text-align:center;margin-bottom:24px;border-bottom:2px solid #000;padding-bottom:16px}' +
+'.header-label{font-size:13pt;font-weight:bold;text-transform:uppercase}' +
+'.exam-title{font-size:16pt;font-weight:bold;margin-top:8px;text-transform:uppercase}' +
+'.exam-info{display:flex;justify-content:space-between;margin-top:8px;font-size:11pt;color:#333}' +
+'.section-header{margin-top:20px;padding:6px 14px;background:#f3f4f6;border-left:4px solid #333;font-weight:bold;font-size:12pt}' +
+'.question{margin-bottom:18px;page-break-inside:avoid}' +
+'.q-header{margin-bottom:4px}.q-header strong{font-size:12pt}' +
+'.q-body{font-size:12pt;line-height:1.9;margin-left:24px}' +
+'.answer-section{margin:8px 0 4px 24px;padding:8px 14px;background:#f0fff0;border-left:3px solid #2a7}' +
+'.solution-section{margin:4px 0 0 24px;padding:8px 14px;background:#fffaf0;border-left:3px solid #d90}' +
+'.section-label{font-weight:bold;font-size:11pt;margin-bottom:4px}' +
+'.step{font-size:11pt;line-height:1.7;padding:2px 0}' +
+'.answer-table{width:100%;border-collapse:collapse;margin:16px 0 24px;font-size:11pt}' +
+'.answer-table th,.answer-table td{border:1px solid #999;padding:6px 12px}' +
+'.answer-table th{background:#f3f4f6;font-weight:bold;text-align:center}' +
+'.student-info{margin:16px 0 24px;font-size:12pt;line-height:2.2}' +
+'.student-info span{display:inline-block;border-bottom:1px dotted #999;min-width:200px;margin-left:8px}' +
+'.footer{text-align:center;margin-top:32px;font-size:9pt;color:#999;border-top:1px solid #ddd;padding-top:8px}' +
+'.print-bar{background:#4f46e5;color:#fff;padding:14px 24px;margin:-24px -32px 24px;text-align:center;font-family:sans-serif;font-size:14px}' +
+'.print-bar button{background:#fff;color:#4f46e5;border:none;padding:8px 24px;border-radius:8px;font-weight:bold;cursor:pointer;font-size:14px;margin-left:12px}' +
+'@media print{.print-bar{display:none!important}.answer-section{background:#f0fff0!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.solution-section{background:#fffaf0!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.section-header{background:#f3f4f6!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.answer-table th{background:#f3f4f6!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}}' +
+'</style></head><body>' +
+'<div class="print-bar">Chọn <strong>"Save as PDF"</strong> hoặc <strong>"Microsoft Print to PDF"</strong> để lưu <button onclick="window.print()">Lưu PDF ngay</button></div>' +
+'<div class="exam-header"><div class="header-label">' + titleText + '</div>' +
+'<div class="exam-title">' + escHTML(topic||type) + '</div>' +
+'<div class="exam-info"><span>Số câu: ' + generatedResults.length + '</span><span>Ngày: ' + dateStr + '</span></div></div>' +
+(isAnswerFile ? '' : '<div class="student-info">Họ và tên: <span>&nbsp;</span> &emsp; Lớp: <span style="min-width:80px">&nbsp;</span></div>') +
+(isAnswerFile ? '<h3 style="margin-bottom:8px;font-size:13pt;">Bảng đáp án</h3>' + buildAnswerTable() + '<h3 style="margin:24px 0 8px;font-size:13pt;">Lời giải chi tiết</h3>' : '') +
+questionsHTML +
+'<div class="footer">Math Exam Parser AI</div>' +
+'<script>document.addEventListener("DOMContentLoaded",function(){renderMathInElement(document.body,{delimiters:[{left:"$$",right:"$$",display:true},{left:"$",right:"$",display:false},{left:"\\\\(",right:"\\\\)",display:false},{left:"\\\\[",right:"\\\\]",display:true}],throwOnError:false});setTimeout(function(){window.print()},1500)});<\/script>' +
+'</body></html>';
 
             const w = window.open('', '_blank');
-            w.document.write(html);
-            w.document.close();
+            if (w) { w.document.write(html); w.document.close(); }
+            else { toast('Trình duyệt chặn popup. Cho phép popup rồi thử lại.', 'error'); }
         };
 
         function escHTML(t) {

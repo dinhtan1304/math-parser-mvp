@@ -16,7 +16,10 @@ from app.api import deps
 from app.db.session import get_db
 from app.db.models.question import Question
 from app.db.models.user import User
-from app.schemas.generator import GenerateRequest, GenerateResponse, GeneratedQuestion
+from app.schemas.generator import (
+    GenerateRequest, GenerateResponse, GeneratedQuestion,
+    ExamGenerateRequest,
+)
 from app.services.ai_generator import ai_generator
 
 logger = logging.getLogger(__name__)
@@ -111,4 +114,74 @@ async def generate_questions(
         questions=questions,
         sample_count=len(sample_dicts),
         message=msg,
+    )
+
+
+@router.post("/exam", response_model=GenerateResponse)
+async def generate_exam(
+    req: ExamGenerateRequest,
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate a mixed-difficulty exam.
+
+    Sections define how many questions per difficulty level.
+    """
+    # Get diverse samples from bank (across difficulties)
+    conditions = [Question.user_id == current_user.id]
+    if req.topic:
+        conditions.append(Question.topic == req.topic)
+    if req.question_type:
+        conditions.append(Question.question_type == req.question_type)
+
+    result = await db.execute(
+        select(Question)
+        .where(*conditions)
+        .order_by(Question.created_at.desc())
+        .limit(10)
+    )
+    samples = result.scalars().all()
+
+    sample_dicts = [
+        {
+            "question_text": s.question_text,
+            "type": s.question_type,
+            "topic": s.topic,
+            "difficulty": s.difficulty,
+            "answer": s.answer or "",
+        }
+        for s in samples
+    ]
+
+    sections = [{"difficulty": s.difficulty, "count": s.count} for s in req.sections]
+
+    try:
+        generated = await ai_generator.generate_exam(
+            samples=sample_dicts,
+            sections=sections,
+            topic=req.topic,
+            q_type=req.question_type,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.error(f"Exam generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"AI exam generation failed: {e}")
+
+    questions = []
+    for q in generated:
+        questions.append(GeneratedQuestion(
+            question=q.get("question", ""),
+            type=q.get("type", ""),
+            topic=q.get("topic", req.topic),
+            difficulty=q.get("difficulty", ""),
+            answer=q.get("answer", ""),
+            solution_steps=q.get("solution_steps", []),
+        ))
+
+    total = sum(s.count for s in req.sections)
+    return GenerateResponse(
+        questions=questions,
+        sample_count=len(sample_dicts),
+        message=f"De kiem tra {len(questions)}/{total} cau ({len(sample_dicts)} cau mau)",
     )
