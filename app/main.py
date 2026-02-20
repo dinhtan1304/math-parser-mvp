@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 import os
 
 from app.core.config import settings
-from app.api import auth, parser, questions, generator
+from app.api import auth, parser, questions, generator, dashboard, export
 from app.db.session import engine
 from app.db.base import Base
 
@@ -16,8 +16,25 @@ async def lifespan(app: FastAPI):
     # Startup: create tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Init FTS5 full-text search index
+    try:
+        from app.services.fts import init_fts
+        await init_fts(engine)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"FTS5 init skipped: {e}")
+
+    # Init vector embedding table
+    try:
+        from app.services.vector_search import init_vector_table
+        await init_vector_table(engine)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Vector table init skipped: {e}")
+
     yield
-    # Shutdown: cleanup if needed
+    # Shutdown
     await engine.dispose()
 
 
@@ -46,6 +63,8 @@ app.include_router(auth.router, prefix=f"{settings.API_V1_STR}/auth", tags=["aut
 app.include_router(parser.router, prefix=f"{settings.API_V1_STR}/parser", tags=["parser"])
 app.include_router(questions.router, prefix=f"{settings.API_V1_STR}/questions", tags=["questions"])
 app.include_router(generator.router, prefix=f"{settings.API_V1_STR}/generate", tags=["generator"])
+app.include_router(dashboard.router, prefix=f"{settings.API_V1_STR}/dashboard", tags=["dashboard"])
+app.include_router(export.router, prefix=f"{settings.API_V1_STR}/export", tags=["export"])
 
 # Templates
 templates = Jinja2Templates(directory="app/templates")

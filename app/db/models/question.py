@@ -39,4 +39,7 @@ class Question(Base):
         Index("ix_question_user_topic", "user_id", "topic"),
         Index("ix_question_user_type", "user_id", "question_type"),
         Index("ix_question_user_difficulty", "user_id", "difficulty"),
+        # Composite index for generator sample queries
+        Index("ix_question_user_topic_diff", "user_id", "topic", "difficulty"),
+        Index("ix_question_user_type_topic_diff", "user_id", "question_type", "topic", "difficulty"),
     )

@@ -53,7 +53,17 @@ async def list_questions(
     if exam_id:
         conditions.append(Question.exam_id == exam_id)
     if keyword:
-        conditions.append(Question.question_text.ilike(f"%{keyword}%"))
+        # Try FTS5 first (much faster than LIKE), fallback to LIKE
+        try:
+            from app.services.fts import search_fts
+            fts_ids = await search_fts(db, keyword, current_user.id, limit=100)
+            if fts_ids:
+                conditions.append(Question.id.in_(fts_ids))
+            else:
+                # FTS returned nothing, use LIKE as fallback
+                conditions.append(Question.question_text.ilike(f"%{keyword}%"))
+        except Exception:
+            conditions.append(Question.question_text.ilike(f"%{keyword}%"))
 
     # Count
     count_q = select(func.count(Question.id)).where(*conditions)
@@ -149,6 +159,19 @@ async def delete_question(
         raise HTTPException(status_code=404, detail="Question not found")
 
     await db.delete(question)
+
+    # Cleanup FTS + vector index
+    try:
+        from app.services.fts import delete_fts_question
+        await delete_fts_question(db, question_id)
+    except Exception:
+        pass
+    try:
+        from app.services.vector_search import delete_embedding
+        await delete_embedding(db, question_id)
+    except Exception:
+        pass
+
     await db.commit()
 
     return {"detail": "Deleted"}

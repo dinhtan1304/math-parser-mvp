@@ -116,6 +116,28 @@ async def _save_questions_to_bank(
         await db.commit()
         logger.info(f"Exam {exam_id}: Saved {len(questions)} questions to bank")
 
+        # Get saved question IDs for FTS + vector indexing
+        result = await db.execute(
+            select(Question.id).where(Question.exam_id == exam_id)
+        )
+        saved_ids = [row[0] for row in result.fetchall()]
+
+        # Sync FTS5 index (background, non-blocking)
+        try:
+            from app.services.fts import sync_fts_questions
+            await sync_fts_questions(db, saved_ids)
+            logger.info(f"Exam {exam_id}: FTS indexed {len(saved_ids)} questions")
+        except Exception as e:
+            logger.debug(f"FTS sync skipped: {e}")
+
+        # Generate vector embeddings (background, non-blocking)
+        try:
+            from app.services.vector_search import embed_questions
+            await embed_questions(db, saved_ids)
+            logger.info(f"Exam {exam_id}: Embedded {len(saved_ids)} questions")
+        except Exception as e:
+            logger.debug(f"Embedding skipped: {e}")
+
     except Exception as e:
         logger.error(f"Exam {exam_id}: Failed to save questions to bank: {e}")
         await db.rollback()

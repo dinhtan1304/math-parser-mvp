@@ -37,31 +37,54 @@ async def generate_questions(
 ):
     """Generate new questions based on criteria.
 
-    1. Query Question Bank for matching samples (up to 5)
-    2. Send samples + criteria to Gemini
-    3. Return generated questions
+    1. Try vector similarity search for best samples
+    2. Fallback to SQL filter if vectors unavailable
+    3. Send samples + criteria to Gemini
+    4. Return generated questions
     """
 
-    # Step 1: Find sample questions from bank
-    conditions = [Question.user_id == current_user.id]
+    sample_dicts = []
 
-    if req.question_type:
-        conditions.append(Question.question_type == req.question_type)
-    if req.topic:
-        conditions.append(Question.topic == req.topic)
-    if req.difficulty:
-        conditions.append(Question.difficulty == req.difficulty)
+    # Step 1a: Try vector similarity search (finds semantically similar questions)
+    try:
+        from app.services.vector_search import find_similar
+        query_text = f"{req.topic or 'Toan'} {req.question_type or ''} {req.difficulty or ''}"
+        similar = await find_similar(
+            db, query_text, current_user.id,
+            topic=req.topic or None,
+            difficulty=req.difficulty or None,
+            limit=MAX_SAMPLES,
+        )
+        if similar:
+            sim_ids = [s["question_id"] for s in similar]
+            result = await db.execute(
+                select(Question).where(Question.id.in_(sim_ids))
+            )
+            samples = result.scalars().all()
+            logger.info(f"Vector search found {len(samples)} samples")
+    except Exception as e:
+        logger.debug(f"Vector search skipped: {e}")
+        similar = []
 
-    result = await db.execute(
-        select(Question)
-        .where(*conditions)
-        .order_by(Question.created_at.desc())
-        .limit(MAX_SAMPLES)
-    )
-    samples = result.scalars().all()
+    # Step 1b: Fallback to SQL filter if vector search didn't find enough
+    if len(sample_dicts) == 0:
+        conditions = [Question.user_id == current_user.id]
+        if req.question_type:
+            conditions.append(Question.question_type == req.question_type)
+        if req.topic:
+            conditions.append(Question.topic == req.topic)
+        if req.difficulty:
+            conditions.append(Question.difficulty == req.difficulty)
+
+        result = await db.execute(
+            select(Question)
+            .where(*conditions)
+            .order_by(Question.created_at.desc())
+            .limit(MAX_SAMPLES)
+        )
+        samples = result.scalars().all()
 
     # Convert to dicts for AI service
-    sample_dicts = []
     for s in samples:
         sample_dicts.append({
             "question_text": s.question_text,
@@ -126,32 +149,63 @@ async def generate_exam(
     """Generate a mixed-difficulty exam.
 
     Sections define how many questions per difficulty level.
+    Uses vector search for smarter sample selection.
     """
-    # Get diverse samples from bank (across difficulties)
-    conditions = [Question.user_id == current_user.id]
-    if req.topic:
-        conditions.append(Question.topic == req.topic)
-    if req.question_type:
-        conditions.append(Question.question_type == req.question_type)
+    # Try vector search first
+    sample_dicts = []
+    try:
+        from app.services.vector_search import find_similar
+        query_text = f"{req.topic or 'Toan'} {req.question_type or ''}"
+        similar = await find_similar(
+            db, query_text, current_user.id,
+            topic=req.topic or None,
+            limit=10,
+        )
+        if similar:
+            sim_ids = [s["question_id"] for s in similar]
+            result = await db.execute(
+                select(Question).where(Question.id.in_(sim_ids))
+            )
+            samples = result.scalars().all()
+            sample_dicts = [
+                {
+                    "question_text": s.question_text,
+                    "type": s.question_type,
+                    "topic": s.topic,
+                    "difficulty": s.difficulty,
+                    "answer": s.answer or "",
+                }
+                for s in samples
+            ]
+            logger.info(f"Exam: vector search found {len(sample_dicts)} samples")
+    except Exception as e:
+        logger.debug(f"Exam vector search skipped: {e}")
 
-    result = await db.execute(
-        select(Question)
-        .where(*conditions)
-        .order_by(Question.created_at.desc())
-        .limit(10)
-    )
-    samples = result.scalars().all()
+    # Fallback to SQL filter
+    if not sample_dicts:
+        conditions = [Question.user_id == current_user.id]
+        if req.topic:
+            conditions.append(Question.topic == req.topic)
+        if req.question_type:
+            conditions.append(Question.question_type == req.question_type)
 
-    sample_dicts = [
-        {
-            "question_text": s.question_text,
-            "type": s.question_type,
-            "topic": s.topic,
-            "difficulty": s.difficulty,
-            "answer": s.answer or "",
-        }
-        for s in samples
-    ]
+        result = await db.execute(
+            select(Question)
+            .where(*conditions)
+            .order_by(Question.created_at.desc())
+            .limit(10)
+        )
+        samples = result.scalars().all()
+        sample_dicts = [
+            {
+                "question_text": s.question_text,
+                "type": s.question_type,
+                "topic": s.topic,
+                "difficulty": s.difficulty,
+                "answer": s.answer or "",
+            }
+            for s in samples
+        ]
 
     sections = [{"difficulty": s.difficulty, "count": s.count} for s in req.sections]
 
