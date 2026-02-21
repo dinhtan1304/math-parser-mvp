@@ -27,11 +27,55 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class AIProvider(Enum):
     CLAUDE = "claude"
     GEMINI = "gemini"
     AUTO = "auto"
+
+
+# ── Structured output schema (Sprint 2, Task 10) ──
+# Gemini response_schema guarantees valid JSON matching this structure.
+# Eliminates ~90% of JSON repair logic.
+PARSE_SCHEMA = {
+    "type": "ARRAY",
+    "items": {
+        "type": "OBJECT",
+        "properties": {
+            "question": {
+                "type": "STRING",
+                "description": "Full question text with LaTeX math notation"
+            },
+            "type": {
+                "type": "STRING",
+                "description": "TL, TN, Rut gon bieu thuc, So sanh, Chung minh, Tim GTNN, Giai phuong trinh"
+            },
+            "topic": {
+                "type": "STRING",
+                "description": "Curriculum topic name"
+            },
+            "difficulty": {
+                "type": "STRING",
+                "description": "NB, TH, VD, or VDC"
+            },
+            "answer": {
+                "type": "STRING",
+                "description": "Final answer with LaTeX if needed"
+            },
+            "solution_steps": {
+                "type": "ARRAY",
+                "items": {"type": "STRING"},
+                "description": "Step-by-step solution with LaTeX"
+            },
+        },
+        "required": ["question", "type", "topic", "difficulty",
+                      "answer", "solution_steps"],
+    }
+}
 
 
 class AIQuestionParser:
@@ -380,7 +424,7 @@ Now extract ALL visible questions:"""
         self._client = None
         
         if not self.gemini_api_key:
-            print("⚠️ No GOOGLE_API_KEY found")
+            logger.warning("No GOOGLE_API_KEY found")
             return
 
         try:
@@ -388,15 +432,12 @@ Now extract ALL visible questions:"""
 
             self._client = genai.Client(api_key=self.gemini_api_key)
 
-            print(f"✅ Gemini (google-genai) initialized")
-            print(f"🤖 Model: {self.gemini_model}")
-            print(f"⚡ Concurrency: {self.max_concurrency}")
-            print(f"📦 Max chunk size: {self.max_chunk_size}")
+            logger.info(f"Gemini initialized: model={self.gemini_model}, concurrency={self.max_concurrency}, chunk={self.max_chunk_size}")
 
         except ImportError:
-            print("⚠️ google-genai not installed. Run: pip install google-genai")
+            logger.error("google-genai not installed. Run: pip install google-genai")
         except Exception as e:
-            print(f"⚠️ Gemini init error: {e}")
+            logger.error(f"Gemini init error: {e}")
 
     
     def _get_available_provider(self) -> Optional[AIProvider]:
@@ -412,7 +453,7 @@ Now extract ALL visible questions:"""
         
         text = self._clean_text(text)
         start_time = time.time()
-        print(f"📄 Document length: {len(text):,} chars")
+        logger.info(f"Document length: {len(text):,} chars")
         
         # Reset answer pool for new parse
         self._answer_pool = {}
@@ -424,7 +465,7 @@ Now extract ALL visible questions:"""
             result = await self._parse_single(text, chunk_id=0)
         
         elapsed = time.time() - start_time
-        print(f"⏱️ Total time: {elapsed:.1f}s ({len(result)} questions)")
+        logger.info(f"Total time: {elapsed:.1f}s ({len(result)} questions)")
         return result
     
     async def parse_images(self, images: List[Dict], progress_callback: Optional[Callable[[int, int], None]] = None) -> List[Dict[str, Any]]:
@@ -443,7 +484,7 @@ Now extract ALL visible questions:"""
         
         start_time = time.time()
         total_pages = len(images)
-        print(f"📄 Processing {total_pages} page images with Vision API")
+        logger.info(f"Processing {total_pages} page images with Vision API")
         
         # Reset answer pool
         self._answer_pool = {}
@@ -453,10 +494,10 @@ Now extract ALL visible questions:"""
         # For larger PDFs, use batch_size of 10 for better extraction
         if total_pages <= 15:
             batch_size = total_pages  # Send all at once
-            print(f"📄 Small PDF detected - sending all {total_pages} pages at once for better accuracy")
+            logger.info(f"Small PDF detected - sending all {total_pages} pages at once for better accuracy")
         else:
             batch_size = 10  # Increased from 3 to 10 for better context
-            print(f"📄 Large PDF detected - processing in batches of {batch_size} pages")
+            logger.info(f"Large PDF detected - processing in batches of {batch_size} pages")
         
         all_questions = []
         seen_hashes = set()
@@ -465,7 +506,7 @@ Now extract ALL visible questions:"""
             batch_end = min(batch_start + batch_size, total_pages)
             batch_images = images[batch_start:batch_end]
             
-            print(f"🖼️ Processing pages {batch_start + 1}-{batch_end}/{total_pages}...")
+            logger.info(f"Processing pages {batch_start + 1}-{batch_end}/{total_pages}...")
             
             async with self._semaphore:
                 result = await self._call_gemini_vision(batch_images)
@@ -484,74 +525,101 @@ Now extract ALL visible questions:"""
         all_questions = self._match_answers_from_pool(all_questions)
         
         elapsed = time.time() - start_time
-        print(f"⏱️ Vision processing total: {elapsed:.1f}s ({len(all_questions)} questions)")
+        logger.info(f"Vision processing total: {elapsed:.1f}s ({len(all_questions)} questions)")
         return all_questions
     
     async def _call_gemini_vision(self, images: List[Dict]) -> List[Dict[str, Any]]:
-        """Call Gemini Vision API with images"""
+        """Call Gemini Vision API with native async + structured output.
+
+        Sprint 2: native async (Task 9) + schema mode (Task 10).
+        """
         if not self._client:
-            print("⚠️ No Gemini client available")
+            logger.warning("No Gemini client available")
             return []
-        
-        loop = asyncio.get_running_loop()
-        
-        def call_api():
-            from google.genai import types
-            
-            try:
-                # Build content parts - text prompt + images
-                parts = [self.VISION_PROMPT]  # Text as string
-                
-                # Add images as Part objects
-                for img in images:
-                    parts.append(types.Part.from_bytes(
-                        data=base64.b64decode(img["data"]),
-                        mime_type=img.get("mime_type", "image/jpeg")
-                    ))
-                
-                # Call API with JSON mode
-                response = self._client.models.generate_content(
-                    model=self.gemini_model,
-                    contents=parts,  # List of string + Part objects
-                    config=types.GenerateContentConfig(
-                        system_instruction=self.SYSTEM_PROMPT,
-                        temperature=0,
-                        max_output_tokens=self.max_tokens,
-                        response_mime_type="application/json",
-                    )
-                )
-                
-                return response.text
-                
-            except Exception as e:
-                print(f"❌ Vision API error: {e}")
-                # Retry without JSON mode
-                try:
-                    response = self._client.models.generate_content(
-                        model=self.gemini_model,
-                        contents=parts,
-                        config=types.GenerateContentConfig(
-                            system_instruction=self.SYSTEM_PROMPT,
-                            temperature=0,
-                            max_output_tokens=self.max_tokens,
-                        )
-                    )
-                    return response.text
-                except Exception as e2:
-                    print(f"❌ Vision API retry failed: {e2}")
-                    return ""
-        
-        content = await loop.run_in_executor(None, call_api)
-        
+
+        from google.genai import types
+
+        # Build content parts — text prompt + images
+        parts = [self.VISION_PROMPT]
+        for img in images:
+            parts.append(types.Part.from_bytes(
+                data=base64.b64decode(img["data"]),
+                mime_type=img.get("mime_type", "image/jpeg"),
+            ))
+
+        content = ""
+
+        # ── Tier 1: Schema mode ──
+        try:
+            response = await self._client.aio.models.generate_content(
+                model=self.gemini_model,
+                contents=parts,
+                config=types.GenerateContentConfig(
+                    system_instruction=self.SYSTEM_PROMPT,
+                    temperature=0,
+                    max_output_tokens=self.max_tokens,
+                    response_mime_type="application/json",
+                    response_schema=PARSE_SCHEMA,
+                ),
+            )
+            content = self._safe_text(response)
+            if content:
+                result = self._extract_json(content)
+                if result:
+                    logger.info(f"Vision schema mode: {len(result)} questions from {len(images)} pages")
+                    return result
+        except Exception as e:
+            logger.warning(f"Vision schema mode failed: {e}")
+
+        # ── Tier 2: JSON mode ──
+        try:
+            response = await self._client.aio.models.generate_content(
+                model=self.gemini_model,
+                contents=parts,
+                config=types.GenerateContentConfig(
+                    system_instruction=self.SYSTEM_PROMPT,
+                    temperature=0,
+                    max_output_tokens=self.max_tokens,
+                    response_mime_type="application/json",
+                ),
+            )
+            content = self._safe_text(response)
+            if content:
+                result = self._extract_json(content)
+                if result:
+                    logger.info(f"Vision JSON mode: {len(result)} questions from {len(images)} pages")
+                    return result
+        except Exception as e:
+            logger.warning(f"Vision JSON mode failed: {e}")
+
+        # ── Tier 3: Plain text ──
+        try:
+            response = await self._client.aio.models.generate_content(
+                model=self.gemini_model,
+                contents=parts,
+                config=types.GenerateContentConfig(
+                    system_instruction=self.SYSTEM_PROMPT,
+                    temperature=0,
+                    max_output_tokens=self.max_tokens,
+                ),
+            )
+            content = self._safe_text(response)
+            if content:
+                result = self._extract_json(content)
+                logger.info(f"Vision plain text: {len(result)} questions from {len(images)} pages")
+                return result
+        except Exception as e:
+            logger.error(f"Vision all tiers failed: {e}")
+
         if not content:
             return []
-        
+
         result = self._extract_json(content)
-        print(f"✅ Vision extracted {len(result)} questions from {len(images)} pages")
+        logger.info(f"Vision extracted {len(result)} questions from {len(images)} pages")
         if len(result) == 0:
-            print(f"⚠️ WARNING: No questions extracted! Response preview: {content[:500]}...")
-        elif len(result) < len(images) * 0.5:  # Less than 0.5 questions per page on average
-            print(f"⚠️ WARNING: Low extraction rate ({len(result)} questions from {len(images)} pages). May need retry.")
+            logger.warning(f"No questions extracted! Response preview: {content[:500]}...")
+        elif len(result) < len(images) * 0.5:
+            logger.warning(f"Low extraction rate ({len(result)} questions from {len(images)} pages). May need retry.")
         return result
     
     async def _parse_single(self, text: str, chunk_id: int = 0) -> List[Dict[str, Any]]:
@@ -560,7 +628,7 @@ Now extract ALL visible questions:"""
             provider = self._get_available_provider()
             
             if not provider:
-                print("⚠️ No AI provider, using mock parser")
+                logger.warning("No AI provider, using mock parser")
                 return self._mock_parse(text)
             
             prompts = [
@@ -574,90 +642,136 @@ Now extract ALL visible questions:"""
             
             for attempt, prompt_template in enumerate(prompts):
                 try:
-                    print(f"🤖 Chunk {chunk_id} - Attempt {attempt + 1}/{len(prompts)}...")
+                    logger.info(f"Chunk {chunk_id} - Attempt {attempt + 1}/{len(prompts)}...")
                     result, raw_content = await self._call_gemini(text, prompt_template)
                     last_content = raw_content
                     
                     if result and len(result) > 0:
-                        print(f"✅ Chunk {chunk_id} - Extracted {len(result)} questions")
+                        logger.info(f"Chunk {chunk_id} - Extracted {len(result)} questions")
                         # Collect answers for cross-chunk matching
                         self._collect_answers(result)
                         return result
                     else:
-                        print(f"⚠️ Chunk {chunk_id} - Attempt {attempt + 1}: Empty result")
+                        logger.warning(f"Chunk {chunk_id} - Attempt {attempt + 1}: Empty result")
                         
                 except Exception as e:
                     last_error = e
-                    print(f"❌ Chunk {chunk_id} - Attempt {attempt + 1} failed: {e}")
+                    logger.error(f"Chunk {chunk_id} - Attempt {attempt + 1} failed: {e}")
                     await asyncio.sleep(0.5)
             
             # Try to salvage from last response
-            print(f"⚠️ Chunk {chunk_id} - Trying aggressive JSON extraction...")
+            logger.warning(f"Chunk {chunk_id} - Trying aggressive JSON extraction...")
             if last_content:
                 result = self._aggressive_extract_json(last_content)
                 if result:
-                    print(f"✅ Chunk {chunk_id} - Salvaged {len(result)} questions")
+                    logger.info(f"Chunk {chunk_id} - Salvaged {len(result)} questions")
                     self._collect_answers(result)
                     return result
             
-            print(f"❌ Chunk {chunk_id} - Falling back to mock parser")
+            logger.error(f"Chunk {chunk_id} - Falling back to mock parser")
             return self._mock_parse(text)
     
     async def _call_gemini(self, text: str, prompt_template: str) -> tuple[List[Dict], str]:
-        """Call Gemini API with JSON mode"""
+        """Call Gemini API with native async + structured output.
+
+        Sprint 2 optimizations:
+          - Task 9:  Native async (client.aio) instead of run_in_executor
+          - Task 10: 3-tier fallback with response_schema for guaranteed JSON
+
+        Tiers:
+          1. Schema mode (response_schema) → guaranteed valid JSON structure
+          2. JSON mode (response_mime_type only) → usually valid
+          3. Plain text → needs manual extraction
+        """
+        from google.genai import types
+
         prompt = prompt_template.format(text=text)
-        
-        loop = asyncio.get_running_loop()
-        
-        def call_api():
-            from google.genai import types
-            
-            try:
-                # Primary: with JSON mode
-                response = self._client.models.generate_content(
-                    model=self.gemini_model,
-                    contents=prompt,  # Just pass string directly!
-                    config=types.GenerateContentConfig(
-                        system_instruction=self.SYSTEM_PROMPT,
-                        temperature=0,
-                        max_output_tokens=self.max_tokens,
-                        response_mime_type="application/json",
-                    )
+
+        # ── Tier 1: Schema mode — guaranteed valid JSON ──
+        try:
+            response = await self._client.aio.models.generate_content(
+                model=self.gemini_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=self.SYSTEM_PROMPT,
+                    temperature=0,
+                    max_output_tokens=self.max_tokens,
+                    response_mime_type="application/json",
+                    response_schema=PARSE_SCHEMA,
                 )
+            )
+            content = self._safe_text(response)
+            if content:
+                result = self._extract_json(content)
+                if result:
+                    logger.info(f"Schema mode: {len(result)} questions")
+                    return result, content
+        except Exception as e:
+            logger.warning(f"Schema mode failed: {e}")
+
+        # ── Tier 2: JSON mode without schema ──
+        try:
+            response = await self._client.aio.models.generate_content(
+                model=self.gemini_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=self.SYSTEM_PROMPT,
+                    temperature=0,
+                    max_output_tokens=self.max_tokens,
+                    response_mime_type="application/json",
+                )
+            )
+            content = self._safe_text(response)
+            if content:
+                result = self._extract_json(content)
+                if result:
+                    logger.info(f"JSON mode: {len(result)} questions")
+                    return result, content
+        except Exception as e:
+            logger.warning(f"JSON mode failed: {e}")
+
+        # ── Tier 3: Plain text — manual extraction ──
+        try:
+            response = await self._client.aio.models.generate_content(
+                model=self.gemini_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=self.SYSTEM_PROMPT,
+                    temperature=0,
+                    max_output_tokens=self.max_tokens,
+                )
+            )
+            content = self._safe_text(response)
+            if content:
+                result = self._extract_json(content)
+                return result, content
+        except Exception as e:
+            logger.error(f"All Gemini tiers failed: {e}")
+
+        return [], ""
+
+    @staticmethod
+    def _safe_text(response) -> str:
+        """Safely extract text from Gemini response."""
+        try:
+            if hasattr(response, 'text') and response.text:
                 return response.text
-                
-            except Exception as e:
-                print(f"   JSON mode failed ({e}), trying without...")
-                
-                # Fallback: without JSON mode
-                try:
-                    response = self._client.models.generate_content(
-                        model=self.gemini_model,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            system_instruction=self.SYSTEM_PROMPT,
-                            temperature=0,
-                            max_output_tokens=self.max_tokens,
-                        )
-                    )
-                    return response.text
-                except Exception as e2:
-                    print(f"   Fallback also failed: {e2}")
-                    return ""
-        
-        content = await loop.run_in_executor(None, call_api)
-        
-        if not content:
-            return [], ""
-        
-        result = self._extract_json(content)
-        return result, content
+        except Exception:
+            pass
+        try:
+            for c in response.candidates:
+                for p in c.content.parts:
+                    if hasattr(p, 'text') and p.text:
+                        return p.text
+        except Exception:
+            pass
+        return ""
     
     async def _parse_chunked_parallel(self, text: str, progress_callback: Optional[Callable] = None) -> List[Dict[str, Any]]:
         """⚡ Parallel chunk processing with improved merging"""
         chunks = self._smart_chunk(text)
         total_chunks = len(chunks)
-        print(f"📄 Split into {total_chunks} chunks (max {self.max_concurrency} parallel)")
+        logger.info(f"Split into {total_chunks} chunks (max {self.max_concurrency} parallel)")
         
         completed = [0]
         
@@ -667,7 +781,7 @@ Now extract ALL visible questions:"""
             elapsed = time.time() - start
             
             completed[0] += 1
-            print(f"✅ Chunk {idx + 1}/{total_chunks} done ({len(result)} questions, {elapsed:.1f}s)")
+            logger.info(f"Chunk {idx + 1}/{total_chunks} done ({len(result)} questions, {elapsed:.1f}s)")
             
             if progress_callback:
                 progress_callback(completed[0], total_chunks)
@@ -682,7 +796,7 @@ Now extract ALL visible questions:"""
         sorted_results = []
         for r in results:
             if isinstance(r, Exception):
-                print(f"❌ Chunk failed: {r}")
+                logger.error(f"Chunk failed: {r}")
                 continue
             sorted_results.append(r)
         
@@ -702,7 +816,7 @@ Now extract ALL visible questions:"""
         # Cross-chunk answer matching
         all_questions = self._match_answers_from_pool(all_questions)
         
-        print(f"✅ Total: {len(all_questions)} unique questions")
+        logger.info(f"Total: {len(all_questions)} unique questions")
         return all_questions
     
     def _collect_answers(self, questions: List[Dict]):
@@ -820,14 +934,14 @@ Now extract ALL visible questions:"""
     def _extract_json(self, content: str) -> List[Dict]:
         """Extract JSON from response with robust error handling"""
         if not content:
-            print("⚠️ _extract_json: Content is empty")
+            logger.warning("_extract_json: Content is empty")
             return []
         
         content = content.strip()
         
         # Check if truncated
         if not content.rstrip().endswith(']'):
-            print(f"⚠️ JSON may be truncated. Last 100 chars: ...{content[-100:]}")
+            logger.warning(f"JSON may be truncated. Last 100 chars: ...{content[-100:]}")
         
         # Pre-fix: Fix triple backslashes (common Gemini issue with LaTeX)
         content = re.sub(r'\\\\\\+', r'\\\\', content)
@@ -836,10 +950,10 @@ Now extract ALL visible questions:"""
         try:
             result = json.loads(content)
             if isinstance(result, list):
-                print(f"✅ Direct parse success: {len(result)} items")
+                logger.info(f"Direct parse success: {len(result)} items")
                 return result
         except json.JSONDecodeError as e:
-            print(f"⚠️ Direct parse failed: {e}")
+            logger.warning(f"Direct parse failed: {e}")
         
         # Method 2: Remove markdown
         if "```json" in content:
@@ -848,10 +962,10 @@ Now extract ALL visible questions:"""
                 json_str = re.sub(r'\\\\\\+', r'\\\\', json_str)  # Fix triple backslash
                 result = json.loads(json_str)
                 if isinstance(result, list):
-                    print(f"✅ Markdown parse success: {len(result)} items")
+                    logger.info(f"Markdown parse success: {len(result)} items")
                     return result
             except Exception as e:
-                print(f"⚠️ Markdown parse failed: {e}")
+                logger.warning(f"Markdown parse failed: {e}")
         
         if "```" in content:
             for part in content.split("```"):
@@ -875,7 +989,7 @@ Now extract ALL visible questions:"""
         
         start_idx = content.find('[')
         if start_idx == -1:
-            print("⚠️ No '[' found in content")
+            logger.warning("No '[' found in content")
             return []
         
         # Find matching closing bracket
@@ -913,9 +1027,9 @@ Now extract ALL visible questions:"""
             last_bracket = content.rfind(']')
             if last_bracket > start_idx:
                 end_idx = last_bracket + 1
-                print(f"⚠️ Brackets unmatched, using last ']' at position {last_bracket}")
+                logger.warning(f"Brackets unmatched, using last ']' at position {last_bracket}")
             else:
-                print("⚠️ Could not find matching ']'")
+                logger.warning("Could not find matching ']'")
                 return []
         
         json_str = content[start_idx:end_idx]
@@ -941,20 +1055,20 @@ Now extract ALL visible questions:"""
             try:
                 current = fix(current)
             except Exception as e:
-                print(f"⚠️ Fix '{name}' failed: {e}")
+                logger.warning(f"Fix '{name}' failed: {e}")
         
         # Try to parse
         try:
             result = json.loads(current)
             if isinstance(result, list):
-                print(f"✅ Aggressive parse success after fixes: {len(result)} items")
+                logger.info(f"Aggressive parse success after fixes: {len(result)} items")
                 return result
         except json.JSONDecodeError as e:
-            print(f"⚠️ Parse after all fixes failed: {e}")
-            print(f"⚠️ JSON snippet (first 500 chars): {current[:500]}")
+            logger.warning(f"Parse after all fixes failed: {e}")
+            logger.debug(f"JSON snippet (first 500 chars): {current[:500]}")
         
         # Last resort: Try to extract individual objects
-        print("⚠️ Trying to extract individual JSON objects...")
+        logger.warning("Trying to extract individual JSON objects...")
         return self._extract_individual_objects(current)
     
     def _mock_parse(self, text: str) -> List[Dict[str, Any]]:
@@ -1078,9 +1192,9 @@ Now extract ALL visible questions:"""
                     pass
         
         if objects:
-            print(f"✅ Extracted {len(objects)} individual objects")
+            logger.info(f"Extracted {len(objects)} individual objects")
         else:
-            print("⚠️ Could not extract any individual objects")
+            logger.warning("Could not extract any individual objects")
         
         return objects
 
@@ -1141,6 +1255,6 @@ if __name__ == "__main__":
         """
         
         result = await parser.parse(sample)
-        print(json.dumps(result, indent=2, ensure_ascii=False))
+        logger.debug(json.dumps(result, indent=2, ensure_ascii=False))
     
     asyncio.run(test())

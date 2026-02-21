@@ -2997,7 +2997,24 @@
           clearFile();
         });
 
+        const MAX_FILE_SIZE_MB = 50;
+        const MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024;
+
         function setFile(file) {
+          // ── Size check ──
+          if (file.size > MAX_FILE_SIZE) {
+            const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+            toast(
+              `File quá lớn (${sizeMB}MB). Tối đa ${MAX_FILE_SIZE_MB}MB.`,
+              "error",
+            );
+            return;
+          }
+          if (file.size === 0) {
+            toast("File trống, vui lòng chọn file khác.", "error");
+            return;
+          }
+
           currentFile = file;
           const ext = file.name.split(".").pop().toLowerCase();
           $("fileThumb").textContent = fileIcons[ext] || "📄";
@@ -3348,9 +3365,39 @@
           loadBankQuestions();
         };
 
-        // Enter key in search
+        // ── Debounced search (Task 6) ──
+        let _searchTimer = null;
+        function debouncedSearch(delay) {
+          clearTimeout(_searchTimer);
+          _searchTimer = setTimeout(() => {
+            bankPage = 1;
+            loadBankQuestions();
+          }, delay);
+        }
+
+        // Keyword: debounce 400ms on typing, immediate on Enter
+        $("filterKeyword").addEventListener("input", () =>
+          debouncedSearch(400),
+        );
         $("filterKeyword").addEventListener("keydown", (e) => {
-          if (e.key === "Enter") searchBank();
+          if (e.key === "Enter") {
+            clearTimeout(_searchTimer);
+            searchBank();
+          }
+        });
+
+        // Dropdowns: search immediately on change
+        $("filterType").addEventListener("change", () => {
+          bankPage = 1;
+          loadBankQuestions();
+        });
+        $("filterTopic").addEventListener("change", () => {
+          bankPage = 1;
+          loadBankQuestions();
+        });
+        $("filterDiff").addEventListener("change", () => {
+          bankPage = 1;
+          loadBankQuestions();
         });
 
         // Load bank count on startup
@@ -3631,7 +3678,10 @@
                 headers: { ...authHeaders, "Content-Type": "application/json" },
                 body: JSON.stringify(payload),
               });
-              if (!res.ok) throw new Error("Export failed");
+              if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || "Export failed: " + res.status);
+              }
               const html = await res.text();
               const w = window.open("", "_blank");
               if (w) {
@@ -3649,7 +3699,10 @@
                 headers: { ...authHeaders, "Content-Type": "application/json" },
                 body: JSON.stringify(payload),
               });
-              if (!res.ok) throw new Error("Export failed");
+              if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || "Export failed: " + res.status);
+              }
               const blob = await res.blob();
               const cd = res.headers.get("Content-Disposition") || "";
               const fnMatch = cd.match(/filename="?([^"]+)"?/);

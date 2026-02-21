@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import text
 from contextlib import asynccontextmanager
 import os
 
@@ -68,6 +69,31 @@ app.include_router(export.router, prefix=f"{settings.API_V1_STR}/export", tags=[
 
 # Templates
 templates = Jinja2Templates(directory="app/templates")
+
+
+# ── Health check (Sprint 1, Task 8) ──
+@app.get("/health", tags=["system"])
+async def health_check():
+    """Health check for Docker, Railway, and load balancers."""
+    import time
+
+    checks = {"status": "ok", "timestamp": time.time()}
+
+    # DB connectivity
+    try:
+        from app.db.session import AsyncSessionLocal
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(text("SELECT 1"))
+            result.scalar()
+        checks["database"] = "connected"
+    except Exception as e:
+        checks["database"] = f"error: {str(e)[:100]}"
+        checks["status"] = "degraded"
+
+    # Gemini API key configured
+    checks["ai_configured"] = bool(settings.GOOGLE_API_KEY)
+
+    return checks
 
 # Frontend Routes
 @app.get("/", response_class=HTMLResponse)

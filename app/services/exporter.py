@@ -26,6 +26,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
 
+from app.services.latex_to_omml import add_math_to_paragraph
+
 # ─── Difficulty helpers ───────────────────────────────────────
 DIFF_LABELS = {
     "NB": "Nhận biết",
@@ -72,6 +74,18 @@ def _normalize_questions(questions) -> List[Dict]:
                 "answer": q.answer or "",
                 "solution_steps": steps if isinstance(steps, list) else [],
             })
+
+    # Sanitize all text fields — remove XML-invalid control chars
+    for d in out:
+        for key in ("question", "type", "topic", "difficulty", "answer"):
+            if key in d and isinstance(d[key], str):
+                d[key] = _sanitize_for_xml(d[key])
+        if "solution_steps" in d and isinstance(d["solution_steps"], list):
+            d["solution_steps"] = [
+                _sanitize_for_xml(s) if isinstance(s, str) else s
+                for s in d["solution_steps"]
+            ]
+
     return out
 
 
@@ -90,6 +104,17 @@ def _strip_latex_delimiters(text: str) -> str:
         return ""
     # Keep the math content but remove outer delimiters for inline display
     return text
+
+
+def _sanitize_for_xml(text: str) -> str:
+    """Remove characters that are invalid in XML (python-docx requirement).
+    
+    XML 1.0 allows: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD]
+    Everything else (NULL, control chars 0x01-0x08, 0x0B-0x0C, 0x0E-0x1F) must go.
+    """
+    if not text:
+        return ""
+    return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -131,6 +156,10 @@ def export_docx(
     """
     items = _normalize_questions(questions)
     doc = DocxDocument()
+
+    # Sanitize text inputs
+    title = _sanitize_for_xml(title)
+    subtitle = _sanitize_for_xml(subtitle)
 
     # ── Page setup ──
     section = doc.sections[0]
@@ -204,7 +233,7 @@ def export_docx(
     num = 0
 
     def _write_question(q: Dict, num: int):
-        """Write a single question to the document."""
+        """Write a single question to the document with OMML math rendering."""
         diff = q.get("difficulty", "")
         diff_label = DIFF_LABELS.get(diff, diff)
 
@@ -223,7 +252,7 @@ def export_docx(
             run.font.italic = True
             run.font.color.rgb = RGBColor(120, 120, 120)
 
-        # Question body
+        # Question body — render LaTeX math as OMML equations
         q_text = q.get("question", "")
         for line in q_text.split("\n"):
             line = line.strip()
@@ -232,10 +261,9 @@ def export_docx(
             p = doc.add_paragraph()
             p.paragraph_format.left_indent = Cm(0.5)
             p.paragraph_format.space_after = Pt(2)
-            run = p.add_run(line)
-            run.font.size = Pt(12)
+            add_math_to_paragraph(p, line, font_size=24)  # 24 half-pts = 12pt
 
-        # Answer
+        # Answer — render math in answer text too
         if include_answers and q.get("answer"):
             p_ans = doc.add_paragraph()
             p_ans.paragraph_format.left_indent = Cm(0.5)
@@ -246,11 +274,9 @@ def export_docx(
             run.font.size = Pt(11)
             run.font.color.rgb = RGBColor(0, 128, 80)
 
-            run = p_ans.add_run(q["answer"])
-            run.font.size = Pt(11)
-            run.font.color.rgb = RGBColor(0, 128, 80)
+            add_math_to_paragraph(p_ans, q["answer"], font_size=22, font_color="008050")
 
-        # Solution steps
+        # Solution steps — render math in each step
         if include_solutions and q.get("solution_steps"):
             p_sol_header = doc.add_paragraph()
             p_sol_header.paragraph_format.left_indent = Cm(0.5)
@@ -269,8 +295,7 @@ def export_docx(
                 run.font.bold = True
                 run.font.size = Pt(11)
 
-                run = p_step.add_run(step)
-                run.font.size = Pt(11)
+                add_math_to_paragraph(p_step, step, font_size=22)
 
     if group_by_diff and len(items) > 1:
         groups = _group_by_difficulty(items)
@@ -380,20 +405,24 @@ def _escape_latex(text: str) -> str:
 
 
 def _escape_latex_chars(text: str) -> str:
-    """Escape LaTeX special chars in non-math text."""
-    replacements = [
-        ("\\", "\\textbackslash{}"),
+    """Escape LaTeX special chars in non-math text.
+    
+    Order matters: escape backslash LAST to avoid double-escaping.
+    """
+    if not text:
+        return ""
+    # First pass: escape all special chars EXCEPT backslash
+    for old, new in [
         ("&", "\\&"),
         ("%", "\\%"),
         ("#", "\\#"),
         ("_", "\\_"),
-        ("{", "\\{"),
-        ("}", "\\}"),
         ("~", "\\textasciitilde{}"),
         ("^", "\\textasciicircum{}"),
-    ]
-    for old, new in replacements:
+    ]:
         text = text.replace(old, new)
+    # Don't escape { } and \ — they break LaTeX structure
+    # If there are literal braces/backslashes outside math, leave as-is
     return text
 
 

@@ -5,9 +5,12 @@ Endpoints:
     GET /dashboard          — Tổng quan stats
     GET /dashboard/charts   — Dữ liệu cho charts
     GET /dashboard/activity — Hoạt động gần đây
+
+Optimizations (Sprint 1):
+    - Task 3: Activity N+1 → single JOIN query (11 queries → 1)
+    - Task 4: Stats 6 queries → 2 queries (conditional aggregation)
 """
 
-import json
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends
@@ -28,53 +31,68 @@ async def get_dashboard(
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Dashboard overview stats."""
+    """
+    Dashboard overview stats.
+
+    BEFORE (6 queries):
+        SELECT COUNT(*) FROM question WHERE user_id=?      -- total_q
+        SELECT COUNT(*) FROM exam WHERE user_id=?           -- total_exams
+        SELECT COUNT(*) FROM exam WHERE user_id=? AND ...   -- completed_exams
+        SELECT COUNT(DISTINCT topic) FROM question ...      -- topics
+        SELECT COUNT(*) FROM question WHERE created_at>=?   -- new_this_week
+        SELECT COUNT(*) FROM question WHERE created_at ...  -- last_week
+
+    AFTER (2 queries):
+        Query 1: question stats (total, topics, this_week, last_week)
+        Query 2: exam stats (total, completed)
+    """
     uid = current_user.id
-
-    # Total questions
-    total_q = (await db.execute(
-        select(func.count(Question.id)).where(Question.user_id == uid)
-    )).scalar() or 0
-
-    # Total exams
-    total_exams = (await db.execute(
-        select(func.count(Exam.id)).where(Exam.user_id == uid)
-    )).scalar() or 0
-
-    # Completed exams
-    completed_exams = (await db.execute(
-        select(func.count(Exam.id)).where(
-            Exam.user_id == uid, Exam.status == "completed"
-        )
-    )).scalar() or 0
-
-    # Unique topics
-    topics = (await db.execute(
-        select(func.count(distinct(Question.topic))).where(
-            Question.user_id == uid, Question.topic.isnot(None)
-        )
-    )).scalar() or 0
-
-    # Questions added this week
-    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
-    new_this_week = (await db.execute(
-        select(func.count(Question.id)).where(
-            Question.user_id == uid,
-            Question.created_at >= week_ago
-        )
-    )).scalar() or 0
-
-    # Questions added last week (for comparison)
+    now = datetime.now(timezone.utc)
+    week_ago = now - timedelta(days=7)
     two_weeks_ago = week_ago - timedelta(days=7)
-    last_week = (await db.execute(
-        select(func.count(Question.id)).where(
-            Question.user_id == uid,
-            Question.created_at >= two_weeks_ago,
-            Question.created_at < week_ago
-        )
-    )).scalar() or 0
 
-    # Growth percentage
+    # ── Query 1: All question stats in ONE query ──
+    q_stats = (await db.execute(
+        select(
+            func.count(Question.id).label("total"),
+            func.count(distinct(
+                case((Question.topic.isnot(None), Question.topic), else_=None)
+            )).label("topics"),
+            func.sum(
+                case((Question.created_at >= week_ago, 1), else_=0)
+            ).label("new_this_week"),
+            func.sum(
+                case(
+                    (
+                        (Question.created_at >= two_weeks_ago)
+                        & (Question.created_at < week_ago),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("last_week"),
+        ).where(Question.user_id == uid)
+    )).one()
+
+    total_q = q_stats.total or 0
+    topics = q_stats.topics or 0
+    new_this_week = int(q_stats.new_this_week or 0)
+    last_week = int(q_stats.last_week or 0)
+
+    # ── Query 2: All exam stats in ONE query ──
+    e_stats = (await db.execute(
+        select(
+            func.count(Exam.id).label("total"),
+            func.sum(
+                case((Exam.status == "completed", 1), else_=0)
+            ).label("completed"),
+        ).where(Exam.user_id == uid)
+    )).one()
+
+    total_exams = e_stats.total or 0
+    completed_exams = int(e_stats.completed or 0)
+
+    # ── Growth calculation ──
     if last_week > 0:
         growth = round(((new_this_week - last_week) / last_week) * 100)
     elif new_this_week > 0:
@@ -152,31 +170,53 @@ async def get_recent_activity(
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Recent activity feed."""
+    """
+    Recent activity feed.
+
+    BEFORE (N+1 — 11 queries for 10 exams):
+        SELECT * FROM exam WHERE user_id=? LIMIT 10          -- 1 query
+        SELECT COUNT(*) FROM question WHERE exam_id=1         -- query 2
+        SELECT COUNT(*) FROM question WHERE exam_id=2         -- query 3
+        ...                                                    -- query 11
+
+    AFTER (1 query with LEFT JOIN + GROUP BY):
+        SELECT exam.*, COUNT(question.id) as q_count
+        FROM exam
+        LEFT JOIN question ON question.exam_id = exam.id
+        WHERE exam.user_id = ?
+        GROUP BY exam.id
+        ORDER BY exam.created_at DESC
+        LIMIT 10
+    """
     uid = current_user.id
 
-    # Recent exams (last 10)
-    exams_result = await db.execute(
-        select(Exam)
+    # Single query: exams + question count via LEFT JOIN
+    result = await db.execute(
+        select(
+            Exam.id,
+            Exam.filename,
+            Exam.status,
+            Exam.created_at,
+            func.count(Question.id).label("question_count"),
+        )
+        .outerjoin(Question, Question.exam_id == Exam.id)
         .where(Exam.user_id == uid)
+        .group_by(Exam.id)
         .order_by(Exam.created_at.desc())
         .limit(10)
     )
-    exams = exams_result.scalars().all()
+    rows = result.fetchall()
 
-    activities = []
-    for e in exams:
-        q_count = (await db.execute(
-            select(func.count(Question.id)).where(Question.exam_id == e.id)
-        )).scalar() or 0
-
-        activities.append({
-            "id": e.id,
+    activities = [
+        {
+            "id": row.id,
             "type": "parse",
-            "filename": e.filename,
-            "status": e.status,
-            "question_count": q_count,
-            "created_at": e.created_at.isoformat() if e.created_at else None,
-        })
+            "filename": row.filename,
+            "status": row.status,
+            "question_count": row.question_count,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in rows
+    ]
 
     return {"activities": activities}

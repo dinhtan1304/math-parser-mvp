@@ -215,20 +215,32 @@ async def parse_file_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a math exam file and parse it into structured JSON."""
+    from app.core.config import settings
+
     allowed_extensions = {'.pdf', '.docx', '.doc', '.png', '.jpg', '.jpeg', '.txt', '.md'}
     file_ext = os.path.splitext(file.filename or "")[1].lower()
 
     if file_ext not in allowed_extensions:
         raise HTTPException(status_code=400, detail=f"File type '{file_ext}' not supported")
 
-    # Save file
+    # ── Read + validate size ──
+    content = await file.read()
+
+    if not content:
+        raise HTTPException(status_code=400, detail="File trống")
+
+    max_bytes = settings.MAX_UPLOAD_BYTES
+    if len(content) > max_bytes:
+        size_mb = len(content) / (1024 * 1024)
+        raise HTTPException(
+            status_code=413,
+            detail=f"File quá lớn ({size_mb:.1f}MB). Tối đa {settings.MAX_UPLOAD_SIZE_MB}MB.",
+        )
+
+    # ── Save file ──
     file_id = str(uuid.uuid4())[:8]
     safe_filename = f"{file_id}_{file.filename}"
     file_path = os.path.join(UPLOAD_DIR, safe_filename)
-
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Empty file")
 
     with open(file_path, "wb") as f:
         f.write(content)

@@ -10,7 +10,7 @@ from pydantic import BaseModel
 class QuestionResponse(BaseModel):
     """Single question returned by API."""
     id: int
-    exam_id: int
+    exam_id: Optional[int] = None
     question_text: str
     question_type: Optional[str] = None
     topic: Optional[str] = None
@@ -22,6 +22,31 @@ class QuestionResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class QuestionUpdate(BaseModel):
+    """Update fields for a question. All fields optional — only send what changed."""
+    question_text: Optional[str] = None
+    question_type: Optional[str] = None
+    topic: Optional[str] = None
+    difficulty: Optional[str] = None
+    answer: Optional[str] = None
+    solution_steps: Optional[str] = None  # JSON string
+
+
+class QuestionBulkCreate(BaseModel):
+    """Bulk create questions (e.g. save generated questions to bank)."""
+    questions: List['QuestionCreateItem']
+
+
+class QuestionCreateItem(BaseModel):
+    """Single question to create."""
+    question_text: str
+    question_type: Optional[str] = "TN"
+    topic: Optional[str] = ""
+    difficulty: Optional[str] = "TH"
+    answer: Optional[str] = ""
+    solution_steps: Optional[str] = "[]"
 
 
 class QuestionListResponse(BaseModel):

@@ -8,8 +8,8 @@ from app.db.base_class import Base
 class Question(Base):
     id = Column(Integer, primary_key=True, index=True)
 
-    # Link back to source exam
-    exam_id = Column(Integer, ForeignKey("exam.id", ondelete="CASCADE"), nullable=False)
+    # Link back to source exam (NULL for AI-generated questions)
+    exam_id = Column(Integer, ForeignKey("exam.id", ondelete="CASCADE"), nullable=True)
 
     # Link to user who uploaded the exam
     user_id = Column(Integer, ForeignKey("user.id"), nullable=False)

@@ -106,9 +106,20 @@ async def _get_bank_questions(
 
 
 def _safe_filename(text: str) -> str:
-    """Create safe filename from text."""
+    """Create safe ASCII filename from text (Vietnamese-aware)."""
     import re
-    clean = re.sub(r'[^\w\s\-]', '', text)
+    import unicodedata
+    # Vietnamese-specific replacements before NFKD
+    vi_map = str.maketrans({
+        'Đ': 'D', 'đ': 'd',
+        'Ơ': 'O', 'ơ': 'o', 'Ư': 'U', 'ư': 'u',
+    })
+    text = text.translate(vi_map)
+    # Normalize unicode → decompose → remove diacritics
+    nfkd = unicodedata.normalize('NFKD', text)
+    ascii_text = nfkd.encode('ascii', 'ignore').decode('ascii')
+    # Keep only alphanumeric, space, dash
+    clean = re.sub(r'[^\w\s\-]', '', ascii_text)
     clean = re.sub(r'\s+', '_', clean.strip())
     return clean[:60] or "export"
 
@@ -126,15 +137,19 @@ async def export_generated_docx(
     if not req.questions:
         raise HTTPException(400, "Danh sách câu hỏi trống")
 
-    buf = export_docx(
-        [q.model_dump() for q in req.questions],
-        title=req.title,
-        subtitle=req.subtitle,
-        include_answers=req.include_answers,
-        include_solutions=req.include_solutions,
-        group_by_diff=req.group_by_diff,
-        exam_info=req.exam_info,
-    )
+    try:
+        buf = export_docx(
+            [q.model_dump() for q in req.questions],
+            title=req.title,
+            subtitle=req.subtitle,
+            include_answers=req.include_answers,
+            include_solutions=req.include_solutions,
+            group_by_diff=req.group_by_diff,
+            exam_info=req.exam_info,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Lỗi tạo file DOCX: {str(e)[:200]}")
+
     filename = _safe_filename(req.subtitle or req.title) + ".docx"
     return StreamingResponse(
         buf,
@@ -152,20 +167,23 @@ async def export_generated_docx_split(
     if not req.questions:
         raise HTTPException(400, "Danh sách câu hỏi trống")
 
-    result = export_docx_split(
-        [q.model_dump() for q in req.questions],
-        title=req.title,
-        subtitle=req.subtitle,
-        exam_info=req.exam_info,
-    )
+    try:
+        result = export_docx_split(
+            [q.model_dump() for q in req.questions],
+            title=req.title,
+            subtitle=req.subtitle,
+            exam_info=req.exam_info,
+        )
 
-    # Package into ZIP
-    zip_buf = io.BytesIO()
-    base = _safe_filename(req.subtitle or req.title)
-    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(f"{base}_De.docx", result["exam"].read())
-        zf.writestr(f"{base}_DapAn.docx", result["answers"].read())
-    zip_buf.seek(0)
+        # Package into ZIP
+        zip_buf = io.BytesIO()
+        base = _safe_filename(req.subtitle or req.title)
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(f"{base}_De.docx", result["exam"].read())
+            zf.writestr(f"{base}_DapAn.docx", result["answers"].read())
+        zip_buf.seek(0)
+    except Exception as e:
+        raise HTTPException(500, f"Lỗi tạo file: {str(e)[:200]}")
 
     return StreamingResponse(
         zip_buf,
@@ -183,15 +201,19 @@ async def export_generated_latex(
     if not req.questions:
         raise HTTPException(400, "Danh sách câu hỏi trống")
 
-    buf = export_latex(
-        [q.model_dump() for q in req.questions],
-        title=req.title,
-        subtitle=req.subtitle,
-        include_answers=req.include_answers,
-        include_solutions=req.include_solutions,
-        group_by_diff=req.group_by_diff,
-        exam_info=req.exam_info,
-    )
+    try:
+        buf = export_latex(
+            [q.model_dump() for q in req.questions],
+            title=req.title,
+            subtitle=req.subtitle,
+            include_answers=req.include_answers,
+            include_solutions=req.include_solutions,
+            group_by_diff=req.group_by_diff,
+            exam_info=req.exam_info,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Lỗi tạo file LaTeX: {str(e)[:200]}")
+
     filename = _safe_filename(req.subtitle or req.title) + ".tex"
     return StreamingResponse(
         buf,
@@ -233,15 +255,19 @@ async def export_bank_docx(
 ):
     """Export questions from bank to DOCX."""
     rows = await _get_bank_questions(db, current_user.id, req)
-    buf = export_docx(
-        rows,
-        title=req.title,
-        subtitle=req.subtitle,
-        include_answers=req.include_answers,
-        include_solutions=req.include_solutions,
-        group_by_diff=req.group_by_diff,
-        exam_info=req.exam_info,
-    )
+    try:
+        buf = export_docx(
+            rows,
+            title=req.title,
+            subtitle=req.subtitle,
+            include_answers=req.include_answers,
+            include_solutions=req.include_solutions,
+            group_by_diff=req.group_by_diff,
+            exam_info=req.exam_info,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Lỗi tạo file DOCX: {str(e)[:200]}")
+
     filename = _safe_filename(req.subtitle or req.title) + ".docx"
     return StreamingResponse(
         buf,
@@ -258,15 +284,19 @@ async def export_bank_latex(
 ):
     """Export questions from bank to LaTeX."""
     rows = await _get_bank_questions(db, current_user.id, req)
-    buf = export_latex(
-        rows,
-        title=req.title,
-        subtitle=req.subtitle,
-        include_answers=req.include_answers,
-        include_solutions=req.include_solutions,
-        group_by_diff=req.group_by_diff,
-        exam_info=req.exam_info,
-    )
+    try:
+        buf = export_latex(
+            rows,
+            title=req.title,
+            subtitle=req.subtitle,
+            include_answers=req.include_answers,
+            include_solutions=req.include_solutions,
+            group_by_diff=req.group_by_diff,
+            exam_info=req.exam_info,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Lỗi tạo file LaTeX: {str(e)[:200]}")
+
     filename = _safe_filename(req.subtitle or req.title) + ".tex"
     return StreamingResponse(
         buf,
