@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from contextlib import asynccontextmanager
@@ -17,6 +18,20 @@ async def lifespan(app: FastAPI):
     # Startup: create tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # ── Safe column migrations (SQLite doesn't auto-add columns) ──
+    _migrations = [
+        ("exam", "file_hash", "ALTER TABLE exam ADD COLUMN file_hash VARCHAR(32)"),
+        ("question", "content_hash", "ALTER TABLE question ADD COLUMN content_hash VARCHAR(32)"),
+    ]
+    async with engine.begin() as conn:
+        for table, col, sql in _migrations:
+            try:
+                await conn.execute(text(sql))
+                import logging
+                logging.getLogger(__name__).info(f"Migration: added {table}.{col}")
+            except Exception:
+                pass  # Column already exists
 
     # Init FTS5 full-text search index
     try:
@@ -59,6 +74,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Rate limiting (Sprint 2, Task 13)
+from app.core.rate_limit import RateLimitMiddleware
+app.add_middleware(RateLimitMiddleware, enabled=(settings.ENV == "production"))
+
 # Include Routers
 app.include_router(auth.router, prefix=f"{settings.API_V1_STR}/auth", tags=["auth"])
 app.include_router(parser.router, prefix=f"{settings.API_V1_STR}/parser", tags=["parser"])
@@ -69,6 +88,9 @@ app.include_router(export.router, prefix=f"{settings.API_V1_STR}/export", tags=[
 
 # Templates
 templates = Jinja2Templates(directory="app/templates")
+
+# Static files (Sprint 3, Task 17)
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
 # ── Health check (Sprint 1, Task 8) ──

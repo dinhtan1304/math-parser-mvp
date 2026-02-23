@@ -1,8 +1,18 @@
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
+import hashlib
 
 from app.db.base_class import Base
+
+
+def _question_hash(text: str) -> str:
+    """Compute content hash for duplicate detection (Sprint 3, Task 22).
+
+    Normalizes whitespace before hashing to catch near-exact duplicates.
+    """
+    normalized = " ".join(text.strip().split()).lower()
+    return hashlib.md5(normalized.encode("utf-8")).hexdigest()
 
 
 class Question(Base):
@@ -16,6 +26,9 @@ class Question(Base):
 
     # Question content (LaTeX)
     question_text = Column(Text, nullable=False)
+
+    # Content hash for duplicate detection (Sprint 3, Task 22)
+    content_hash = Column(String(32), nullable=True, index=True)
 
     # Classification
     question_type = Column(String(50), nullable=True)
@@ -42,4 +55,6 @@ class Question(Base):
         # Composite index for generator sample queries
         Index("ix_question_user_topic_diff", "user_id", "topic", "difficulty"),
         Index("ix_question_user_type_topic_diff", "user_id", "question_type", "topic", "difficulty"),
+        # Content hash index for duplicate detection
+        Index("ix_question_user_hash", "user_id", "content_hash"),
     )

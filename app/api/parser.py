@@ -1,11 +1,13 @@
 import os
 import uuid
 import json
+import asyncio
 import logging
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Query, Depends
+from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Query, Depends, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +25,40 @@ router = APIRouter()
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+# ── SSE progress tracking (Sprint 3, Task 18) ──
+# In-memory store: exam_id → asyncio.Queue of SSE events
+_progress_queues: Dict[int, List[asyncio.Queue]] = {}
+
+
+def _publish_progress(exam_id: int, event: str, data: dict):
+    """Publish a progress event to all connected SSE clients."""
+    queues = _progress_queues.get(exam_id, [])
+    msg = json.dumps(data, ensure_ascii=False)
+    for q in queues:
+        try:
+            q.put_nowait((event, msg))
+        except asyncio.QueueFull:
+            pass  # Drop if client is too slow
+
+
+def _subscribe(exam_id: int) -> asyncio.Queue:
+    """Subscribe to progress events for an exam."""
+    q = asyncio.Queue(maxsize=100)
+    if exam_id not in _progress_queues:
+        _progress_queues[exam_id] = []
+    _progress_queues[exam_id].append(q)
+    return q
+
+
+def _unsubscribe(exam_id: int, q: asyncio.Queue):
+    """Unsubscribe from progress events."""
+    queues = _progress_queues.get(exam_id, [])
+    if q in queues:
+        queues.remove(q)
+    if not queues and exam_id in _progress_queues:
+        del _progress_queues[exam_id]
 
 
 # ==================== Response Models ====================
@@ -90,7 +126,11 @@ async def _save_questions_to_bank(
 
     Chạy sau khi parse thành công. Nếu exam đã có questions (re-parse),
     xóa cũ rồi insert mới.
+
+    Sprint 3, Task 22: Duplicate detection via content_hash.
     """
+    from app.db.models.question import _question_hash
+
     try:
         # Xóa questions cũ nếu re-parse
         from sqlalchemy import delete
@@ -98,12 +138,41 @@ async def _save_questions_to_bank(
             delete(Question).where(Question.exam_id == exam_id)
         )
 
-        # Insert từng câu
+        # ── Task 22: Pre-compute hashes and check duplicates ──
+        new_questions = []
         for i, q in enumerate(questions):
+            q_text = q.get("question", "")
+            if not q_text.strip():
+                continue
+            c_hash = _question_hash(q_text)
+            new_questions.append((i, q, c_hash))
+
+        # Find existing hashes for this user
+        if new_questions:
+            hashes = [h for _, _, h in new_questions]
+            existing_result = await db.execute(
+                select(Question.content_hash).filter(
+                    Question.user_id == user_id,
+                    Question.content_hash.in_(hashes),
+                )
+            )
+            existing_hashes = {row[0] for row in existing_result.fetchall()}
+        else:
+            existing_hashes = set()
+
+        # Insert, skipping duplicates
+        saved = 0
+        skipped = 0
+        for i, q, c_hash in new_questions:
+            if c_hash in existing_hashes:
+                skipped += 1
+                continue
+
             question = Question(
                 exam_id=exam_id,
                 user_id=user_id,
                 question_text=q.get("question", ""),
+                content_hash=c_hash,
                 question_type=q.get("type"),
                 topic=q.get("topic"),
                 difficulty=q.get("difficulty"),
@@ -112,9 +181,15 @@ async def _save_questions_to_bank(
                 question_order=i + 1,
             )
             db.add(question)
+            existing_hashes.add(c_hash)  # Prevent intra-batch duplicates
+            saved += 1
 
         await db.commit()
-        logger.info(f"Exam {exam_id}: Saved {len(questions)} questions to bank")
+
+        if skipped:
+            logger.info(f"Exam {exam_id}: Saved {saved}, skipped {skipped} duplicates")
+        else:
+            logger.info(f"Exam {exam_id}: Saved {saved} questions to bank")
 
         # Get saved question IDs for FTS + vector indexing
         result = await db.execute(
@@ -156,48 +231,91 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
             exam.status = "processing"
             await db.commit()
 
+            _publish_progress(exam_id, "progress", {"percent": 10, "message": "Đang trích xuất nội dung..."})
+
             # Step 1: Extract content
             extracted = await file_handler.extract_text(exam.file_path, use_vision=use_vision)
             extracted_text = extracted.get("text", "")
             images = extracted.get("images", [])
+            file_hash = extracted.get("file_hash", "")
+
+            # Save file hash
+            if file_hash:
+                exam.file_hash = file_hash
+                await db.commit()
+
+            _publish_progress(exam_id, "progress", {"percent": 25, "message": "Trích xuất xong. Đang phân tích..."})
+
+            # ── Sprint 3, Task 19: Gemini Cache — check if same file already parsed ──
+            questions = None
+            if file_hash:
+                cache_result = await db.execute(
+                    select(Exam.result_json).filter(
+                        Exam.user_id == exam.user_id,
+                        Exam.file_hash == file_hash,
+                        Exam.status == "completed",
+                        Exam.result_json.isnot(None),
+                        Exam.id != exam_id,  # Not self
+                    ).order_by(Exam.created_at.desc()).limit(1)
+                )
+                cached_json = cache_result.scalar()
+                if cached_json:
+                    try:
+                        questions = json.loads(cached_json)
+                        logger.info(f"Exam {exam_id}: Cache HIT (hash={file_hash[:8]}), reusing {len(questions)} questions")
+                        _publish_progress(exam_id, "progress", {"percent": 70, "message": f"Cache hit! Tìm thấy {len(questions)} câu đã phân tích."})
+                    except json.JSONDecodeError:
+                        questions = None  # Cache corrupted, re-parse
 
             # Auto-fallback: text mode failed → try vision
-            if not use_vision and (not extracted_text.strip() or _is_math_text_poor_quality(extracted_text)):
-                logger.info(f"Exam {exam_id}: Text quality poor, falling back to Vision mode")
-                try:
-                    extracted = await file_handler.extract_text(exam.file_path, use_vision=True)
-                    images = extracted.get("images", [])
-                    extracted_text = extracted.get("text", "")
-                    use_vision = True
-                except Exception as e:
-                    logger.warning(f"Exam {exam_id}: Vision fallback failed: {e}")
+            if questions is None:
+                if not use_vision and (not extracted_text.strip() or _is_math_text_poor_quality(extracted_text)):
+                    logger.info(f"Exam {exam_id}: Text quality poor, falling back to Vision mode")
+                    _publish_progress(exam_id, "progress", {"percent": 30, "message": "Chuyển sang Vision mode..."})
+                    try:
+                        extracted = await file_handler.extract_text(exam.file_path, use_vision=True)
+                        images = extracted.get("images", [])
+                        extracted_text = extracted.get("text", "")
+                        use_vision = True
+                    except Exception as e:
+                        logger.warning(f"Exam {exam_id}: Vision fallback failed: {e}")
 
-            # Step 2: Parse with AI
-            if use_vision and images:
-                questions = await ai_parser.parse_images(images)
-            elif extracted_text.strip():
-                questions = await ai_parser.parse(extracted_text)
-            else:
-                raise ValueError("No content could be extracted from the file")
+                _publish_progress(exam_id, "progress", {"percent": 40, "message": "AI đang phân tích câu hỏi..."})
+
+                # Step 2: Parse with AI
+                if use_vision and images:
+                    questions = await ai_parser.parse_images(images)
+                elif extracted_text.strip():
+                    questions = await ai_parser.parse(extracted_text)
+                else:
+                    raise ValueError("No content could be extracted from the file")
+
+            _publish_progress(exam_id, "progress", {"percent": 80, "message": f"Đã tìm {len(questions)} câu. Đang lưu..."})
 
             # Step 3: Save result
+            result_json = json.dumps(questions, ensure_ascii=False)
             exam.status = "completed"
-            exam.result_json = json.dumps(questions, ensure_ascii=False)
+            exam.result_json = result_json
             await db.commit()
 
             # Step 4: Populate Question Bank
             await _save_questions_to_bank(db, exam.id, exam.user_id, questions)
 
+            _publish_progress(exam_id, "complete", {
+                "message": f"Hoàn tất! {len(questions)} câu hỏi.",
+                "result_json": result_json,
+            })
+
         except Exception as e:
             logger.error(f"Error processing exam {exam_id}: {e}", exc_info=True)
+            _publish_progress(exam_id, "error_event", {"message": str(e)[:300]})
             try:
-                # Use a fresh query to avoid stale state after potential rollback
                 await db.rollback()
                 result = await db.execute(select(Exam).filter(Exam.id == exam_id))
                 exam = result.scalars().first()
                 if exam:
                     exam.status = "failed"
-                    exam.error_message = str(e)[:500]  # Truncate long errors
+                    exam.error_message = str(e)[:500]
                     await db.commit()
             except Exception as db_err:
                 logger.error(f"Failed to update exam {exam_id} status: {db_err}")
@@ -281,7 +399,89 @@ async def get_status(
     return exam
 
 
-@router.get("/history", response_model=ExamListResponse)
+# ── SSE Streaming endpoint (Sprint 3, Task 18) ──
+
+@router.get("/stream/{job_id}")
+async def stream_progress(
+    job_id: int,
+    token: str = Query(..., description="JWT token (EventSource can't use headers)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Stream real-time progress events via Server-Sent Events.
+
+    EventSource doesn't support custom headers, so token is passed as query param.
+    Events: progress (percent + message), complete (result_json), error_event.
+    Falls back gracefully — client also has polling fallback.
+    """
+    from jose import jwt, JWTError
+    from app.core.config import settings
+
+    # Verify token manually (EventSource can't use Authorization header)
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Verify exam belongs to user
+    result = await db.execute(
+        select(Exam).filter(Exam.id == job_id, Exam.user_id == int(user_id))
+    )
+    exam = result.scalars().first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # If already completed/failed, send final event immediately
+    if exam.status == "completed":
+        async def _immediate_complete():
+            yield f"event: complete\ndata: {json.dumps({'result_json': exam.result_json}, ensure_ascii=False)}\n\n"
+        return StreamingResponse(_immediate_complete(), media_type="text/event-stream")
+
+    if exam.status == "failed":
+        async def _immediate_error():
+            yield f"event: error_event\ndata: {json.dumps({'message': exam.error_message or 'Failed'})}\n\n"
+        return StreamingResponse(_immediate_error(), media_type="text/event-stream")
+
+    # Subscribe to progress events
+    queue = _subscribe(job_id)
+
+    async def _event_generator():
+        try:
+            # Send initial heartbeat
+            yield f": connected\n\n"
+
+            timeout_count = 0
+            while timeout_count < 300:  # Max 5 min (300 * 1s)
+                try:
+                    event, data = await asyncio.wait_for(queue.get(), timeout=1.0)
+                    yield f"event: {event}\ndata: {data}\n\n"
+
+                    # Terminal events
+                    if event in ("complete", "error_event"):
+                        return
+                except asyncio.TimeoutError:
+                    timeout_count += 1
+                    # Send keepalive every 15s
+                    if timeout_count % 15 == 0:
+                        yield f": keepalive\n\n"
+                    continue
+
+            # Timeout — tell client to fall back to polling
+            yield f"event: error_event\ndata: {json.dumps({'message': 'Stream timeout'})}\n\n"
+        finally:
+            _unsubscribe(job_id, queue)
+
+    return StreamingResponse(
+        _event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+    )
 async def list_exams(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),

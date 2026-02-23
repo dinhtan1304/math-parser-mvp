@@ -1,6 +1,7 @@
 
 from typing import Optional
-from pydantic import BaseModel, EmailStr
+import re
+from pydantic import BaseModel, EmailStr, field_validator
 
 # Shared properties
 class UserBase(BaseModel):
@@ -15,6 +16,24 @@ class UserCreate(UserBase):
     email: EmailStr
     password: str
     full_name: str
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Mật khẩu phải có ít nhất 8 ký tự")
+        if not re.search(r"[A-Za-z]", v):
+            raise ValueError("Mật khẩu phải có ít nhất 1 chữ cái")
+        if not re.search(r"\d", v):
+            raise ValueError("Mật khẩu phải có ít nhất 1 chữ số")
+        return v
+
+    @field_validator("full_name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        if v and len(v.strip()) < 2:
+            raise ValueError("Tên phải có ít nhất 2 ký tự")
+        return v.strip()
 
 # Properties to receive via API on update
 class UserUpdate(UserBase):

@@ -9,6 +9,7 @@ class Exam(Base):
     user_id = Column(Integer, ForeignKey("user.id"), nullable=False)
     filename = Column(String, nullable=False)
     file_path = Column(String, nullable=True)
+    file_hash = Column(String(32), nullable=True, index=True)  # MD5 hash for cache (Task 19)
     result_json = Column(Text, nullable=True)
     status = Column(String, default="pending")  # pending, processing, completed, failed
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

@@ -45,6 +45,16 @@ async def generate_questions(
 
     sample_dicts = []
 
+    def _to_dict(s) -> dict:
+        return {
+            "question_text": s.question_text,
+            "type": s.question_type,
+            "topic": s.topic,
+            "difficulty": s.difficulty,
+            "answer": s.answer or "",
+            "solution_steps": s.solution_steps or "[]",
+        }
+
     # Step 1a: Try vector similarity search (finds semantically similar questions)
     try:
         from app.services.vector_search import find_similar
@@ -61,13 +71,13 @@ async def generate_questions(
                 select(Question).where(Question.id.in_(sim_ids))
             )
             samples = result.scalars().all()
-            logger.info(f"Vector search found {len(samples)} samples")
+            sample_dicts = [_to_dict(s) for s in samples]
+            logger.info(f"Vector search found {len(sample_dicts)} samples")
     except Exception as e:
         logger.debug(f"Vector search skipped: {e}")
-        similar = []
 
     # Step 1b: Fallback to SQL filter if vector search didn't find enough
-    if len(sample_dicts) == 0:
+    if not sample_dicts:
         conditions = [Question.user_id == current_user.id]
         if req.question_type:
             conditions.append(Question.question_type == req.question_type)
@@ -83,17 +93,7 @@ async def generate_questions(
             .limit(MAX_SAMPLES)
         )
         samples = result.scalars().all()
-
-    # Convert to dicts for AI service
-    for s in samples:
-        sample_dicts.append({
-            "question_text": s.question_text,
-            "type": s.question_type,
-            "topic": s.topic,
-            "difficulty": s.difficulty,
-            "answer": s.answer or "",
-            "solution_steps": s.solution_steps or "[]",
-        })
+        sample_dicts = [_to_dict(s) for s in samples]
 
     # Step 2: Generate with AI
     try:
