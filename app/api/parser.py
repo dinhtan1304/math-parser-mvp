@@ -290,6 +290,14 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
                 else:
                     raise ValueError("No content could be extracted from the file")
 
+                # Validate AI actually found questions
+                if not questions:
+                    mode = "Vision" if use_vision else "Text"
+                    raise ValueError(
+                        f"AI không tìm được câu hỏi nào ({mode} mode). "
+                        "Thử bật Vision mode hoặc kiểm tra file có chứa đề toán không."
+                    )
+
             _publish_progress(exam_id, "progress", {"percent": 80, "message": f"Đã tìm {len(questions)} câu. Đang lưu..."})
 
             # Step 3: Save result
@@ -405,7 +413,6 @@ async def get_status(
 async def stream_progress(
     job_id: int,
     token: str = Query(..., description="JWT token (EventSource can't use headers)"),
-    db: AsyncSession = Depends(get_db),
 ):
     """Stream real-time progress events via Server-Sent Events.
 
@@ -425,23 +432,28 @@ async def stream_progress(
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    # Verify exam belongs to user
-    result = await db.execute(
-        select(Exam).filter(Exam.id == job_id, Exam.user_id == int(user_id))
-    )
-    exam = result.scalars().first()
-    if not exam:
-        raise HTTPException(status_code=404, detail="Job not found")
+    # Short-lived DB session — release immediately after auth check
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Exam).filter(Exam.id == job_id, Exam.user_id == int(user_id))
+        )
+        exam = result.scalars().first()
+        if not exam:
+            raise HTTPException(status_code=404, detail="Job not found")
+        # Capture state before closing session
+        exam_status = exam.status
+        exam_result_json = exam.result_json
+        exam_error_msg = exam.error_message
 
     # If already completed/failed, send final event immediately
-    if exam.status == "completed":
+    if exam_status == "completed":
         async def _immediate_complete():
-            yield f"event: complete\ndata: {json.dumps({'result_json': exam.result_json}, ensure_ascii=False)}\n\n"
+            yield f"event: complete\ndata: {json.dumps({'result_json': exam_result_json}, ensure_ascii=False)}\n\n"
         return StreamingResponse(_immediate_complete(), media_type="text/event-stream")
 
-    if exam.status == "failed":
+    if exam_status == "failed":
         async def _immediate_error():
-            yield f"event: error_event\ndata: {json.dumps({'message': exam.error_message or 'Failed'})}\n\n"
+            yield f"event: error_event\ndata: {json.dumps({'message': exam_error_msg or 'Failed'})}\n\n"
         return StreamingResponse(_immediate_error(), media_type="text/event-stream")
 
     # Subscribe to progress events
@@ -482,6 +494,9 @@ async def stream_progress(
             "X-Accel-Buffering": "no",  # Disable nginx buffering
         },
     )
+
+
+@router.get("/history", response_model=ExamListResponse)
 async def list_exams(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),

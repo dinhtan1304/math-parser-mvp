@@ -15,7 +15,6 @@ Usage:
 
 import os
 import json
-import struct
 import asyncio
 import logging
 from typing import Optional

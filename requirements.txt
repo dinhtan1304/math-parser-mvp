@@ -1,9 +1,9 @@
 # ==================== CORE FRAMEWORK ====================
-fastapi>=0.104.0,<1.0.0
-uvicorn[standard]>=0.24.0
-jinja2>=3.1.0
+fastapi>=0.104.0,<1.0.0          # Web framework (async)
+uvicorn[standard]>=0.24.0        # ASGI server
+jinja2>=3.1.0                    # HTML template engine
 python-multipart>=0.0.6          # Required for UploadFile / form data
-python-dotenv>=1.0.0
+python-dotenv>=1.0.0             # Load .env variables
 
 # ==================== VALIDATION ====================
 pydantic[email]>=2.0.0           # EmailStr for user schemas
@@ -25,6 +25,11 @@ google-genai>=1.0.0              # Gemini 2.5 Pro API (text + vision)
 PyMuPDF>=1.23.0                  # Primary: text extraction + PDF→image (vision mode)
 pdfplumber>=0.10.0               # Fallback: good for tables
 pypdf>=3.0.0                     # Last resort fallback
+# pdf2image>=1.16.0              # Optional fallback (needs poppler system lib)
 
 # ==================== DOCUMENT PROCESSING ====================
-python-docx>=1.0.0               # DOCX text extraction
+python-docx>=1.0.0               # DOCX text extraction + export
+lxml>=4.9.0                      # XML/OMML processing (LaTeX→DOCX math)
+
+# ==================== VECTOR SEARCH ====================
+numpy>=1.24.0                    # Vectorized cosine similarity (Sprint 3)
