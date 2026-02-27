@@ -9,6 +9,9 @@ Output format:
     "type": "...",
     "topic": "...",
     "difficulty": "...",
+    "grade": 12,
+    "chapter": "...",
+    "lesson_title": "...",
     "solution_steps": [],
     "answer": "..."
   }
@@ -62,6 +65,18 @@ PARSE_SCHEMA = {
                 "type": "STRING",
                 "description": "NB, TH, VD, or VDC"
             },
+            "grade": {
+                "type": "INTEGER",
+                "description": "Grade level 6-12 (lop 6 den lop 12)"
+            },
+            "chapter": {
+                "type": "STRING",
+                "description": "Chapter name e.g. Chuong I. Ung dung dao ham de khao sat va ve do thi ham so"
+            },
+            "lesson_title": {
+                "type": "STRING",
+                "description": "Lesson title e.g. Tinh don dieu va cuc tri cua ham so"
+            },
             "answer": {
                 "type": "STRING",
                 "description": "Final answer with LaTeX if needed"
@@ -73,6 +88,7 @@ PARSE_SCHEMA = {
             },
         },
         "required": ["question", "type", "topic", "difficulty",
+                      "grade", "chapter", "lesson_title",
                       "answer", "solution_steps"],
     }
 }
@@ -179,9 +195,31 @@ JSON SCHEMA:
   "type": "<string: TL|TN|Rút gọn biểu thức|So sánh|Chứng minh|Tính toán|Nhận xét đồ thị>",
   "topic": "<string: curriculum topic>",
   "difficulty": "<string: NB|TH|VD|VDC>",
+  "grade": <integer: 6-12>,
+  "chapter": "<string: chapter name from curriculum>",
+  "lesson_title": "<string: lesson title from curriculum>",
   "solution_steps": ["<array of strings: step-by-step solution with LaTeX>"],
   "answer": "<string: final answer with LaTeX if needed>"
 }
+
+CURRICULUM CLASSIFICATION (GDPT 2018 - Kết nối tri thức):
+You MUST classify each question into the correct grade (6-12), chapter, and lesson title based on the Vietnamese math curriculum below.
+
+TOÁN 6: C1.Số tự nhiên|C2.Tính chia hết|C3.Số nguyên|C4.Hình phẳng và đối xứng|C5.Phân số|C6.Số thập phân|C7.Hình học: điểm,đường thẳng,góc
+TOÁN 7: C1.Số hữu tỉ|C2.Số thực|C3.Góc và đường thẳng song song|C4.Tam giác bằng nhau|C5.Thu thập dữ liệu|C6.Tỉ lệ thức|C7.Biểu thức đại số|C8.Đa giác|C9.Biến cố và xác suất
+TOÁN 8: C1.Đa thức|C2.Hằng đẳng thức|C3.Tứ giác|C4.Định lí Thalès|C5.Dữ liệu và biểu đồ|C6.Phân thức đại số|C7.PT bậc nhất và hàm số|C8.Xác suất|C9.Tam giác đồng dạng|C10.Hình chóp
+TOÁN 9: C1.Hệ PT bậc nhất|C2.Bất PT bậc nhất|C3.Căn thức|C4.Hệ thức lượng tam giác vuông|C5.Đường tròn|C6.Hàm số y=ax²|C7.Tần số và tần số tương đối|C8.Mô hình xác suất|C9.Đường tròn ngoại tiếp,nội tiếp|C10.Hình trụ,hình nón,hình cầu
+TOÁN 10: C1.Mệnh đề và tập hợp|C2.BPT bậc nhất hai ẩn|C3.Hệ thức lượng trong tam giác|C4.Vectơ|C5.Các số đặc trưng mẫu số liệu|C6.Hàm số bậc hai|C7.Tọa độ trong mặt phẳng|C8.Đại số tổ hợp|C9.Xác suất cổ điển
+TOÁN 11: C1.Hàm số lượng giác và PT lượng giác|C2.Dãy số, cấp số cộng, cấp số nhân|C3.Mẫu số liệu ghép nhóm|C4.Quan hệ song song trong không gian|C5.Giới hạn và hàm số liên tục|C6.Hàm số mũ và logarit|C7.Quan hệ vuông góc trong không gian|C8.Quy tắc tính xác suất|C9.Đạo hàm
+TOÁN 12: C1.Ứng dụng đạo hàm để khảo sát và vẽ đồ thị hàm số|C2.Vectơ trong không gian|C3.Các số đặc trưng đo mức độ phân tán|C4.Nguyên hàm và tích phân|C5.Phương pháp tọa độ trong không gian|C6.Xác suất có điều kiện
+
+CLASSIFICATION RULES:
+- Analyze the mathematical content of each question to determine which grade level and chapter it belongs to
+- Match to the MOST SPECIFIC lesson/topic within the chapter
+- If a question spans multiple topics, classify by the PRIMARY skill being tested
+- For "grade", return an integer (6, 7, 8, 9, 10, 11, or 12)
+- For "chapter", return the full chapter name (e.g. "Chương I. Ứng dụng đạo hàm để khảo sát và vẽ đồ thị hàm số")
+- For "lesson_title", return the specific lesson/topic name (e.g. "Tính đơn điệu và cực trị của hàm số")
 
 DIFFICULTY LEVELS:
 | Code | Meaning |
@@ -200,6 +238,9 @@ Start with `[` and end with `]`
     "type": "...",
     "topic": "...",
     "difficulty": "...",
+    "grade": 12,
+    "chapter": "...",
+    "lesson_title": "...",
     "solution_steps": [],
     "answer": "..."
   }
@@ -386,6 +427,9 @@ Return ONLY a valid JSON array, no markdown, no explanation:
     "type": "TL|TN|Rút gọn biểu thức|So sánh|Chứng minh|Tìm GTNN|Tìm x|Giải phương trình",
     "topic": "Topic name",
     "difficulty": "NB|TH|VD|VDC",
+    "grade": 12,
+    "chapter": "Chapter name from curriculum",
+    "lesson_title": "Lesson title from curriculum",
     "solution_steps": ["step 1", "step 2"],
     "answer": "Final answer"
   }
@@ -1100,6 +1144,9 @@ Now extract ALL visible questions:"""
                             "type": q_type,
                             "topic": "Toán học",
                             "difficulty": "TH",
+                            "grade": None,
+                            "chapter": "",
+                            "lesson_title": "",
                             "solution_steps": [],
                             "answer": answer
                         })
@@ -1172,6 +1219,9 @@ Now extract ALL visible questions:"""
                     obj.setdefault("difficulty", "TH")
                     obj.setdefault("solution_steps", [])
                     obj.setdefault("answer", "")
+                    obj.setdefault("grade", None)
+                    obj.setdefault("chapter", "")
+                    obj.setdefault("lesson_title", "")
                     objects.append(obj)
                     
             except json.JSONDecodeError:
@@ -1187,6 +1237,9 @@ Now extract ALL visible questions:"""
                         obj.setdefault("difficulty", "TH")
                         obj.setdefault("solution_steps", [])
                         obj.setdefault("answer", "")
+                        obj.setdefault("grade", None)
+                        obj.setdefault("chapter", "")
+                        obj.setdefault("lesson_title", "")
                         objects.append(obj)
                 except:
                     pass

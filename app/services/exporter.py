@@ -71,6 +71,9 @@ def _normalize_questions(questions) -> List[Dict]:
                 "type": q.question_type or "",
                 "topic": q.topic or "",
                 "difficulty": q.difficulty or "TH",
+                "grade": q.grade,
+                "chapter": q.chapter or "",
+                "lesson_title": q.lesson_title or "",
                 "answer": q.answer or "",
                 "solution_steps": steps if isinstance(steps, list) else [],
             })

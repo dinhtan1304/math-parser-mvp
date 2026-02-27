@@ -35,6 +35,11 @@ class Question(Base):
     topic = Column(String(100), nullable=True)
     difficulty = Column(String(20), nullable=True)
 
+    # Curriculum classification (GDPT 2018)
+    grade = Column(Integer, nullable=True)            # 6-12
+    chapter = Column(String(200), nullable=True)       # e.g. "Chương I. Ứng dụng đạo hàm..."
+    lesson_title = Column(String(200), nullable=True)  # e.g. "Tính đơn điệu và cực trị..."
+
     # Answer and solution
     answer = Column(Text, nullable=True)
     solution_steps = Column(Text, nullable=True)
@@ -42,7 +47,7 @@ class Question(Base):
     # Position in original exam
     question_order = Column(Integer, default=0)
 
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     # Relationships
     exam = relationship("Exam", backref="questions")
@@ -57,4 +62,7 @@ class Question(Base):
         Index("ix_question_user_type_topic_diff", "user_id", "question_type", "topic", "difficulty"),
         # Content hash index for duplicate detection
         Index("ix_question_user_hash", "user_id", "content_hash"),
+        # Curriculum indexes
+        Index("ix_question_user_grade", "user_id", "grade"),
+        Index("ix_question_user_grade_chapter", "user_id", "grade", "chapter"),
     )

@@ -15,6 +15,9 @@ class QuestionResponse(BaseModel):
     question_type: Optional[str] = None
     topic: Optional[str] = None
     difficulty: Optional[str] = None
+    grade: Optional[int] = None
+    chapter: Optional[str] = None
+    lesson_title: Optional[str] = None
     answer: Optional[str] = None
     solution_steps: Optional[str] = None  # JSON string
     question_order: int = 0
@@ -30,6 +33,9 @@ class QuestionUpdate(BaseModel):
     question_type: Optional[str] = None
     topic: Optional[str] = None
     difficulty: Optional[str] = None
+    grade: Optional[int] = None
+    chapter: Optional[str] = None
+    lesson_title: Optional[str] = None
     answer: Optional[str] = None
     solution_steps: Optional[str] = None  # JSON string
 
@@ -45,6 +51,9 @@ class QuestionCreateItem(BaseModel):
     question_type: Optional[str] = "TN"
     topic: Optional[str] = ""
     difficulty: Optional[str] = "TH"
+    grade: Optional[int] = None
+    chapter: Optional[str] = ""
+    lesson_title: Optional[str] = ""
     answer: Optional[str] = ""
     solution_steps: Optional[str] = "[]"
 
@@ -62,4 +71,6 @@ class QuestionFilters(BaseModel):
     types: List[str]
     topics: List[str]
     difficulties: List[str]
+    grades: List[int] = []
+    chapters: List[str] = []
     total_questions: int

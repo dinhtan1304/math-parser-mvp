@@ -486,6 +486,12 @@
               </div>
             </div>
             <div class="bank-filters">
+              <select class="filter-select" id="filterGrade">
+                <option value="">Tất cả lớp</option>
+              </select>
+              <select class="filter-select" id="filterChapter">
+                <option value="">Tất cả chương</option>
+              </select>
               <select class="filter-select" id="filterType">
                 <option value="">Tất cả dạng</option>
               </select>
@@ -990,6 +996,39 @@
               type="text"
               id="editQTopic"
               placeholder="Đại số, Hình học..."
+            />
+          </div>
+          <div
+            style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px"
+          >
+            <div class="modal-field">
+              <label>Lớp</label>
+              <select id="editQGrade">
+                <option value="">—</option>
+                <option value="6">Lớp 6</option>
+                <option value="7">Lớp 7</option>
+                <option value="8">Lớp 8</option>
+                <option value="9">Lớp 9</option>
+                <option value="10">Lớp 10</option>
+                <option value="11">Lớp 11</option>
+                <option value="12">Lớp 12</option>
+              </select>
+            </div>
+            <div class="modal-field" style="grid-column: span 2">
+              <label>Chương</label>
+              <input
+                type="text"
+                id="editQChapter"
+                placeholder="Chương I. Ứng dụng đạo hàm..."
+              />
+            </div>
+          </div>
+          <div class="modal-field">
+            <label>Tiêu đề bài</label>
+            <input
+              type="text"
+              id="editQLesson"
+              placeholder="Tính đơn điệu và cực trị..."
             />
           </div>
           <div class="modal-field">

@@ -37,6 +37,9 @@ class GeneratedQuestion(BaseModel):
     type: str = "TN"
     topic: str = ""
     difficulty: str = "TH"
+    grade: Optional[int] = None
+    chapter: str = ""
+    lesson_title: str = ""
     answer: str = ""
     solution_steps: List[str] = []
 

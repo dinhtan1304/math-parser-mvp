@@ -220,10 +220,6 @@ function displayResults(questions) {
 /* ===== Shared Q-card renderer ===== */
 function renderQCard(q, num, showSource) {
     const text = q.question_text || q.question || '';
-    const type = q.question_type || q.type || 'TL';
-    const topic = q.topic || 'Toán';
-    const diff = q.difficulty || 'TH';
-    const ans = q.answer || '';
     const qId = q.id || 0;
 
     let steps = q.solution_steps || [];
@@ -234,13 +230,13 @@ function renderQCard(q, num, showSource) {
         <button class="q-act-btn q-del-btn" onclick="deleteQuestion(${qId})" title="Xóa">🗑️</button>
     </div>` : '';
 
+    const ans = q.answer || '';
+
     return `<div class="q-card" data-qid="${qId}">
         <div class="q-top">
             <span class="q-num">Câu ${num}</span>
             <div class="q-badges">
-                <span class="q-badge type">${esc(type)}</span>
-                <span class="q-badge topic">${esc(topic)}</span>
-                <span class="q-badge diff">${esc(diff)}</span>
+                ${renderCurriculumBadges(q)}
                 ${actions}
             </div>
         </div>

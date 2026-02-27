@@ -19,10 +19,13 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # ── Safe column migrations (SQLite doesn't auto-add columns) ──
+    # ── Safe column migrations (works for both SQLite and PostgreSQL) ──
     _migrations = [
         ("exam", "file_hash", "ALTER TABLE exam ADD COLUMN file_hash VARCHAR(32)"),
         ("question", "content_hash", "ALTER TABLE question ADD COLUMN content_hash VARCHAR(32)"),
+        ("question", "grade", "ALTER TABLE question ADD COLUMN grade INTEGER"),
+        ("question", "chapter", "ALTER TABLE question ADD COLUMN chapter VARCHAR(200)"),
+        ("question", "lesson_title", "ALTER TABLE question ADD COLUMN lesson_title VARCHAR(200)"),
     ]
     async with engine.begin() as conn:
         for table, col, sql in _migrations:
@@ -33,7 +36,7 @@ async def lifespan(app: FastAPI):
             except Exception:
                 pass  # Column already exists
 
-    # Init FTS5 full-text search index
+    # Init FTS5 full-text search index (SQLite only — skipped on PostgreSQL)
     try:
         from app.services.fts import init_fts
         await init_fts(engine)

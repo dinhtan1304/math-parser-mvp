@@ -142,23 +142,41 @@ async def embed_questions(db: AsyncSession, question_ids: list[int]):
     logger.info(f"Generating embeddings for {len(texts)} questions...")
     embeddings = await _generate_embeddings_batch(texts)
 
+    # Detect DB type for correct upsert syntax
+    from app.core.config import settings as _settings
+    _is_pg = "postgresql" in _settings.DATABASE_URL or "postgres" in _settings.DATABASE_URL
+
     # Store embeddings
     stored = 0
     for q, emb in zip(questions, embeddings):
         if emb is None:
             continue
         try:
-            await db.execute(text("""
-                INSERT OR REPLACE INTO question_embedding
-                (question_id, user_id, topic, difficulty, embedding)
-                VALUES (:qid, :uid, :topic, :diff, :emb)
-            """), {
-                "qid": q[0],
-                "uid": q[1],
-                "topic": q[3] or "",
-                "diff": q[4] or "",
-                "emb": json.dumps(emb),
-            })
+            if _is_pg:
+                await db.execute(text("""
+                    INSERT INTO question_embedding
+                    (question_id, user_id, topic, difficulty, embedding)
+                    VALUES (:qid, :uid, :topic, :diff, :emb)
+                    ON CONFLICT (question_id) DO UPDATE SET
+                        user_id = EXCLUDED.user_id,
+                        topic = EXCLUDED.topic,
+                        difficulty = EXCLUDED.difficulty,
+                        embedding = EXCLUDED.embedding
+                """), {
+                    "qid": q[0], "uid": q[1],
+                    "topic": q[3] or "", "diff": q[4] or "",
+                    "emb": json.dumps(emb),
+                })
+            else:
+                await db.execute(text("""
+                    INSERT OR REPLACE INTO question_embedding
+                    (question_id, user_id, topic, difficulty, embedding)
+                    VALUES (:qid, :uid, :topic, :diff, :emb)
+                """), {
+                    "qid": q[0], "uid": q[1],
+                    "topic": q[3] or "", "diff": q[4] or "",
+                    "emb": json.dumps(emb),
+                })
             stored += 1
         except Exception as e:
             logger.warning(f"Failed to store embedding for q#{q[0]}: {e}")

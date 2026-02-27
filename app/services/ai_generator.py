@@ -26,6 +26,19 @@ TIEU CHI:
 - Dap an CHINH XAC, loi giai NGAN GON (toi da 3 buoc)
 - LaTeX: dung $...$ va double backslash trong JSON (\\\\frac, \\\\sqrt)
 
+PHAN LOAI THEO CHUONG TRINH GDPT 2018:
+- grade: so nguyen 6-12 (lop may)
+- chapter: Ten chuong day du (vd: "Chuong I. Ung dung dao ham de khao sat va ve do thi ham so")
+- lesson_title: Tieu de bai hoc cu the (vd: "Tinh don dieu va cuc tri cua ham so")
+
+TOAN 6: C1.So tu nhien|C2.Tinh chia het|C3.So nguyen|C4.Hinh phang va doi xung|C5.Phan so|C6.So thap phan|C7.Hinh hoc co ban
+TOAN 7: C1.So huu ti|C2.So thuc|C3.Goc va duong thang song song|C4.Tam giac bang nhau|C5.Thu thap du lieu|C6.Ti le thuc|C7.Bieu thuc dai so|C8.Da giac|C9.Bien co va xac suat
+TOAN 8: C1.Da thuc|C2.Hang dang thuc|C3.Tu giac|C4.Dinh li Thales|C5.Du lieu va bieu do|C6.Phan thuc dai so|C7.PT bac nhat va ham so|C8.Xac suat|C9.Tam giac dong dang|C10.Hinh chop
+TOAN 9: C1.He PT bac nhat|C2.Bat PT bac nhat|C3.Can thuc|C4.He thuc luong tam giac vuong|C5.Duong tron|C6.Ham so y=ax2|C7.Tan so|C8.Mo hinh xac suat|C9.Duong tron ngoai tiep, noi tiep|C10.Hinh tru, hinh non, hinh cau
+TOAN 10: C1.Menh de va tap hop|C2.BPT bac nhat hai an|C3.He thuc luong trong tam giac|C4.Vecto|C5.Cac so dac trung mau so lieu|C6.Ham so bac hai|C7.Toa do trong mat phang|C8.Dai so to hop|C9.Xac suat co dien
+TOAN 11: C1.Ham so luong giac va PT luong giac|C2.Day so, cap so cong, cap so nhan|C3.Mau so lieu ghep nhom|C4.Quan he song song trong khong gian|C5.Gioi han va ham so lien tuc|C6.Ham so mu va logarit|C7.Quan he vuong goc trong khong gian|C8.Quy tac tinh xac suat|C9.Dao ham
+TOAN 12: C1.Ung dung dao ham de khao sat va ve do thi ham so|C2.Vecto trong khong gian|C3.Cac so dac trung do muc do phan tan|C4.Nguyen ham va tich phan|C5.Phuong phap toa do trong khong gian|C6.Xac suat co dieu kien
+
 CAU MAU:
 {samples}
 
@@ -54,6 +67,18 @@ QUESTION_SCHEMA = {
                 "type": "STRING",
                 "description": "NB, TH, VD, hoac VDC"
             },
+            "grade": {
+                "type": "INTEGER",
+                "description": "Lop 6-12"
+            },
+            "chapter": {
+                "type": "STRING",
+                "description": "Ten chuong, vi du: Chuong I. Ung dung dao ham"
+            },
+            "lesson_title": {
+                "type": "STRING",
+                "description": "Tieu de bai hoc, vi du: Tinh don dieu va cuc tri"
+            },
             "answer": {
                 "type": "STRING",
                 "description": "Dap an day du"
@@ -65,6 +90,7 @@ QUESTION_SCHEMA = {
             }
         },
         "required": ["question", "type", "topic", "difficulty",
+                      "grade", "chapter", "lesson_title",
                       "answer", "solution_steps"]
     }
 }
@@ -223,6 +249,9 @@ class AIQuestionGenerator:
                 "type": q.get("type", q_type),
                 "topic": q.get("topic", topic),
                 "difficulty": q.get("difficulty", difficulty),
+                "grade": q.get("grade"),
+                "chapter": q.get("chapter", ""),
+                "lesson_title": q.get("lesson_title", ""),
                 "answer": self._fix_latex(q.get("answer", "")),
                 "solution_steps": [self._fix_latex(s) for s in q.get("solution_steps", [])],
             })

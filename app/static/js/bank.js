@@ -17,6 +17,8 @@ document.addEventListener('DOMContentLoaded', () => {
     $('filterType').addEventListener('change', () => { bankPage = 1; loadBankQuestions(); });
     $('filterTopic').addEventListener('change', () => { bankPage = 1; loadBankQuestions(); });
     $('filterDiff').addEventListener('change', () => { bankPage = 1; loadBankQuestions(); });
+    if ($('filterGrade')) $('filterGrade').addEventListener('change', () => { bankPage = 1; loadBankQuestions(); });
+    if ($('filterChapter')) $('filterChapter').addEventListener('change', () => { bankPage = 1; loadBankQuestions(); });
 
     // Edit modal events
     $('editModal').addEventListener('click', (e) => {
@@ -48,7 +50,19 @@ async function loadBankFilters() {
         populateSelect($('filterType'), f.types, 'Tất cả dạng');
         populateSelect($('filterTopic'), f.topics, 'Tất cả chủ đề');
         populateSelect($('filterDiff'), f.difficulties, 'Tất cả độ khó');
+        if ($('filterGrade') && f.grades) {
+            populateGradeSelect($('filterGrade'), f.grades);
+        }
+        if ($('filterChapter') && f.chapters) {
+            populateSelect($('filterChapter'), f.chapters, 'Tất cả chương');
+        }
     } catch (e) { console.error('Bank filters error', e); }
+}
+
+function populateGradeSelect(el, grades) {
+    const current = el.value;
+    el.innerHTML = '<option value="">Tất cả lớp</option>' +
+        grades.map(g => `<option value="${g}" ${String(g) === current ? 'selected' : ''}>Lớp ${g}</option>`).join('');
 }
 
 function populateSelect(el, values, placeholder) {
@@ -81,11 +95,15 @@ async function loadBankQuestions() {
     const type = $('filterType').value;
     const topic = $('filterTopic').value;
     const diff = $('filterDiff').value;
+    const grade = $('filterGrade') ? $('filterGrade').value : '';
+    const chapter = $('filterChapter') ? $('filterChapter').value : '';
     const keyword = $('filterKeyword').value.trim();
 
     if (type) params.set('type', type);
     if (topic) params.set('topic', topic);
     if (diff) params.set('difficulty', diff);
+    if (grade) params.set('grade', grade);
+    if (chapter) params.set('chapter', chapter);
     if (keyword) params.set('keyword', keyword);
 
     try {
@@ -100,8 +118,8 @@ async function loadBankQuestions() {
             list.innerHTML = `
                 <div class="bank-empty">
                     <div class="bank-empty-icon">📚</div>
-                    <div class="bank-empty-text">${keyword || type || topic || diff ? 'Không tìm thấy câu hỏi phù hợp' : 'Ngân hàng câu hỏi trống'}</div>
-                    <div class="bank-empty-hint">${keyword || type || topic || diff ? 'Thử thay đổi bộ lọc' : 'Upload đề thi để bắt đầu tích lũy câu hỏi'}</div>
+                    <div class="bank-empty-text">${keyword || type || topic || diff || grade || chapter ? 'Không tìm thấy câu hỏi phù hợp' : 'Ngân hàng câu hỏi trống'}</div>
+                    <div class="bank-empty-hint">${keyword || type || topic || diff || grade || chapter ? 'Thử thay đổi bộ lọc' : 'Upload đề thi để bắt đầu tích lũy câu hỏi'}</div>
                 </div>`;
             $('bankPagination').innerHTML = '';
             return;
@@ -141,6 +159,8 @@ window._bankPage = function(p) { bankPage = p; loadBankQuestions(); };
 window.searchBank = function() { bankPage = 1; loadBankQuestions(); };
 window.resetFilters = function() {
     $('filterType').value = ''; $('filterTopic').value = ''; $('filterDiff').value = ''; $('filterKeyword').value = '';
+    if ($('filterGrade')) $('filterGrade').value = '';
+    if ($('filterChapter')) $('filterChapter').value = '';
     bankPage = 1; loadBankQuestions();
 };
 
@@ -155,6 +175,9 @@ window.openEditModal = async function(qId) {
         $('editQType').value = q.question_type || '';
         $('editQTopic').value = q.topic || '';
         $('editQDiff').value = q.difficulty || 'TH';
+        if ($('editQGrade')) $('editQGrade').value = q.grade || '';
+        if ($('editQChapter')) $('editQChapter').value = q.chapter || '';
+        if ($('editQLesson')) $('editQLesson').value = q.lesson_title || '';
         $('editQAnswer').value = q.answer || '';
         let steps = q.solution_steps || '[]';
         if (typeof steps === 'string') { try { steps = JSON.parse(steps); } catch { steps = []; } }
@@ -176,6 +199,9 @@ window.submitEdit = async function() {
             topic: $('editQTopic').value, difficulty: $('editQDiff').value,
             answer: $('editQAnswer').value, solution_steps: $('editQSteps').value,
         };
+        if ($('editQGrade')) { const gv = $('editQGrade').value; body.grade = gv ? parseInt(gv) : null; }
+        if ($('editQChapter')) body.chapter = $('editQChapter').value;
+        if ($('editQLesson')) body.lesson_title = $('editQLesson').value;
         const res = await fetch(`/api/v1/questions/${qId}`, {
             method: 'PUT', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         });

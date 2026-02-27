@@ -12,7 +12,7 @@ class Exam(Base):
     file_hash = Column(String(32), nullable=True, index=True)  # MD5 hash for cache (Task 19)
     result_json = Column(Text, nullable=True)
     status = Column(String, default="pending")  # pending, processing, completed, failed
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     error_message = Column(Text, nullable=True)
 
     user = relationship("User", backref="exams")

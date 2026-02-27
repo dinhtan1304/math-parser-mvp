@@ -95,10 +95,7 @@ class FileHandler:
             else:
                 result = await self._extract_docx(file_path)
         elif ext == '.doc':
-            if use_vision:
-                result = await self._doc_to_images(file_path)
-            else:
-                result = await self._extract_doc(file_path)
+            result = await self._extract_doc(file_path)
         elif ext in {'.txt', '.md'}:
             result = await self._extract_text_file(file_path)
         elif ext in {'.png', '.jpg', '.jpeg', '.gif', '.webp'}:
@@ -418,181 +415,112 @@ class FileHandler:
         }
     
     async def _extract_doc(self, file_path: str) -> Dict[str, Any]:
-        """Extract text from legacy .doc file.
-
-        Priority:
-          1. LibreOffice: .doc → .docx → python-docx (best quality)
-          2. antiword (if installed)
-          3. catdoc (if installed)
-          4. LibreOffice: .doc → .txt (last resort)
-        """
+        """Extract text from old .doc file"""
         import subprocess
-
+        
         loop = asyncio.get_running_loop()
-
+        
         def extract():
-            # ── Method 1: LibreOffice → DOCX → python-docx ──
+            # Method 1: Try python-docx (works if .doc is actually a renamed .docx)
             try:
-                import tempfile
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    r = subprocess.run(
-                        ['libreoffice', '--headless', '--convert-to', 'docx',
-                         '--outdir', tmpdir, file_path],
-                        capture_output=True, text=True, timeout=60
-                    )
-                    if r.returncode == 0:
-                        docx_path = os.path.join(tmpdir, Path(file_path).stem + '.docx')
-                        if os.path.exists(docx_path):
-                            try:
-                                from docx import Document
-                                doc = Document(docx_path)
-                                paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-                                txt = '\n'.join(paragraphs)
-                                if txt.strip():
-                                    logger.info(f"DOC via LibreOffice→DOCX: {len(txt)} chars")
-                                    return txt, "libreoffice-docx"
-                            except Exception as e:
-                                logger.warning(f"python-docx read failed: {e}")
-            except FileNotFoundError:
-                logger.debug("LibreOffice not installed")
-            except Exception as e:
-                logger.warning(f"LibreOffice DOC→DOCX failed: {e}")
-
-            # ── Method 2: antiword ──
+                from docx import Document
+                doc = Document(file_path)
+                text_parts = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+                if text_parts and len("\n".join(text_parts)) > 50:
+                    return "\n\n".join(text_parts), "python-docx"
+            except Exception:
+                pass
+            
+            # Method 2: Try antiword (Linux)
             try:
-                r = subprocess.run(
+                result = subprocess.run(
                     ['antiword', file_path],
                     capture_output=True, text=True, timeout=30
                 )
-                if r.returncode == 0 and r.stdout.strip():
-                    logger.info(f"DOC via antiword: {len(r.stdout)} chars")
-                    return r.stdout, "antiword"
-            except FileNotFoundError:
-                pass
+                if result.returncode == 0 and result.stdout:
+                    return result.stdout, "antiword"
             except Exception:
                 pass
-
-            # ── Method 3: catdoc ──
+            
+            # Method 3: Try catdoc (Linux)
             try:
-                r = subprocess.run(
+                result = subprocess.run(
                     ['catdoc', file_path],
                     capture_output=True, text=True, timeout=30
                 )
-                if r.returncode == 0 and r.stdout.strip():
-                    logger.info(f"DOC via catdoc: {len(r.stdout)} chars")
-                    return r.stdout, "catdoc"
-            except FileNotFoundError:
-                pass
+                if result.returncode == 0 and result.stdout:
+                    return result.stdout, "catdoc"
             except Exception:
                 pass
 
-            # ── Method 4: LibreOffice → plain text ──
+            # Method 4: Try LibreOffice conversion (Windows/Linux)
             try:
                 import tempfile
                 with tempfile.TemporaryDirectory() as tmpdir:
-                    r = subprocess.run(
-                        ['libreoffice', '--headless', '--convert-to', 'txt:Text',
-                         '--outdir', tmpdir, file_path],
-                        capture_output=True, text=True, timeout=60
-                    )
-                    if r.returncode == 0:
-                        txt_path = os.path.join(tmpdir, Path(file_path).stem + '.txt')
-                        if os.path.exists(txt_path):
-                            with open(txt_path, 'r', encoding='utf-8', errors='replace') as f:
-                                txt = f.read()
-                            if txt.strip():
-                                logger.info(f"DOC via LibreOffice→TXT: {len(txt)} chars")
-                                return txt, "libreoffice-txt"
-            except FileNotFoundError:
+                    # Try soffice (LibreOffice)
+                    for cmd in ['libreoffice', 'soffice', 'C:\\Program Files\\LibreOffice\\program\\soffice.exe']:
+                        try:
+                            result = subprocess.run(
+                                [cmd, '--headless', '--convert-to', 'docx', '--outdir', tmpdir, file_path],
+                                capture_output=True, text=True, timeout=60
+                            )
+                            if result.returncode == 0:
+                                docx_name = Path(file_path).stem + '.docx'
+                                docx_path = os.path.join(tmpdir, docx_name)
+                                if os.path.exists(docx_path):
+                                    from docx import Document
+                                    doc = Document(docx_path)
+                                    text_parts = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+                                    if text_parts:
+                                        return "\n\n".join(text_parts), "libreoffice-convert"
+                        except Exception:
+                            continue
+            except Exception:
                 pass
-            except Exception as e:
-                logger.warning(f"LibreOffice DOC→TXT failed: {e}")
-
+            
+            # Method 5: Raw binary text extraction (last resort)
+            try:
+                with open(file_path, 'rb') as f:
+                    raw = f.read()
+                # Extract printable text runs from binary
+                text_runs = []
+                current = []
+                for byte in raw:
+                    if 32 <= byte < 127 or byte in (10, 13):
+                        current.append(chr(byte))
+                    else:
+                        if len(current) > 20:  # Only keep meaningful runs
+                            text_runs.append(''.join(current))
+                        current = []
+                if len(current) > 20:
+                    text_runs.append(''.join(current))
+                if text_runs:
+                    combined = '\n'.join(text_runs)
+                    if len(combined) > 100:
+                        return combined, "raw-binary"
+            except Exception:
+                pass
+            
             return "", "none"
-
+        
         text, method = await loop.run_in_executor(self.executor, extract)
-
+        
         if not text:
             return {
                 "text": "",
-                "images": [],
-                "error": "Không đọc được file .doc. Server cần cài LibreOffice hoặc antiword.",
+                "error": "Không thể đọc file .doc. Vui lòng chuyển sang .docx hoặc .pdf rồi upload lại.",
                 "file_type": "doc",
-                "page_count": 0,
-                "method": "none"
+                "page_count": 0
             }
-
+        
         text = self._clean_text(text)
-
+        
         return {
             "text": text,
-            "page_count": max(1, text.count('\f') + 1),
+            "page_count": 1,
             "file_type": "doc",
             "method": method
         }
-
-    async def _doc_to_images(self, file_path: str) -> Dict[str, Any]:
-        """Convert .doc to images for Vision mode via LibreOffice → PDF → PyMuPDF.
-
-        Same pattern as _docx_to_images. Falls back to text extraction.
-        """
-        loop = asyncio.get_running_loop()
-
-        def convert():
-            import subprocess
-            import tempfile
-
-            try:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    r = subprocess.run(
-                        ['libreoffice', '--headless', '--convert-to', 'pdf',
-                         '--outdir', tmpdir, file_path],
-                        capture_output=True, text=True, timeout=60
-                    )
-
-                    if r.returncode == 0:
-                        pdf_path = os.path.join(tmpdir, Path(file_path).stem + '.pdf')
-
-                        if os.path.exists(pdf_path) and self.has_pymupdf:
-                            import fitz
-                            doc = fitz.open(pdf_path)
-                            base64_images = []
-                            zoom = 2.0
-                            matrix = fitz.Matrix(zoom, zoom)
-
-                            for page_num in range(len(doc)):
-                                page = doc[page_num]
-                                pix = page.get_pixmap(matrix=matrix)
-                                img_bytes = pix.tobytes("jpeg")
-                                b64 = base64.b64encode(img_bytes).decode()
-                                base64_images.append({
-                                    "page": page_num + 1,
-                                    "data": b64,
-                                    "mime_type": "image/jpeg"
-                                })
-
-                            doc.close()
-                            logger.info(f"DOC → PDF → {len(base64_images)} images (vision)")
-                            return base64_images, len(base64_images)
-            except FileNotFoundError:
-                logger.warning("LibreOffice not installed for DOC→images")
-            except Exception as e:
-                logger.warning(f"DOC→images failed: {e}")
-
-            return [], 0
-
-        images, page_count = await loop.run_in_executor(self.executor, convert)
-
-        if images:
-            return {
-                "text": "",
-                "images": images,
-                "page_count": page_count,
-                "file_type": "doc",
-                "method": "vision-libreoffice"
-            }
-        else:
-            return await self._extract_doc(file_path)
     
     # ==================== OTHER FORMATS ====================
     

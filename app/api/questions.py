@@ -1,13 +1,13 @@
 """
-Question Bank API — list, filter, search, edit, bulk-create câu hỏi.
+Question Bank API — SHARED bank: all users see all questions.
 
 Endpoints:
     GET    /questions          — List + filter (type, topic, difficulty, keyword)
     GET    /questions/filters  — Lấy danh sách filter values
     GET    /questions/{id}     — Chi tiết 1 câu
-    PUT    /questions/{id}     — Sửa 1 câu (Sprint 2 Task 11)
+    PUT    /questions/{id}     — Sửa 1 câu
     DELETE /questions/{id}     — Xóa 1 câu
-    POST   /questions/bulk     — Lưu nhiều câu vào ngân hàng (Sprint 2 Task 12)
+    POST   /questions/bulk     — Lưu nhiều câu vào ngân hàng
 """
 
 import json
@@ -37,20 +37,18 @@ async def list_questions(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     question_type: Optional[str] = Query(None, alias="type", description="Filter by type: TN, TL, ..."),
-    topic: Optional[str] = Query(None, description="Filter by topic: Đại số, Hình học, ..."),
+    topic: Optional[str] = Query(None, description="Filter by topic"),
     difficulty: Optional[str] = Query(None, description="Filter by difficulty: NB, TH, VD, VDC"),
+    grade: Optional[int] = Query(None, description="Filter by grade: 6-12"),
+    chapter: Optional[str] = Query(None, description="Filter by chapter"),
     keyword: Optional[str] = Query(None, description="Search in question text"),
     exam_id: Optional[int] = Query(None, description="Filter by source exam"),
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List questions with optional filters."""
+    """List ALL questions (shared bank) with optional filters."""
 
-    # Base query: only this user's questions
-    base_filter = Question.user_id == current_user.id
-
-    # Build dynamic filters
-    conditions = [base_filter]
+    conditions = []
 
     if question_type:
         conditions.append(Question.question_type == question_type)
@@ -58,34 +56,32 @@ async def list_questions(
         conditions.append(Question.topic == topic)
     if difficulty:
         conditions.append(Question.difficulty == difficulty)
+    if grade:
+        conditions.append(Question.grade == grade)
+    if chapter:
+        conditions.append(Question.chapter == chapter)
     if exam_id:
         conditions.append(Question.exam_id == exam_id)
     if keyword:
-        # Try FTS5 first (much faster than LIKE), fallback to LIKE
-        try:
-            from app.services.fts import search_fts
-            fts_ids = await search_fts(db, keyword, current_user.id, limit=100)
-            if fts_ids:
-                conditions.append(Question.id.in_(fts_ids))
-            else:
-                # FTS returned nothing, use LIKE as fallback
-                conditions.append(Question.question_text.ilike(f"%{keyword}%"))
-        except Exception:
-            conditions.append(Question.question_text.ilike(f"%{keyword}%"))
+        # FTS is user-scoped, so just use LIKE for shared bank
+        conditions.append(Question.question_text.ilike(f"%{keyword}%"))
 
     # Count
-    count_q = select(func.count(Question.id)).where(*conditions)
+    count_q = select(func.count(Question.id))
+    if conditions:
+        count_q = count_q.where(*conditions)
     total = (await db.execute(count_q)).scalar() or 0
 
     # Fetch page
     offset = (page - 1) * page_size
     data_q = (
         select(Question)
-        .where(*conditions)
         .order_by(Question.created_at.desc(), Question.question_order)
         .offset(offset)
         .limit(page_size)
     )
+    if conditions:
+        data_q = data_q.where(*conditions)
     result = await db.execute(data_q)
     questions = result.scalars().all()
 
@@ -102,27 +98,28 @@ async def get_filters(
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get available filter values for the current user's question bank.
+    """Get available filter values for the shared question bank."""
 
-    Returns distinct types, topics, difficulties so the frontend
-    can render dropdown menus dynamically.
-    """
-    base = Question.user_id == current_user.id
-
-    types_q = select(distinct(Question.question_type)).where(base, Question.question_type.isnot(None))
-    topics_q = select(distinct(Question.topic)).where(base, Question.topic.isnot(None))
-    diffs_q = select(distinct(Question.difficulty)).where(base, Question.difficulty.isnot(None))
-    count_q = select(func.count(Question.id)).where(base)
+    types_q = select(distinct(Question.question_type)).where(Question.question_type.isnot(None))
+    topics_q = select(distinct(Question.topic)).where(Question.topic.isnot(None))
+    diffs_q = select(distinct(Question.difficulty)).where(Question.difficulty.isnot(None))
+    grades_q = select(distinct(Question.grade)).where(Question.grade.isnot(None))
+    chapters_q = select(distinct(Question.chapter)).where(Question.chapter.isnot(None))
+    count_q = select(func.count(Question.id))
 
     types = (await db.execute(types_q)).scalars().all()
     topics = (await db.execute(topics_q)).scalars().all()
     diffs = (await db.execute(diffs_q)).scalars().all()
+    grades = (await db.execute(grades_q)).scalars().all()
+    chapters = (await db.execute(chapters_q)).scalars().all()
     total = (await db.execute(count_q)).scalar() or 0
 
     return QuestionFilters(
         types=sorted(types),
         topics=sorted(topics),
         difficulties=sorted(diffs),
+        grades=sorted(grades),
+        chapters=sorted(chapters),
         total_questions=total,
     )
 
@@ -133,12 +130,9 @@ async def get_question(
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a single question by ID."""
+    """Get a single question by ID (shared)."""
     result = await db.execute(
-        select(Question).where(
-            Question.id == question_id,
-            Question.user_id == current_user.id,
-        )
+        select(Question).where(Question.id == question_id)
     )
     question = result.scalars().first()
 
@@ -154,12 +148,9 @@ async def delete_question(
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a single question from the bank."""
+    """Delete a single question from the shared bank."""
     result = await db.execute(
-        select(Question).where(
-            Question.id == question_id,
-            Question.user_id == current_user.id,
-        )
+        select(Question).where(Question.id == question_id)
     )
     question = result.scalars().first()
 
@@ -185,7 +176,7 @@ async def delete_question(
     return {"detail": "Deleted"}
 
 
-# ── Sprint 2, Task 11: Edit question ──
+# ── Edit question ──
 
 @router.put("/{question_id}", response_model=QuestionResponse)
 async def update_question(
@@ -196,10 +187,7 @@ async def update_question(
 ):
     """Update a question. Only provided fields are changed."""
     result = await db.execute(
-        select(Question).where(
-            Question.id == question_id,
-            Question.user_id == current_user.id,
-        )
+        select(Question).where(Question.id == question_id)
     )
     question = result.scalars().first()
 
@@ -233,7 +221,7 @@ async def update_question(
     return question
 
 
-# ── Sprint 2, Task 12: Bulk save generated questions to bank ──
+# ── Bulk save generated questions to bank ──
 
 @router.post("/bulk", response_model=dict)
 async def bulk_create_questions(
@@ -241,10 +229,9 @@ async def bulk_create_questions(
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Save multiple questions to the bank (e.g. from AI generator).
+    """Save multiple questions to the shared bank.
 
-    Creates questions with exam_id=None (no source exam).
-    Sprint 3, Task 22: Skips duplicates via content_hash.
+    Skips duplicates via content_hash (global, not per-user).
     """
     from app.db.models.question import _question_hash
 
@@ -262,13 +249,12 @@ async def bulk_create_questions(
         c_hash = _question_hash(item.question_text)
         items_with_hash.append((item, c_hash))
 
-    # Check existing hashes
+    # Check existing hashes (global — any user)
     hashes = [h for _, h in items_with_hash]
     existing_hashes = set()
     if hashes:
         result = await db.execute(
             select(Question.content_hash).filter(
-                Question.user_id == current_user.id,
                 Question.content_hash.in_(hashes),
             )
         )
@@ -289,6 +275,9 @@ async def bulk_create_questions(
             question_type=item.question_type,
             topic=item.topic,
             difficulty=item.difficulty,
+            grade=item.grade,
+            chapter=item.chapter,
+            lesson_title=item.lesson_title,
             answer=item.answer,
             solution_steps=item.solution_steps,
             question_order=0,
@@ -318,7 +307,7 @@ async def bulk_create_questions(
     if skipped:
         msg += f" (bỏ qua {skipped} câu trùng)"
 
-    logger.info(f"Bulk created {len(created_ids)} questions (skipped {skipped} dupes) for user {current_user.id}")
+    logger.info(f"Bulk created {len(created_ids)} questions (skipped {skipped} dupes) by user {current_user.id}")
 
     return {
         "detail": msg,
