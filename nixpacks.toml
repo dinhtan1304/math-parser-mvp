@@ -1,0 +1,6 @@
+# System packages for Railway (Nixpacks builder)
+# antiword: lightweight .doc text extraction (~200KB)
+# libreoffice-writer: .doc → .docx/.pdf conversion (best quality, ~150MB)
+
+[phases.setup]
+aptPkgs = ["antiword", "libreoffice-writer"]

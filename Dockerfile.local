@@ -3,7 +3,8 @@
 #
 # Optimizations:
 #   - Removed tesseract-ocr (not used, Gemini Vision handles OCR)
-#   - LibreOffice optional via build arg (only for DOCX→PDF vision)
+#   - LibreOffice optional via build arg (for DOC/DOCX vision mode)
+#   - antiword always installed (lightweight .doc text extraction)
 #   - Multi-stage pip install (smaller layer, no build cache)
 #   - Non-root user for security
 #   - Proper signal handling with --workers
@@ -11,13 +12,14 @@
 
 FROM python:3.11-slim AS base
 
-# Build arg: set to "true" to include LibreOffice for DOCX vision mode
+# Build arg: set to "true" to include LibreOffice (DOC/DOCX → PDF vision + best .doc quality)
 ARG INSTALL_LIBREOFFICE=false
 
 # System deps (minimal)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
+    antiword \
     && if [ "$INSTALL_LIBREOFFICE" = "true" ]; then \
     apt-get install -y --no-install-recommends libreoffice-writer; \
     fi \

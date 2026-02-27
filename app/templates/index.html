@@ -570,287 +570,384 @@
 
         <!-- ===== TAB 3: Generate ===== -->
         <div class="tab-panel" id="tabGenerate">
-          <div class="gen-form-card">
-            <div class="gen-form-title">Chế độ sinh đề</div>
-            <div
-              class="gen-form-grid"
-              style="grid-template-columns: 1fr 1fr; margin-bottom: 16px"
-            >
-              <div class="gen-field">
-                <label>Chế độ</label>
-                <select id="genMode" onchange="toggleGenMode()">
-                  <option value="single">Sinh câu hỏi (1 mức độ)</option>
-                  <option value="exam">Đề kiểm tra tổng hợp</option>
-                </select>
-              </div>
-              <div class="gen-field">
-                <label>Chủ đề</label>
-                <select id="genTopic">
-                  <option value="">Chủ đề bất kỳ</option>
-                </select>
-              </div>
-            </div>
-
-            <!-- Single mode fields -->
-            <div id="singleModeFields">
-              <div class="gen-form-grid">
-                <div class="gen-field">
-                  <label>Dạng bài</label>
-                  <select id="genType">
-                    <option value="">Dạng bất kỳ</option>
-                  </select>
-                </div>
-                <div class="gen-field">
-                  <label>Độ khó</label>
-                  <select id="genDiff">
-                    <option value="">Độ khó bất kỳ</option>
-                    <option value="NB">NB - Nhận biết</option>
-                    <option value="TH">TH - Thông hiểu</option>
-                    <option value="VD">VD - Vận dụng</option>
-                    <option value="VDC">VDC - Vận dụng cao</option>
-                  </select>
-                </div>
-                <div class="gen-field">
-                  <label>Số lượng câu</label>
-                  <input
-                    type="number"
-                    id="genCount"
-                    value="5"
-                    min="1"
-                    max="50"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <!-- Exam mode fields -->
-            <div id="examModeFields" style="display: none">
-              <div class="gen-form-grid" style="grid-template-columns: 1fr">
-                <div class="gen-field">
-                  <label>Dạng bài</label>
-                  <select id="genTypeExam">
-                    <option value="">Kết hợp TN và TL</option>
-                    <option value="TN">Chỉ trắc nghiệm</option>
-                    <option value="TL">Chỉ tự luận</option>
-                  </select>
-                </div>
-              </div>
-              <div style="margin-top: 12px">
-                <label
-                  style="
-                    font-size: 0.78rem;
-                    font-weight: 600;
-                    color: var(--text-secondary);
-                    text-transform: uppercase;
-                    letter-spacing: 0.03em;
-                  "
-                  >Phân bổ câu hỏi</label
-                >
+          <div class="gen-split-layout">
+            <!-- LEFT COLUMN: Form + Results -->
+            <div class="gen-left-col">
+              <div class="gen-form-card">
+                <div class="gen-form-title">Chế độ sinh đề</div>
                 <div
-                  class="exam-dist"
-                  style="
-                    display: grid;
-                    grid-template-columns: repeat(4, 1fr);
-                    gap: 12px;
-                    margin-top: 8px;
-                  "
+                  class="gen-form-grid"
+                  style="grid-template-columns: 1fr 1fr; margin-bottom: 16px"
                 >
-                  <div class="dist-item">
-                    <div
-                      class="dist-label"
-                      style="
-                        font-size: 0.82rem;
-                        font-weight: 600;
-                        color: #16a34a;
-                      "
-                    >
-                      NB - Nhận biết
-                    </div>
-                    <input
-                      type="number"
-                      id="distNB"
-                      value="3"
-                      min="0"
-                      max="50"
-                      class="dist-input"
-                      onchange="updateExamTotal()"
-                    />
+                  <div class="gen-field">
+                    <label>Chế độ</label>
+                    <select id="genMode" onchange="toggleGenMode()">
+                      <option value="single">Sinh câu hỏi (1 mức độ)</option>
+                      <option value="exam">Đề kiểm tra tổng hợp</option>
+                    </select>
                   </div>
-                  <div class="dist-item">
-                    <div
-                      class="dist-label"
-                      style="
-                        font-size: 0.82rem;
-                        font-weight: 600;
-                        color: #2563eb;
-                      "
-                    >
-                      TH - Thông hiểu
-                    </div>
-                    <input
-                      type="number"
-                      id="distTH"
-                      value="3"
-                      min="0"
-                      max="50"
-                      class="dist-input"
-                      onchange="updateExamTotal()"
-                    />
-                  </div>
-                  <div class="dist-item">
-                    <div
-                      class="dist-label"
-                      style="
-                        font-size: 0.82rem;
-                        font-weight: 600;
-                        color: #d97706;
-                      "
-                    >
-                      VD - Vận dụng
-                    </div>
-                    <input
-                      type="number"
-                      id="distVD"
-                      value="2"
-                      min="0"
-                      max="50"
-                      class="dist-input"
-                      onchange="updateExamTotal()"
-                    />
-                  </div>
-                  <div class="dist-item">
-                    <div
-                      class="dist-label"
-                      style="
-                        font-size: 0.82rem;
-                        font-weight: 600;
-                        color: #dc2626;
-                      "
-                    >
-                      VDC - Vận dụng cao
-                    </div>
-                    <input
-                      type="number"
-                      id="distVDC"
-                      value="2"
-                      min="0"
-                      max="50"
-                      class="dist-input"
-                      onchange="updateExamTotal()"
-                    />
+                  <div class="gen-field">
+                    <label>Chủ đề</label>
+                    <select id="genTopic">
+                      <option value="">Chủ đề bất kỳ</option>
+                    </select>
                   </div>
                 </div>
-                <div
-                  class="exam-total"
-                  id="examTotal"
-                  style="
-                    margin-top: 10px;
-                    font-size: 0.88rem;
-                    font-weight: 600;
-                    color: var(--text);
-                  "
-                >
-                  Tổng: 10 câu
-                </div>
-              </div>
-            </div>
 
-            <div class="gen-actions" style="margin-top: 16px">
-              <button class="btn-generate" id="genBtn" onclick="doGenerate()">
-                <span class="gen-btn-text">Sinh đề</span>
-                <div class="spinner"></div>
-              </button>
-              <span class="gen-hint" id="genHint"
-                >AI sẽ tham khảo câu mẫu từ ngân hàng đề của bạn</span
-              >
-            </div>
-          </div>
-
-          <div class="gen-results" id="genResults">
-            <div class="gen-results-header">
-              <div class="gen-results-info" id="genResultsInfo">
-                <span>0</span> cau da sinh
-              </div>
-              <div class="toolbar-actions">
-                <button
-                  class="btn-toolbar"
-                  onclick="saveGenToBank()"
-                  id="btnSaveToBank"
-                  style="background: #16a34a; color: white; font-weight: 600"
-                >
-                  💾 Lưu vào ngân hàng
-                </button>
-                <button class="btn-toolbar" onclick="downloadGenerated()">
-                  JSON
-                </button>
-                <div class="export-dropdown" id="genExportDropdown">
-                  <button
-                    class="export-btn"
-                    onclick="toggleExportMenu('genExportMenu')"
-                  >
-                    <svg fill="none" stroke="currentColor" stroke-width="2">
-                      <path
-                        d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"
+                <!-- Single mode fields -->
+                <div id="singleModeFields">
+                  <div class="gen-form-grid">
+                    <div class="gen-field">
+                      <label>Dạng bài</label>
+                      <select id="genType">
+                        <option value="">Dạng bất kỳ</option>
+                      </select>
+                    </div>
+                    <div class="gen-field">
+                      <label>Độ khó</label>
+                      <select id="genDiff">
+                        <option value="">Độ khó bất kỳ</option>
+                        <option value="NB">NB - Nhận biết</option>
+                        <option value="TH">TH - Thông hiểu</option>
+                        <option value="VD">VD - Vận dụng</option>
+                        <option value="VDC">VDC - Vận dụng cao</option>
+                      </select>
+                    </div>
+                    <div class="gen-field">
+                      <label>Số lượng câu</label>
+                      <input
+                        type="number"
+                        id="genCount"
+                        value="5"
+                        min="1"
+                        max="50"
                       />
-                    </svg>
-                    Xuất file ▾
-                  </button>
-                  <div class="export-menu" id="genExportMenu">
-                    <button
-                      class="export-menu-item"
-                      onclick="exportGenAs('pdf')"
-                    >
-                      <svg fill="none" stroke="currentColor" stroke-width="2">
-                        <path
-                          d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"
-                        />
-                        <path d="M14 2v6h6" />
-                      </svg>
-                      PDF (in chuẩn A4) <span class="ext">.pdf</span>
-                    </button>
-                    <button
-                      class="export-menu-item"
-                      onclick="exportGenAs('docx')"
-                    >
-                      <svg fill="none" stroke="currentColor" stroke-width="2">
-                        <path
-                          d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"
-                        />
-                        <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
-                      </svg>
-                      Word (đề + đáp án) <span class="ext">.docx</span>
-                    </button>
-                    <button
-                      class="export-menu-item"
-                      onclick="exportGenAs('docx-split')"
-                    >
-                      <svg fill="none" stroke="currentColor" stroke-width="2">
-                        <path
-                          d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"
-                        />
-                        <path
-                          d="M15 2H9a1 1 0 00-1 1v2a1 1 0 001 1h6a1 1 0 001-1V3a1 1 0 00-1-1z"
-                        />
-                      </svg>
-                      Word (đề riêng / đáp án riêng)
-                      <span class="ext">.zip</span>
-                    </button>
-                    <div class="export-menu-sep"></div>
-                    <button
-                      class="export-menu-item"
-                      onclick="exportGenAs('latex')"
-                    >
-                      <svg fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M4 7V4h16v3M9 20h6M12 4v16" />
-                      </svg>
-                      LaTeX <span class="ext">.tex</span>
-                    </button>
+                    </div>
                   </div>
                 </div>
+
+                <!-- Exam mode fields -->
+                <div id="examModeFields" style="display: none">
+                  <div class="gen-form-grid" style="grid-template-columns: 1fr">
+                    <div class="gen-field">
+                      <label>Dạng bài</label>
+                      <select id="genTypeExam">
+                        <option value="">Kết hợp TN và TL</option>
+                        <option value="TN">Chỉ trắc nghiệm</option>
+                        <option value="TL">Chỉ tự luận</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div style="margin-top: 12px">
+                    <label
+                      style="
+                        font-size: 0.78rem;
+                        font-weight: 600;
+                        color: var(--text-secondary);
+                        text-transform: uppercase;
+                        letter-spacing: 0.03em;
+                      "
+                      >Phân bổ câu hỏi</label
+                    >
+                    <div
+                      class="exam-dist"
+                      style="
+                        display: grid;
+                        grid-template-columns: repeat(4, 1fr);
+                        gap: 12px;
+                        margin-top: 8px;
+                      "
+                    >
+                      <div class="dist-item">
+                        <div
+                          class="dist-label"
+                          style="
+                            font-size: 0.82rem;
+                            font-weight: 600;
+                            color: #16a34a;
+                          "
+                        >
+                          NB - Nhận biết
+                        </div>
+                        <input
+                          type="number"
+                          id="distNB"
+                          value="3"
+                          min="0"
+                          max="50"
+                          class="dist-input"
+                          onchange="updateExamTotal()"
+                        />
+                      </div>
+                      <div class="dist-item">
+                        <div
+                          class="dist-label"
+                          style="
+                            font-size: 0.82rem;
+                            font-weight: 600;
+                            color: #2563eb;
+                          "
+                        >
+                          TH - Thông hiểu
+                        </div>
+                        <input
+                          type="number"
+                          id="distTH"
+                          value="3"
+                          min="0"
+                          max="50"
+                          class="dist-input"
+                          onchange="updateExamTotal()"
+                        />
+                      </div>
+                      <div class="dist-item">
+                        <div
+                          class="dist-label"
+                          style="
+                            font-size: 0.82rem;
+                            font-weight: 600;
+                            color: #d97706;
+                          "
+                        >
+                          VD - Vận dụng
+                        </div>
+                        <input
+                          type="number"
+                          id="distVD"
+                          value="2"
+                          min="0"
+                          max="50"
+                          class="dist-input"
+                          onchange="updateExamTotal()"
+                        />
+                      </div>
+                      <div class="dist-item">
+                        <div
+                          class="dist-label"
+                          style="
+                            font-size: 0.82rem;
+                            font-weight: 600;
+                            color: #dc2626;
+                          "
+                        >
+                          VDC - Vận dụng cao
+                        </div>
+                        <input
+                          type="number"
+                          id="distVDC"
+                          value="2"
+                          min="0"
+                          max="50"
+                          class="dist-input"
+                          onchange="updateExamTotal()"
+                        />
+                      </div>
+                    </div>
+                    <div
+                      class="exam-total"
+                      id="examTotal"
+                      style="
+                        margin-top: 10px;
+                        font-size: 0.88rem;
+                        font-weight: 600;
+                        color: var(--text);
+                      "
+                    >
+                      Tổng: 10 câu
+                    </div>
+                  </div>
+                </div>
+
+                <div class="gen-actions" style="margin-top: 16px">
+                  <button
+                    class="btn-generate"
+                    id="genBtn"
+                    onclick="doGenerate()"
+                  >
+                    <span class="gen-btn-text">Sinh đề</span>
+                    <div class="spinner"></div>
+                  </button>
+                  <span class="gen-hint" id="genHint"
+                    >AI sẽ tham khảo câu mẫu từ ngân hàng đề của bạn</span
+                  >
+                </div>
+              </div>
+
+              <div class="gen-results" id="genResults">
+                <div class="gen-results-header">
+                  <div class="gen-results-info" id="genResultsInfo">
+                    <span>0</span> cau da sinh
+                  </div>
+                  <div class="toolbar-actions">
+                    <button
+                      class="btn-toolbar"
+                      onclick="saveGenToBank()"
+                      id="btnSaveToBank"
+                      style="
+                        background: #16a34a;
+                        color: white;
+                        font-weight: 600;
+                      "
+                    >
+                      💾 Lưu vào ngân hàng
+                    </button>
+                    <button class="btn-toolbar" onclick="downloadGenerated()">
+                      JSON
+                    </button>
+                    <div class="export-dropdown" id="genExportDropdown">
+                      <button
+                        class="export-btn"
+                        onclick="toggleExportMenu('genExportMenu')"
+                      >
+                        <svg fill="none" stroke="currentColor" stroke-width="2">
+                          <path
+                            d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"
+                          />
+                        </svg>
+                        Xuất file ▾
+                      </button>
+                      <div class="export-menu" id="genExportMenu">
+                        <button
+                          class="export-menu-item"
+                          onclick="exportGenAs('pdf')"
+                        >
+                          <svg
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                          >
+                            <path
+                              d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"
+                            />
+                            <path d="M14 2v6h6" />
+                          </svg>
+                          PDF (in chuẩn A4) <span class="ext">.pdf</span>
+                        </button>
+                        <button
+                          class="export-menu-item"
+                          onclick="exportGenAs('docx')"
+                        >
+                          <svg
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                          >
+                            <path
+                              d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"
+                            />
+                            <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
+                          </svg>
+                          Word (đề + đáp án) <span class="ext">.docx</span>
+                        </button>
+                        <button
+                          class="export-menu-item"
+                          onclick="exportGenAs('docx-split')"
+                        >
+                          <svg
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                          >
+                            <path
+                              d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"
+                            />
+                            <path
+                              d="M15 2H9a1 1 0 00-1 1v2a1 1 0 001 1h6a1 1 0 001-1V3a1 1 0 00-1-1z"
+                            />
+                          </svg>
+                          Word (đề riêng / đáp án riêng)
+                          <span class="ext">.zip</span>
+                        </button>
+                        <div class="export-menu-sep"></div>
+                        <button
+                          class="export-menu-item"
+                          onclick="exportGenAs('latex')"
+                        >
+                          <svg
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                          >
+                            <path d="M4 7V4h16v3M9 20h6M12 4v16" />
+                          </svg>
+                          LaTeX <span class="ext">.tex</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="gen-results-list" id="genResultsList"></div>
               </div>
             </div>
-            <div class="gen-results-list" id="genResultsList"></div>
+            <!-- /gen-left-col -->
+
+            <!-- RIGHT COLUMN: PDF Preview (hidden until results) -->
+            <div
+              class="gen-right-col"
+              id="genPreviewPanel"
+              style="display: none"
+            >
+              <div class="gen-preview-header" id="genPreviewHeader">
+                <div class="preview-header-left">
+                  <svg
+                    width="16"
+                    height="16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"
+                    />
+                    <path d="M14 2v6h6" />
+                  </svg>
+                  <span>Xem trước đề thi</span>
+                </div>
+                <div class="preview-header-actions">
+                  <label class="preview-toggle"
+                    ><input
+                      type="checkbox"
+                      id="previewAnswers"
+                      checked
+                      onchange="refreshPreview()"
+                    /><span>Đáp án</span></label
+                  >
+                  <label class="preview-toggle"
+                    ><input
+                      type="checkbox"
+                      id="previewSolutions"
+                      checked
+                      onchange="refreshPreview()"
+                    /><span>Lời giải</span></label
+                  >
+                  <button
+                    class="preview-print-btn"
+                    onclick="printPreview()"
+                    title="In / Lưu PDF"
+                  >
+                    <svg
+                      width="14"
+                      height="14"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"
+                      />
+                      <rect x="6" y="14" width="12" height="8" />
+                    </svg>
+                    In PDF
+                  </button>
+                </div>
+              </div>
+              <iframe id="genPreviewFrame" class="gen-preview-frame"></iframe>
+            </div>
+            <!-- /gen-right-col -->
           </div>
+          <!-- /gen-split-layout -->
         </div>
       </div>
     </main>

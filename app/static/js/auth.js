@@ -28,6 +28,9 @@ window.switchTab = function(tab) {
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     $('tab' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('active');
 
+    // Widen main-body for generator split layout
+    document.querySelector('.main-body').classList.toggle('wide', tab === 'generate');
+
     if (tab === 'dashboard') loadDashboard();
     if (tab === 'bank') loadBank();
     if (tab === 'generate') loadGenFilters();

@@ -102,6 +102,7 @@ function displayGenerated(data) {
     }
     list.innerHTML = html;
     renderMath(list);
+    refreshPreview();
 }
 
 function renderGenCard(q, num) {
@@ -213,3 +214,44 @@ window.exportBankAs = async function(format) {
 };
 
 window.exportPDF = function() { exportGenAs('pdf'); };
+
+/* ===== PDF Preview ===== */
+window.refreshPreview = async function() {
+    if (!generatedResults || !generatedResults.length) return;
+    const payload = _getGenExportPayload();
+    if (!payload) return;
+
+    payload.include_answers = $('previewAnswers').checked;
+    payload.include_solutions = $('previewSolutions').checked;
+
+    try {
+        const res = await fetch('/api/v1/export/pdf', {
+            method: 'POST',
+            headers: { ...authHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) return;
+        const html = await res.text();
+
+        // Remove print toolbar and adjust for inline preview
+        const cleanHtml = html
+            .replace(/<div class="print-toolbar">[\s\S]*?<\/div>/, '')
+            .replace('</style>', '\n.exam-container{margin:0 auto;padding:24px 28px;}body{background:#fff;}\n</style>');
+
+        // Show panel + iframe
+        $('genPreviewPanel').style.display = 'flex';
+        const frame = $('genPreviewFrame');
+        frame.style.display = 'block';
+        frame.srcdoc = cleanHtml;
+    } catch (e) {
+        console.error('Preview error:', e);
+    }
+};
+
+window.printPreview = function() {
+    const frame = $('genPreviewFrame');
+    if (frame && frame.contentWindow) {
+        frame.contentWindow.focus();
+        frame.contentWindow.print();
+    }
+};
