@@ -442,14 +442,14 @@ Now extract ALL visible questions:"""
         self,
         provider: AIProvider = AIProvider.GEMINI,
         gemini_api_key: Optional[str] = None,
-        gemini_model: str = "gemini-2.5-pro",  # Updated to 2.5
+        gemini_model: str = None,
         max_tokens: int = 65536,  # Safe limit for output
         max_chunk_size: int = 20000,  # Balanced chunk size
         max_concurrency: int = 3  # Parallel requests
     ):
         self.provider = provider
         self.gemini_api_key = gemini_api_key or os.getenv("GOOGLE_API_KEY")
-        self.gemini_model = gemini_model
+        self.gemini_model = gemini_model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         self.max_tokens = max_tokens
         self.max_chunk_size = max_chunk_size
         self.max_concurrency = max_concurrency
@@ -494,6 +494,13 @@ Now extract ALL visible questions:"""
         """Main entry point - parse text into questions"""
         if not text or not text.strip():
             return []
+
+        # Fail fast if no AI provider
+        if not self._client:
+            raise RuntimeError(
+                "GOOGLE_API_KEY chưa được cấu hình. "
+                "Vui lòng thêm API key trong Settings → Environment Variables."
+            )
         
         text = self._clean_text(text)
         start_time = time.time()
@@ -515,16 +522,16 @@ Now extract ALL visible questions:"""
     async def parse_images(self, images: List[Dict], progress_callback: Optional[Callable[[int, int], None]] = None) -> List[Dict[str, Any]]:
         """
         Parse questions from images using Vision API.
-        
-        Args:
-            images: List of {"page": int, "data": base64_string, "mime_type": str}
-            progress_callback: Optional callback for progress updates
-        
-        Returns:
-            List of parsed questions
         """
         if not images:
             return []
+
+        # Fail fast if no AI provider
+        if not self._client:
+            raise RuntimeError(
+                "GOOGLE_API_KEY chưa được cấu hình. "
+                "Vui lòng thêm API key trong Settings → Environment Variables."
+            )
         
         start_time = time.time()
         total_pages = len(images)
@@ -672,8 +679,7 @@ Now extract ALL visible questions:"""
             provider = self._get_available_provider()
             
             if not provider:
-                logger.warning("No AI provider, using mock parser")
-                return self._mock_parse(text)
+                raise RuntimeError("GOOGLE_API_KEY chưa được cấu hình.")
             
             prompts = [
                 self.PARSE_PROMPT_V1,
@@ -712,87 +718,85 @@ Now extract ALL visible questions:"""
                     self._collect_answers(result)
                     return result
             
-            logger.error(f"Chunk {chunk_id} - Falling back to mock parser")
-            return self._mock_parse(text)
+            logger.error(f"Chunk {chunk_id} - All AI attempts failed, returning empty")
+            return []
     
     async def _call_gemini(self, text: str, prompt_template: str) -> tuple[List[Dict], str]:
         """Call Gemini API with native async + structured output.
 
-        Sprint 2 optimizations:
-          - Task 9:  Native async (client.aio) instead of run_in_executor
-          - Task 10: 3-tier fallback with response_schema for guaranteed JSON
-
-        Tiers:
-          1. Schema mode (response_schema) → guaranteed valid JSON structure
-          2. JSON mode (response_mime_type only) → usually valid
-          3. Plain text → needs manual extraction
+        3-tier fallback with retry on 429 rate limit.
         """
         from google.genai import types
 
         prompt = prompt_template.format(text=text)
 
-        # ── Tier 1: Schema mode — guaranteed valid JSON ──
-        try:
-            response = await self._client.aio.models.generate_content(
-                model=self.gemini_model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.SYSTEM_PROMPT,
-                    temperature=0,
-                    max_output_tokens=self.max_tokens,
-                    response_mime_type="application/json",
-                    response_schema=PARSE_SCHEMA,
-                )
-            )
-            content = self._safe_text(response)
-            if content:
-                result = self._extract_json(content)
-                if result:
-                    logger.info(f"Schema mode: {len(result)} questions")
-                    return result, content
-        except Exception as e:
-            logger.warning(f"Schema mode failed: {e}")
+        async def _try_with_retry(config, label):
+            for attempt in range(3):
+                try:
+                    response = await self._client.aio.models.generate_content(
+                        model=self.gemini_model,
+                        contents=prompt,
+                        config=config,
+                    )
+                    content = self._safe_text(response)
+                    if content:
+                        result = self._extract_json(content)
+                        if result:
+                            logger.info(f"{label}: {len(result)} questions")
+                            return result, content
+                    return None, content or ""
+                except Exception as e:
+                    err_str = str(e)
+                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                        wait = (attempt + 1) * 10
+                        logger.warning(f"{label} rate limited (attempt {attempt+1}/3), waiting {wait}s...")
+                        await asyncio.sleep(wait)
+                        continue
+                    logger.warning(f"{label} failed: {e}")
+                    return None, ""
+            return None, ""
+
+        # ── Tier 1: Schema mode ──
+        result, content = await _try_with_retry(
+            types.GenerateContentConfig(
+                system_instruction=self.SYSTEM_PROMPT,
+                temperature=0,
+                max_output_tokens=self.max_tokens,
+                response_mime_type="application/json",
+                response_schema=PARSE_SCHEMA,
+            ),
+            "Schema mode"
+        )
+        if result:
+            return result, content
 
         # ── Tier 2: JSON mode without schema ──
-        try:
-            response = await self._client.aio.models.generate_content(
-                model=self.gemini_model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.SYSTEM_PROMPT,
-                    temperature=0,
-                    max_output_tokens=self.max_tokens,
-                    response_mime_type="application/json",
-                )
-            )
-            content = self._safe_text(response)
-            if content:
-                result = self._extract_json(content)
-                if result:
-                    logger.info(f"JSON mode: {len(result)} questions")
-                    return result, content
-        except Exception as e:
-            logger.warning(f"JSON mode failed: {e}")
+        result, content = await _try_with_retry(
+            types.GenerateContentConfig(
+                system_instruction=self.SYSTEM_PROMPT,
+                temperature=0,
+                max_output_tokens=self.max_tokens,
+                response_mime_type="application/json",
+            ),
+            "JSON mode"
+        )
+        if result:
+            return result, content
 
-        # ── Tier 3: Plain text — manual extraction ──
-        try:
-            response = await self._client.aio.models.generate_content(
-                model=self.gemini_model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.SYSTEM_PROMPT,
-                    temperature=0,
-                    max_output_tokens=self.max_tokens,
-                )
-            )
-            content = self._safe_text(response)
-            if content:
-                result = self._extract_json(content)
-                return result, content
-        except Exception as e:
-            logger.error(f"All Gemini tiers failed: {e}")
+        # ── Tier 3: Plain text ──
+        result, content = await _try_with_retry(
+            types.GenerateContentConfig(
+                system_instruction=self.SYSTEM_PROMPT,
+                temperature=0,
+                max_output_tokens=self.max_tokens,
+            ),
+            "Plain text mode"
+        )
+        if result:
+            return result, content
 
-        return [], ""
+        # Return whatever content we got for aggressive extraction
+        return [], content
 
     @staticmethod
     def _safe_text(response) -> str:
@@ -1257,7 +1261,7 @@ Now extract ALL visible questions:"""
 def create_fast_parser(**kwargs):
     """🚀 Fast: Larger chunks, more parallel"""
     return AIQuestionParser(
-        gemini_model="gemini-2.5-pro",
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
         max_chunk_size=20000,
         max_concurrency=5,
         max_tokens=65536,
@@ -1267,7 +1271,7 @@ def create_fast_parser(**kwargs):
 def create_balanced_parser(**kwargs):
     """⚖️ Balanced: Medium settings"""
     return AIQuestionParser(
-        gemini_model="gemini-2.5-pro",
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
         max_chunk_size=15000,
         max_concurrency=3,
         max_tokens=65536,
@@ -1277,7 +1281,7 @@ def create_balanced_parser(**kwargs):
 def create_quality_parser(**kwargs):
     """🎯 Quality: Smaller chunks, more accurate"""
     return AIQuestionParser(
-        gemini_model="gemini-2.5-pro",
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
         max_chunk_size=10000,
         max_concurrency=2,
         max_tokens=65536,

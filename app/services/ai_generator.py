@@ -134,7 +134,7 @@ class AIQuestionGenerator:
                        topic="Toan", difficulty="TH"):
         """Generate questions - auto-batches and parallelizes if count > BATCH_SIZE."""
         if not self._client:
-            raise RuntimeError("AI client not initialized. Check GOOGLE_API_KEY.")
+            raise RuntimeError("GOOGLE_API_KEY chưa được cấu hình. Vui lòng thêm API key.")
 
         if count <= self.BATCH_SIZE:
             return await self._generate_single(samples, count, q_type, topic, difficulty)
@@ -144,7 +144,7 @@ class AIQuestionGenerator:
     async def generate_exam(self, samples, sections, topic="", q_type=""):
         """Generate mixed-difficulty exam - all difficulty levels in PARALLEL."""
         if not self._client:
-            raise RuntimeError("AI client not initialized. Check GOOGLE_API_KEY.")
+            raise RuntimeError("GOOGLE_API_KEY chưa được cấu hình. Vui lòng thêm API key.")
 
         # Build tasks for each difficulty level
         tasks = []
@@ -268,59 +268,74 @@ class AIQuestionGenerator:
           1. Schema mode (response_schema) - guaranteed valid JSON
           2. JSON mode (response_mime_type only) - usually valid
           3. Plain text - needs manual parsing
+
+        Retries up to 3 times on 429 rate limit errors.
         """
         sem = self._get_semaphore()
         async with sem:
             from google.genai import types
 
+            # Retry wrapper for rate limits
+            async def _call_with_retry(config, label):
+                for attempt in range(3):
+                    try:
+                        response = await self._client.aio.models.generate_content(
+                            model=self.gemini_model,
+                            contents=prompt,
+                            config=config,
+                        )
+                        text = self._safe_text(response)
+                        if text:
+                            return text
+                        return None
+                    except Exception as e:
+                        err_str = str(e)
+                        if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                            wait = (attempt + 1) * 10  # 10s, 20s, 30s
+                            logger.warning(f"{label} rate limited (attempt {attempt+1}/3), waiting {wait}s...")
+                            await asyncio.sleep(wait)
+                            continue
+                        logger.warning(f"{label} failed: {e}")
+                        return None  # Non-retryable error → try next tier
+                return None  # All retries exhausted
+
             # Tier 1: Structured output with schema
-            try:
-                response = await self._client.aio.models.generate_content(
-                    model=self.gemini_model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.7,
-                        max_output_tokens=self.max_tokens,
-                        response_mime_type="application/json",
-                        response_schema=QUESTION_SCHEMA,
-                    )
-                )
-                text = self._safe_text(response)
-                if text:
-                    return text
-            except Exception as e:
-                logger.warning(f"Schema mode failed: {e}")
+            text = await _call_with_retry(
+                types.GenerateContentConfig(
+                    temperature=0.7,
+                    max_output_tokens=self.max_tokens,
+                    response_mime_type="application/json",
+                    response_schema=QUESTION_SCHEMA,
+                ),
+                "Schema mode"
+            )
+            if text:
+                return text
 
             # Tier 2: JSON mode without schema
-            try:
-                response = await self._client.aio.models.generate_content(
-                    model=self.gemini_model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.7,
-                        max_output_tokens=self.max_tokens,
-                        response_mime_type="application/json",
-                    )
-                )
-                text = self._safe_text(response)
-                if text:
-                    return text
-            except Exception as e:
-                logger.warning(f"JSON mode failed: {e}")
+            text = await _call_with_retry(
+                types.GenerateContentConfig(
+                    temperature=0.7,
+                    max_output_tokens=self.max_tokens,
+                    response_mime_type="application/json",
+                ),
+                "JSON mode"
+            )
+            if text:
+                return text
 
             # Tier 3: Plain text
-            try:
-                response = await self._client.aio.models.generate_content(
-                    model=self.gemini_model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.7,
-                        max_output_tokens=self.max_tokens,
-                    )
-                )
-                return self._safe_text(response)
-            except Exception as e:
-                raise RuntimeError(f"Gemini API error: {e}")
+            text = await _call_with_retry(
+                types.GenerateContentConfig(
+                    temperature=0.7,
+                    max_output_tokens=self.max_tokens,
+                ),
+                "Plain text mode"
+            )
+            if text:
+                return text
+
+            raise RuntimeError("Gemini API: tất cả mode đều thất bại (có thể hết quota). Vui lòng thử lại sau vài phút.")
 
     # ========== HELPERS ==========
 

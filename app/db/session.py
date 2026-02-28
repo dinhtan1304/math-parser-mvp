@@ -55,16 +55,18 @@ elif _is_postgres:
         connect_args["ssl"] = ssl_ctx
 
     _engine_kwargs["connect_args"] = connect_args
-    _engine_kwargs["pool_pre_ping"] = True
+    _engine_kwargs["pool_pre_ping"] = True       # Check connection alive before use
     _engine_kwargs["pool_size"] = 5
     _engine_kwargs["max_overflow"] = 10
     _engine_kwargs["pool_recycle"] = 300
     _engine_kwargs["pool_timeout"] = 30
 
     if "neon" in _db_url.lower():
-        _engine_kwargs["pool_size"] = 3
-        _engine_kwargs["max_overflow"] = 5
-        _engine_kwargs["pool_recycle"] = 180
+        # Neon serverless aggressively closes idle connections
+        # Use smaller pool + faster recycle
+        _engine_kwargs["pool_size"] = 2
+        _engine_kwargs["max_overflow"] = 3
+        _engine_kwargs["pool_recycle"] = 60       # Recycle every 60s (Neon closes fast)
         logger.info("Neon PostgreSQL detected — optimized pool settings")
 
 
@@ -98,5 +100,14 @@ async def get_db():
     async with AsyncSessionLocal() as session:
         try:
             yield session
+        except Exception:
+            try:
+                await session.rollback()
+            except Exception:
+                pass  # Connection already closed (Neon idle timeout)
+            raise
         finally:
-            await session.close()
+            try:
+                await session.close()
+            except Exception:
+                pass  # Already closed

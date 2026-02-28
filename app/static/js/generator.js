@@ -113,8 +113,7 @@ function renderGenCard(q, num) {
             <span class="q-num">Câu ${num}</span>
             <div class="q-badges">
                 <span class="gen-tag">AI</span>
-                <span class="q-badge type">${esc(q.type || '')}</span>
-                <span class="q-badge diff" style="background:${color}18;color:${color}">${esc(q.difficulty || '')}</span>
+                ${renderCurriculumBadges(q)}
             </div>
         </div>
         <div class="q-text">${esc(q.question || '')}</div>
@@ -138,7 +137,8 @@ window.saveGenToBank = async function() {
     try {
         const questions = generatedResults.map(q => ({
             question_text: q.question || '', question_type: q.type || 'TN', topic: q.topic || '',
-            difficulty: q.difficulty || 'TH', answer: q.answer || '', solution_steps: JSON.stringify(q.solution_steps || []),
+            difficulty: q.difficulty || 'TH', grade: q.grade || null, chapter: q.chapter || '',
+            lesson_title: q.lesson_title || '', answer: q.answer || '', solution_steps: JSON.stringify(q.solution_steps || []),
         }));
         const res = await fetch('/api/v1/questions/bulk', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ questions }) });
         if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || 'Lưu thất bại'); }
@@ -166,7 +166,7 @@ function _getGenExportPayload() {
     const topic = $('genTopic').value || '';
     const type = isExam ? 'Kiểm tra tổng hợp' : ($('genType') ? $('genType').value : 'Toán');
     return {
-        questions: generatedResults.map(q => ({ question: q.question || '', type: q.type || 'TN', topic: q.topic || '', difficulty: q.difficulty || 'TH', answer: q.answer || '', solution_steps: q.solution_steps || [] })),
+        questions: generatedResults.map(q => ({ question: q.question || '', type: q.type || 'TN', topic: q.topic || '', difficulty: q.difficulty || 'TH', grade: q.grade || null, chapter: q.chapter || '', lesson_title: q.lesson_title || '', answer: q.answer || '', solution_steps: q.solution_steps || [] })),
         title: isExam ? 'ĐỀ KIỂM TRA' : 'ĐỀ THI TOÁN HỌC', subtitle: topic || type,
         include_answers: true, include_solutions: true, group_by_diff: isExam,
     };

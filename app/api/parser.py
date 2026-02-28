@@ -90,6 +90,38 @@ class ExamListResponse(BaseModel):
 
 # ==================== Helpers ====================
 
+def _is_mock_result(questions: list) -> bool:
+    """Detect if cached result was from mock parser (regex garbage).
+
+    Mock parser signs:
+    - All topics are "Toán học" (hardcoded default)
+    - No grade/chapter/lesson data
+    - No solution_steps
+    """
+    if not questions or len(questions) == 0:
+        return True
+
+    # Check first 5 questions
+    sample = questions[:5]
+    mock_signs = 0
+
+    for q in sample:
+        topic = q.get("topic", "")
+        grade = q.get("grade")
+        chapter = q.get("chapter", "")
+        steps = q.get("solution_steps", [])
+
+        if topic == "Toán học":
+            mock_signs += 1
+        if not grade and not chapter:
+            mock_signs += 1
+        if not steps:
+            mock_signs += 1
+
+    # If >80% of checks are mock-like, it's mock data
+    return mock_signs > len(sample) * 2
+
+
 def _is_math_text_poor_quality(text: str) -> bool:
     """Heuristic: check if extracted text is garbage or missing math symbols."""
     if not text or len(text) < 50:
@@ -218,7 +250,10 @@ async def _save_questions_to_bank(
 
     except Exception as e:
         logger.error(f"Exam {exam_id}: Failed to save questions to bank: {e}")
-        await db.rollback()
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
 
 async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool = False):
@@ -249,12 +284,12 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
 
             _publish_progress(exam_id, "progress", {"percent": 25, "message": "Trích xuất xong. Đang phân tích..."})
 
-            # ── Sprint 3, Task 19: Gemini Cache — check if same file already parsed ──
+            # ── Gemini Cache — check if same file already parsed ──
+            # BUT: skip cache if no AI provider (prevents serving old mock results)
             questions = None
-            if file_hash:
+            if file_hash and ai_parser._client:
                 cache_result = await db.execute(
                     select(Exam.result_json).filter(
-                        Exam.user_id == exam.user_id,
                         Exam.file_hash == file_hash,
                         Exam.status == "completed",
                         Exam.result_json.isnot(None),
@@ -264,11 +299,16 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
                 cached_json = cache_result.scalar()
                 if cached_json:
                     try:
-                        questions = json.loads(cached_json)
-                        logger.info(f"Exam {exam_id}: Cache HIT (hash={file_hash[:8]}), reusing {len(questions)} questions")
-                        _publish_progress(exam_id, "progress", {"percent": 70, "message": f"Cache hit! Tìm thấy {len(questions)} câu đã phân tích."})
+                        cached_questions = json.loads(cached_json)
+                        # Validate cache quality: reject if all topics are "Toán học" (mock parser output)
+                        if cached_questions and not _is_mock_result(cached_questions):
+                            questions = cached_questions
+                            logger.info(f"Exam {exam_id}: Cache HIT (hash={file_hash[:8]}), reusing {len(questions)} questions")
+                            _publish_progress(exam_id, "progress", {"percent": 70, "message": f"Cache hit! Tìm thấy {len(questions)} câu đã phân tích."})
+                        else:
+                            logger.info(f"Exam {exam_id}: Cache rejected (low quality mock data)")
                     except json.JSONDecodeError:
-                        questions = None  # Cache corrupted, re-parse
+                        questions = None
 
             # Auto-fallback: text mode failed → try vision
             if questions is None:
