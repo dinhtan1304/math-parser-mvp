@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 import os
 
 from app.core.config import settings
-from app.api import auth, parser, questions, generator, dashboard, export
+from app.api import auth, parser, questions, generator, dashboard, export, classes, assignments, submissions, game, analytics
 from app.db.session import engine
 from app.db.base import Base
 
@@ -21,11 +21,19 @@ async def lifespan(app: FastAPI):
 
     # ── Safe column migrations (works for both SQLite and PostgreSQL) ──
     _migrations = [
-        ("exam", "file_hash", "ALTER TABLE exam ADD COLUMN file_hash VARCHAR(32)"),
+        ("exam",     "file_hash",    "ALTER TABLE exam ADD COLUMN file_hash VARCHAR(32)"),
         ("question", "content_hash", "ALTER TABLE question ADD COLUMN content_hash VARCHAR(32)"),
-        ("question", "grade", "ALTER TABLE question ADD COLUMN grade INTEGER"),
-        ("question", "chapter", "ALTER TABLE question ADD COLUMN chapter VARCHAR(200)"),
+        ("question", "grade",        "ALTER TABLE question ADD COLUMN grade INTEGER"),
+        ("question", "chapter",      "ALTER TABLE question ADD COLUMN chapter VARCHAR(200)"),
         ("question", "lesson_title", "ALTER TABLE question ADD COLUMN lesson_title VARCHAR(200)"),
+        # Classroom feature columns
+        ("class",       "subject",     "ALTER TABLE class ADD COLUMN subject VARCHAR(100)"),
+        ("class",       "grade",       "ALTER TABLE class ADD COLUMN grade INTEGER"),
+        ("class",       "description", "ALTER TABLE class ADD COLUMN description TEXT"),
+        ("assignment",  "description", "ALTER TABLE assignment ADD COLUMN description TEXT"),
+        ("submission",  "game_mode",   "ALTER TABLE submission ADD COLUMN game_mode VARCHAR(50)"),
+        ("submission",  "xp_earned",   "ALTER TABLE submission ADD COLUMN xp_earned INTEGER DEFAULT 0"),
+        ("studentxp",   "level",       "ALTER TABLE studentxp ADD COLUMN level INTEGER DEFAULT 1"),
     ]
     # OPT: Index migrations (CREATE INDEX IF NOT EXISTS is idempotent)
     _index_migrations = [
@@ -120,12 +128,17 @@ from app.core.rate_limit import RateLimitMiddleware
 app.add_middleware(RateLimitMiddleware, enabled=(settings.ENV == "production"))
 
 # Include Routers
-app.include_router(auth.router, prefix=f"{settings.API_V1_STR}/auth", tags=["auth"])
-app.include_router(parser.router, prefix=f"{settings.API_V1_STR}/parser", tags=["parser"])
-app.include_router(questions.router, prefix=f"{settings.API_V1_STR}/questions", tags=["questions"])
-app.include_router(generator.router, prefix=f"{settings.API_V1_STR}/generate", tags=["generator"])
-app.include_router(dashboard.router, prefix=f"{settings.API_V1_STR}/dashboard", tags=["dashboard"])
-app.include_router(export.router, prefix=f"{settings.API_V1_STR}/export", tags=["export"])
+app.include_router(auth.router,        prefix=f"{settings.API_V1_STR}/auth",        tags=["auth"])
+app.include_router(parser.router,      prefix=f"{settings.API_V1_STR}/parser",      tags=["parser"])
+app.include_router(questions.router,   prefix=f"{settings.API_V1_STR}/questions",   tags=["questions"])
+app.include_router(generator.router,   prefix=f"{settings.API_V1_STR}/generate",    tags=["generator"])
+app.include_router(dashboard.router,   prefix=f"{settings.API_V1_STR}/dashboard",   tags=["dashboard"])
+app.include_router(export.router,      prefix=f"{settings.API_V1_STR}/export",      tags=["export"])
+app.include_router(classes.router,     prefix=f"{settings.API_V1_STR}/classes",     tags=["classroom"])
+app.include_router(assignments.router, prefix=f"{settings.API_V1_STR}/assignments", tags=["classroom"])
+app.include_router(submissions.router, prefix=f"{settings.API_V1_STR}/submissions", tags=["classroom"])
+app.include_router(game.router,        prefix=f"{settings.API_V1_STR}/game",        tags=["game"])
+app.include_router(analytics.router,   prefix=f"{settings.API_V1_STR}/analytics",   tags=["analytics"])
 
 # Templates
 templates = Jinja2Templates(directory="app/templates")
@@ -170,3 +183,7 @@ async def login_page(request: Request):
 @app.get("/register", response_class=HTMLResponse)
 async def register_page(request: Request):
     return templates.TemplateResponse("register.html", {"request": request})
+
+@app.get("/classes", response_class=HTMLResponse)
+async def classes_page(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})

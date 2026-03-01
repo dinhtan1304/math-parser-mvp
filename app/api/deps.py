@@ -55,3 +55,7 @@ def get_current_active_superuser(
             status_code=status.HTTP_403_FORBIDDEN, detail="The user doesn't have enough privileges"
         )
     return current_user
+
+
+# Alias — same as get_current_user (active check is already inside)
+get_current_active_user = get_current_user
