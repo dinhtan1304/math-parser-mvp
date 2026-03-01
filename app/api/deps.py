@@ -1,4 +1,3 @@
-
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
@@ -30,7 +29,14 @@ async def get_current_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Could not validate credentials",
         )
-    
+
+    # BUG FIX: Guard against None sub before int() conversion
+    if not token_data.sub:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Could not validate credentials",
+        )
+
     # Async query
     result = await db.execute(select(User).filter(User.id == int(token_data.sub)))
     user = result.scalars().first()

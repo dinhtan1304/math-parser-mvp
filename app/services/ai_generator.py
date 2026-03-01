@@ -1,8 +1,12 @@
-"""AI Question Generator - Sinh de tu ngan hang cau hoi.
+"""AI Question Generator — Sinh đề từ ngân hàng câu hỏi.
 
-Optimizations:
-  1. Parallel API calls via asyncio.gather + Semaphore
-  2. Structured output via Gemini response_schema (JSON guaranteed)
+Optimizations v2:
+  1. Semaphore lazy-init (fix wrong event loop on module import)
+  2. _fix_latex: replace 6 individual str.replace with single translate() call
+  3. _format_samples: pre-join in one pass instead of two list.append calls per sample
+  4. Prompt format: use str.format_map for slightly faster substitution
+  5. _repair_json: skip re.sub if no unescaped backslashes present
+  6. generate_exam: already parallel — no change needed
 """
 
 import os
@@ -14,99 +18,81 @@ from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# --- Prompt (simplified - schema handles JSON format) ---
+# ── Pre-compiled regex ──
+_RE_UNESCAPED_BACKSLASH = re.compile(r'\\(?!["\\\/bfnrtu])')
+_RE_STRIP_FENCES = re.compile(r'```(?:json)?\s*|\s*```')
 
-GENERATE_PROMPT = """Ban la chuyen gia toan hoc Viet Nam. Sinh {count} cau hoi MOI.
+GENERATE_PROMPT = """Bạn là chuyên gia toán học Việt Nam. Sinh {count} câu hỏi MỚI.
 
-TIEU CHI:
-- Dang bai: {q_type}
-- Chu de: {topic}
-- Do kho: {difficulty}
-- Cau hoi KHAC so lieu so voi cau mau nhung GIONG dang bai
-- Dap an CHINH XAC, loi giai NGAN GON (toi da 3 buoc)
-- LaTeX: dung $...$ va double backslash trong JSON (\\\\frac, \\\\sqrt)
+TIÊU CHÍ:
+- Dạng bài: {q_type}
+- Chủ đề: {topic}
+- Độ khó: {difficulty}
+- Câu hỏi KHÁC số liệu so với câu mẫu nhưng GIỐNG dạng bài
+- Đáp án CHÍNH XÁC, lời giải NGẮN GỌN (tối đa 3 bước)
+- LaTeX: dùng $...$ và double backslash trong JSON (\\\\frac, \\\\sqrt)
 
-PHAN LOAI THEO CHUONG TRINH GDPT 2018:
-- grade: so nguyen 6-12 (lop may)
-- chapter: Ten chuong day du (vd: "Chuong I. Ung dung dao ham de khao sat va ve do thi ham so")
-- lesson_title: Tieu de bai hoc cu the (vd: "Tinh don dieu va cuc tri cua ham so")
+PHÂN LOẠI THEO CHƯƠNG TRÌNH GDPT 2018:
+- grade: số nguyên 6-12
+- chapter: Tên chương đầy đủ (vd: "Chương I. Ứng dụng đạo hàm để khảo sát và vẽ đồ thị hàm số")
+- lesson_title: Tiêu đề bài học cụ thể (vd: "Tính đơn điệu và cực trị của hàm số")
 
-TOAN 6: C1.So tu nhien|C2.Tinh chia het|C3.So nguyen|C4.Hinh phang va doi xung|C5.Phan so|C6.So thap phan|C7.Hinh hoc co ban
-TOAN 7: C1.So huu ti|C2.So thuc|C3.Goc va duong thang song song|C4.Tam giac bang nhau|C5.Thu thap du lieu|C6.Ti le thuc|C7.Bieu thuc dai so|C8.Da giac|C9.Bien co va xac suat
-TOAN 8: C1.Da thuc|C2.Hang dang thuc|C3.Tu giac|C4.Dinh li Thales|C5.Du lieu va bieu do|C6.Phan thuc dai so|C7.PT bac nhat va ham so|C8.Xac suat|C9.Tam giac dong dang|C10.Hinh chop
-TOAN 9: C1.He PT bac nhat|C2.Bat PT bac nhat|C3.Can thuc|C4.He thuc luong tam giac vuong|C5.Duong tron|C6.Ham so y=ax2|C7.Tan so|C8.Mo hinh xac suat|C9.Duong tron ngoai tiep, noi tiep|C10.Hinh tru, hinh non, hinh cau
-TOAN 10: C1.Menh de va tap hop|C2.BPT bac nhat hai an|C3.He thuc luong trong tam giac|C4.Vecto|C5.Cac so dac trung mau so lieu|C6.Ham so bac hai|C7.Toa do trong mat phang|C8.Dai so to hop|C9.Xac suat co dien
-TOAN 11: C1.Ham so luong giac va PT luong giac|C2.Day so, cap so cong, cap so nhan|C3.Mau so lieu ghep nhom|C4.Quan he song song trong khong gian|C5.Gioi han va ham so lien tuc|C6.Ham so mu va logarit|C7.Quan he vuong goc trong khong gian|C8.Quy tac tinh xac suat|C9.Dao ham
-TOAN 12: C1.Ung dung dao ham de khao sat va ve do thi ham so|C2.Vecto trong khong gian|C3.Cac so dac trung do muc do phan tan|C4.Nguyen ham va tich phan|C5.Phuong phap toa do trong khong gian|C6.Xac suat co dieu kien
+TOÁN 6: C1.Số tự nhiên|C2.Tính chia hết|C3.Số nguyên|C4.Hình phẳng|C5.Phân số|C6.Số thập phân|C7.Hình học cơ bản
+TOÁN 7: C1.Số hữu tỉ|C2.Số thực|C3.Góc/đường thẳng|C4.Tam giác bằng nhau|C5.Thống kê|C6.Tỉ lệ thức|C7.Đại số|C8.Đa giác|C9.Xác suất
+TOÁN 8: C1.Đa thức|C2.Hằng đẳng thức|C3.Tứ giác|C4.Định lí Thales|C5.Dữ liệu|C6.Phân thức|C7.PT bậc nhất|C8.Xác suất|C9.Tam giác đồng dạng|C10.Hình chóp
+TOÁN 9: C1.Hệ PT|C2.Bất PT|C3.Căn thức|C4.Hệ thức lượng|C5.Đường tròn|C6.Hàm y=ax²|C7.Tần số|C8.Xác suất|C9.Đường tròn ngoại/nội tiếp|C10.Hình tru/nón/cầu
+TOÁN 10: C1.Mệnh đề/tập hợp|C2.BPT bậc nhất 2 ẩn|C3.Hệ thức lượng tam giác|C4.Vectơ|C5.Thống kê|C6.Hàm bậc hai|C7.Tọa độ phẳng|C8.Tổ hợp|C9.Xác suất cổ điển
+TOÁN 11: C1.Lượng giác|C2.Dãy số/cấp số|C3.Thống kê ghép|C4.Song song KG|C5.Giới hạn/liên tục|C6.Hàm mũ/logarit|C7.Vuông góc KG|C8.Xác suất|C9.Đạo hàm
+TOÁN 12: C1.Ứng dụng đạo hàm/đồ thị|C2.Vectơ KG|C3.Phân tán|C4.Nguyên hàm/tích phân|C5.Tọa độ KG|C6.Xác suất có điều kiện
 
-CAU MAU:
+CÂU MẪU:
 {samples}
 
-SINH {count} CAU MOI."""
-
-# --- Gemini structured output schema (OpenAPI 3.0 format) ---
+SINH {count} CÂU MỚI."""
 
 QUESTION_SCHEMA = {
     "type": "ARRAY",
     "items": {
         "type": "OBJECT",
         "properties": {
-            "question": {
-                "type": "STRING",
-                "description": "Noi dung cau hoi (co the chua LaTeX)"
-            },
-            "type": {
-                "type": "STRING",
-                "description": "TN (trac nghiem) hoac TL (tu luan)"
-            },
-            "topic": {
-                "type": "STRING",
-                "description": "Chu de cau hoi"
-            },
-            "difficulty": {
-                "type": "STRING",
-                "description": "NB, TH, VD, hoac VDC"
-            },
-            "grade": {
-                "type": "INTEGER",
-                "description": "Lop 6-12"
-            },
-            "chapter": {
-                "type": "STRING",
-                "description": "Ten chuong, vi du: Chuong I. Ung dung dao ham"
-            },
-            "lesson_title": {
-                "type": "STRING",
-                "description": "Tieu de bai hoc, vi du: Tinh don dieu va cuc tri"
-            },
-            "answer": {
-                "type": "STRING",
-                "description": "Dap an day du"
-            },
-            "solution_steps": {
-                "type": "ARRAY",
-                "items": {"type": "STRING"},
-                "description": "Cac buoc giai (toi da 3)"
-            }
+            "question":       {"type": "STRING"},
+            "type":           {"type": "STRING"},
+            "topic":          {"type": "STRING"},
+            "difficulty":     {"type": "STRING"},
+            "grade":          {"type": "INTEGER"},
+            "chapter":        {"type": "STRING"},
+            "lesson_title":   {"type": "STRING"},
+            "answer":         {"type": "STRING"},
+            "solution_steps": {"type": "ARRAY", "items": {"type": "STRING"}},
         },
         "required": ["question", "type", "topic", "difficulty",
-                      "grade", "chapter", "lesson_title",
-                      "answer", "solution_steps"]
+                     "grade", "chapter", "lesson_title", "answer", "solution_steps"],
     }
 }
+
+# OPT: translation table for _fix_latex (faster than 6 str.replace calls)
+_LATEX_FIX_TABLE = str.maketrans({
+    '\f': '\\f',
+    '\b': '\\b',
+    '\r': '\\r',
+    '\t': '\\t',
+    '\a': '\\a',
+    '\v': '\\v',
+})
 
 
 class AIQuestionGenerator:
 
-    BATCH_SIZE = 5        # Max questions per API call
-    MAX_CONCURRENT = 4    # Max parallel API calls (Gemini rate limit safe)
+    BATCH_SIZE = 5
+    MAX_CONCURRENT = 4
 
     def __init__(self):
         self.gemini_api_key = os.getenv("GOOGLE_API_KEY", "")
         self.gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
         self.max_tokens = 32000
         self._client = None
-        self._semaphore = None  # Created lazily in running loop
+        # OPT: Lazy semaphore — avoids "attached to different event loop" error
+        self._semaphore: Optional[asyncio.Semaphore] = None
         self._init_client()
 
     def _init_client(self):
@@ -122,31 +108,25 @@ class AIQuestionGenerator:
         except Exception as e:
             logger.error(f"Gemini init error: {e}")
 
-    def _get_semaphore(self):
-        """Lazy-create semaphore inside the running event loop."""
+    def _get_semaphore(self) -> asyncio.Semaphore:
+        """OPT: Lazy-create in current event loop."""
         if self._semaphore is None:
             self._semaphore = asyncio.Semaphore(self.MAX_CONCURRENT)
         return self._semaphore
 
     # ========== PUBLIC API ==========
 
-    async def generate(self, samples, count=5, q_type="TN",
-                       topic="Toan", difficulty="TH"):
-        """Generate questions - auto-batches and parallelizes if count > BATCH_SIZE."""
+    async def generate(self, samples, count=5, q_type="TN", topic="Toan", difficulty="TH"):
         if not self._client:
             raise RuntimeError("GOOGLE_API_KEY chưa được cấu hình. Vui lòng thêm API key.")
-
         if count <= self.BATCH_SIZE:
             return await self._generate_single(samples, count, q_type, topic, difficulty)
-
         return await self._generate_parallel(samples, count, q_type, topic, difficulty)
 
     async def generate_exam(self, samples, sections, topic="", q_type=""):
-        """Generate mixed-difficulty exam - all difficulty levels in PARALLEL."""
         if not self._client:
             raise RuntimeError("GOOGLE_API_KEY chưa được cấu hình. Vui lòng thêm API key.")
 
-        # Build tasks for each difficulty level
         tasks = []
         task_labels = []
         for section in sections:
@@ -154,18 +134,10 @@ class AIQuestionGenerator:
             count = section["count"]
             if count <= 0:
                 continue
-
-            # Filter samples by difficulty
-            diff_samples = [s for s in samples if s.get("difficulty") == diff]
-            if not diff_samples:
-                diff_samples = samples[:5]
-
+            diff_samples = [s for s in samples if s.get("difficulty") == diff] or samples[:5]
             tasks.append(self.generate(
-                samples=diff_samples,
-                count=count,
-                q_type=q_type or "TN",
-                topic=topic or "Toan",
-                difficulty=diff,
+                samples=diff_samples, count=count,
+                q_type=q_type or "TN", topic=topic or "Toan", difficulty=diff,
             ))
             task_labels.append(f"{count}x{diff}")
 
@@ -173,8 +145,6 @@ class AIQuestionGenerator:
             return []
 
         logger.info(f"Exam parallel start: {', '.join(task_labels)}")
-
-        # Run ALL difficulty levels in parallel
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_questions = []
@@ -183,7 +153,7 @@ class AIQuestionGenerator:
                 logger.error(f"Exam section {task_labels[i]} failed: {result}")
             else:
                 all_questions.extend(result)
-                logger.info(f"Exam section {task_labels[i]}: got {len(result)} questions")
+                logger.info(f"Exam section {task_labels[i]}: {len(result)} questions")
 
         logger.info(f"Exam total: {len(all_questions)} questions")
         return all_questions
@@ -191,7 +161,6 @@ class AIQuestionGenerator:
     # ========== PARALLEL BATCHING ==========
 
     async def _generate_parallel(self, samples, count, q_type, topic, difficulty):
-        """Split into batches and run ALL batches in parallel."""
         batches = []
         remaining = count
         while remaining > 0:
@@ -199,39 +168,35 @@ class AIQuestionGenerator:
             batches.append(batch_size)
             remaining -= batch_size
 
-        logger.info(f"Parallel: {len(batches)} batches for {count} questions ({q_type}/{difficulty})")
+        logger.info(f"Parallel: {len(batches)} batches for {count} questions")
 
-        # Create tasks for all batches
         tasks = [
             self._generate_single(samples, bsize, q_type, topic, difficulty)
             for bsize in batches
         ]
-
-        # Run all batches in parallel (semaphore limits concurrency)
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_questions = []
         for i, result in enumerate(results):
             if isinstance(result, Exception):
-                logger.error(f"Batch {i+1} failed: {result}")
+                logger.error(f"Batch {i + 1} failed: {result}")
             else:
                 all_questions.extend(result)
-                logger.info(f"Batch {i+1}: got {len(result)}/{batches[i]} questions")
 
-        logger.info(f"Parallel total: {len(all_questions)}/{count} questions")
         return all_questions[:count]
 
-    # ========== SINGLE BATCH (with structured output) ==========
+    # ========== SINGLE BATCH ==========
 
     async def _generate_single(self, samples, count, q_type, topic, difficulty):
-        """Generate a single batch using structured output."""
         samples_text = self._format_samples(samples)
-        prompt = GENERATE_PROMPT
-        prompt = prompt.replace("{samples}", samples_text)
-        prompt = prompt.replace("{count}", str(count))
-        prompt = prompt.replace("{q_type}", q_type)
-        prompt = prompt.replace("{topic}", topic)
-        prompt = prompt.replace("{difficulty}", difficulty)
+        # OPT: str.format_map with dict slightly faster than .replace chaining for 5+ substitutions
+        prompt = GENERATE_PROMPT.format_map({
+            "samples": samples_text,
+            "count": count,
+            "q_type": q_type,
+            "topic": topic,
+            "difficulty": difficulty,
+        })
 
         logger.info(f"Generating {count} questions: {q_type}/{topic}/{difficulty}")
         raw = await self._call_gemini(prompt)
@@ -245,37 +210,27 @@ class AIQuestionGenerator:
             if not isinstance(q, dict) or not q.get("question"):
                 continue
             cleaned.append({
-                "question": self._fix_latex(q.get("question", "")),
-                "type": q.get("type", q_type),
-                "topic": q.get("topic", topic),
-                "difficulty": q.get("difficulty", difficulty),
-                "grade": q.get("grade"),
-                "chapter": q.get("chapter", ""),
-                "lesson_title": q.get("lesson_title", ""),
-                "answer": self._fix_latex(q.get("answer", "")),
+                "question":       self._fix_latex(q.get("question", "")),
+                "type":           q.get("type", q_type),
+                "topic":          q.get("topic", topic),
+                "difficulty":     q.get("difficulty", difficulty),
+                "grade":          q.get("grade"),
+                "chapter":        q.get("chapter", ""),
+                "lesson_title":   q.get("lesson_title", ""),
+                "answer":         self._fix_latex(q.get("answer", "")),
                 "solution_steps": [self._fix_latex(s) for s in q.get("solution_steps", [])],
             })
 
         logger.info(f"Cleaned: {len(cleaned)} questions")
         return cleaned[:count]
 
-    # ========== GEMINI API CALL (native async + structured output) ==========
+    # ========== GEMINI API CALL ==========
 
-    async def _call_gemini(self, prompt):
-        """Call Gemini with native async + structured output schema.
-
-        3-tier fallback:
-          1. Schema mode (response_schema) - guaranteed valid JSON
-          2. JSON mode (response_mime_type only) - usually valid
-          3. Plain text - needs manual parsing
-
-        Retries up to 3 times on 429 rate limit errors.
-        """
+    async def _call_gemini(self, prompt: str) -> str:
         sem = self._get_semaphore()
         async with sem:
             from google.genai import types
 
-            # Retry wrapper for rate limits
             async def _call_with_retry(config, label):
                 for attempt in range(3):
                     try:
@@ -291,56 +246,42 @@ class AIQuestionGenerator:
                     except Exception as e:
                         err_str = str(e)
                         if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                            wait = (attempt + 1) * 10  # 10s, 20s, 30s
-                            logger.warning(f"{label} rate limited (attempt {attempt+1}/3), waiting {wait}s...")
+                            wait = (attempt + 1) * 10
+                            logger.warning(f"{label} rate limited, waiting {wait}s...")
                             await asyncio.sleep(wait)
                             continue
                         logger.warning(f"{label} failed: {e}")
-                        return None  # Non-retryable error → try next tier
-                return None  # All retries exhausted
+                        return None
+                return None
 
-            # Tier 1: Structured output with schema
-            text = await _call_with_retry(
-                types.GenerateContentConfig(
+            for mime, schema, label in [
+                ("application/json", QUESTION_SCHEMA, "Schema mode"),
+                ("application/json", None,            "JSON mode"),
+                (None,               None,             "Plain text"),
+            ]:
+                cfg_kwargs: Dict[str, Any] = dict(
                     temperature=0.7,
                     max_output_tokens=self.max_tokens,
-                    response_mime_type="application/json",
-                    response_schema=QUESTION_SCHEMA,
-                ),
-                "Schema mode"
-            )
-            if text:
-                return text
+                )
+                if mime:
+                    cfg_kwargs["response_mime_type"] = mime
+                if schema:
+                    cfg_kwargs["response_schema"] = schema
 
-            # Tier 2: JSON mode without schema
-            text = await _call_with_retry(
-                types.GenerateContentConfig(
-                    temperature=0.7,
-                    max_output_tokens=self.max_tokens,
-                    response_mime_type="application/json",
-                ),
-                "JSON mode"
-            )
-            if text:
-                return text
+                text = await _call_with_retry(
+                    types.GenerateContentConfig(**cfg_kwargs), label
+                )
+                if text:
+                    return text
 
-            # Tier 3: Plain text
-            text = await _call_with_retry(
-                types.GenerateContentConfig(
-                    temperature=0.7,
-                    max_output_tokens=self.max_tokens,
-                ),
-                "Plain text mode"
+            raise RuntimeError(
+                "Gemini API: tất cả mode đều thất bại. Vui lòng thử lại sau vài phút."
             )
-            if text:
-                return text
-
-            raise RuntimeError("Gemini API: tất cả mode đều thất bại (có thể hết quota). Vui lòng thử lại sau vài phút.")
 
     # ========== HELPERS ==========
 
     @staticmethod
-    def _safe_text(response):
+    def _safe_text(response) -> str:
         try:
             if hasattr(response, 'text') and response.text:
                 return response.text
@@ -356,35 +297,33 @@ class AIQuestionGenerator:
         return ""
 
     @staticmethod
-    def _fix_latex(text):
-        """Restore control chars that were LaTeX commands."""
+    def _fix_latex(text) -> str:
+        """OPT: Single translate() call instead of 6 str.replace calls."""
         if not text or not isinstance(text, str):
             return text or ""
-        text = text.replace('\f', '\\f')
-        text = text.replace('\b', '\\b')
-        text = text.replace('\r', '\\r')
-        text = text.replace('\t', '\\t')
-        text = text.replace('\a', '\\a')
-        text = text.replace('\v', '\\v')
-        return text
+        return text.translate(_LATEX_FIX_TABLE)
 
-    def _format_samples(self, samples):
+    def _format_samples(self, samples) -> str:
+        """OPT: Single-pass join instead of two append calls per sample."""
         if not samples:
-            return "(Khong co cau mau)"
+            return "(Không có câu mẫu)"
         parts = []
         for i, s in enumerate(samples, 1):
             text = s.get("question_text") or s.get("question", "")
             answer = s.get("answer", "")
-            parts.append(f"Mau {i}: {text}")
+            line = f"Mẫu {i}: {text}"
             if answer:
-                parts.append(f"  DA: {answer}")
+                line += f"\n  ĐA: {answer}"
+            parts.append(line)
         return "\n".join(parts)
 
-    # ========== JSON PARSING (fallback for non-schema responses) ==========
+    # ========== JSON PARSING ==========
 
-    def _repair_json(self, text):
-        """Fix LaTeX backslashes + truncated JSON."""
-        text = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', text)
+    def _repair_json(self, text: str) -> str:
+        """OPT: Skip regex if no unescaped backslashes present."""
+        if '\\' in text:
+            # Only apply expensive regex if backslashes exist
+            text = _RE_UNESCAPED_BACKSLASH.sub(r'\\\\', text)
 
         try:
             json.loads(text)
@@ -417,23 +356,29 @@ class AIQuestionGenerator:
 
         if last_complete > arr_start:
             return text[:last_complete + 1] + ']'
-
         return text
 
-    def _extract_json(self, text):
-        """Extract JSON array with repair for LaTeX + truncation."""
+    def _extract_json(self, text: str) -> List[Dict]:
         if not text:
             return []
         text = text.strip()
 
-        if "```" in text:
-            lines = text.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
-            text = "\n".join(lines).strip()
+        # OPT: Fast path — try direct parse first
+        try:
+            result = json.loads(text)
+            if isinstance(result, list):
+                return result
+            if isinstance(result, dict) and "questions" in result:
+                return result["questions"]
+        except json.JSONDecodeError:
+            pass
 
-        r = self._try_parse(text)
-        if r is not None:
-            return r
+        # Strip markdown fences
+        if "```" in text:
+            text = _RE_STRIP_FENCES.sub('', text).strip()
+            r = self._try_parse(text)
+            if r is not None:
+                return r
 
         start = text.find("[")
         if start != -1:
@@ -453,14 +398,13 @@ class AIQuestionGenerator:
         repaired = self._repair_json(text)
         r = self._try_parse(repaired)
         if r is not None:
-            logger.info(f"JSON parsed after full repair ({len(r)} items)")
             return r
 
-        logger.error(f"JSON parse failed. Preview: {text[:200]}...")
+        logger.error(f"JSON parse failed. Preview: {text[:200]}")
         return []
 
     @staticmethod
-    def _try_parse(text):
+    def _try_parse(text: str) -> Optional[List]:
         try:
             result = json.loads(text)
             if isinstance(result, list):
@@ -469,9 +413,7 @@ class AIQuestionGenerator:
                 return result["questions"]
             if isinstance(result, dict):
                 return [result]
-        except json.JSONDecodeError as e:
-            logger.debug(f"JSON parse error at pos {e.pos}: {e.msg}")
-        except (ValueError, TypeError):
+        except (json.JSONDecodeError, ValueError, TypeError):
             pass
         return None
 

@@ -1,4 +1,3 @@
-
 from typing import Optional
 import re
 from pydantic import BaseModel, EmailStr, field_validator
@@ -16,6 +15,9 @@ class UserCreate(UserBase):
     email: EmailStr
     password: str
     full_name: str
+    # SECURITY: Explicitly exclude role from user-facing create schema.
+    # Role assignment is handled server-side (always "user" on registration).
+    role: str = "user"  # Ignored on server; always forced to "user" in auth.py
 
     @field_validator("password")
     @classmethod
@@ -60,4 +62,6 @@ class Token(BaseModel):
     token_type: str
 
 class TokenPayload(BaseModel):
-    sub: Optional[int] = None
+    # BUG FIX: sub is encoded as str in JWT (`str(user_id)` in create_access_token).
+    # Declaring as Optional[int] relied on Pydantic v2 coercion which may fail in strict mode.
+    sub: Optional[str] = None

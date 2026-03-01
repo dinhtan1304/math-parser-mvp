@@ -136,6 +136,9 @@ async def export_generated_docx(
     """Export generated questions to DOCX."""
     if not req.questions:
         raise HTTPException(400, "Danh sách câu hỏi trống")
+    # FIX #7: Prevent DoS via huge payloads
+    if len(req.questions) > 500:
+        raise HTTPException(400, f"Tối đa 500 câu hỏi mỗi lần xuất (nhận {len(req.questions)})")
 
     try:
         buf = export_docx(
@@ -166,6 +169,8 @@ async def export_generated_docx_split(
     """Export generated questions to ZIP (đề riêng + đáp án riêng)."""
     if not req.questions:
         raise HTTPException(400, "Danh sách câu hỏi trống")
+    if len(req.questions) > 500:
+        raise HTTPException(400, f"Tối đa 500 câu hỏi mỗi lần xuất (nhận {len(req.questions)})")
 
     try:
         result = export_docx_split(
@@ -200,6 +205,8 @@ async def export_generated_latex(
     """Export generated questions to LaTeX .tex file."""
     if not req.questions:
         raise HTTPException(400, "Danh sách câu hỏi trống")
+    if len(req.questions) > 500:
+        raise HTTPException(400, f"Tối đa 500 câu hỏi mỗi lần xuất (nhận {len(req.questions)})")
 
     try:
         buf = export_latex(
@@ -230,6 +237,8 @@ async def export_generated_pdf(
     """Export generated questions to print-ready HTML (for Save as PDF)."""
     if not req.questions:
         raise HTTPException(400, "Danh sách câu hỏi trống")
+    if len(req.questions) > 500:
+        raise HTTPException(400, f"Tối đa 500 câu hỏi mỗi lần xuất (nhận {len(req.questions)})")
 
     html = export_pdf_html(
         [q.model_dump() for q in req.questions],

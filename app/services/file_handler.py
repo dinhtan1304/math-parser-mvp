@@ -1,3 +1,4 @@
+import logging
 """
 File Handler - Extract text from PDF and DOC/DOCX files
 Optimized for Vietnamese math documents
@@ -18,11 +19,20 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 
 
+logger = logging.getLogger(__name__)
+
+
 class FileHandler:
     """
     Extract text from PDF and DOC/DOCX files.
     Optimized for Vietnamese math documents.
     """
+
+    # OPT: Pre-compiled regex patterns for _clean_text (called per file)
+    _RE_CTRL      = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
+    _RE_MULTI_NL  = re.compile(r'\n{4,}')
+    _RE_MULTI_SP  = re.compile(r' {3,}')
+    _RE_MULTI_TAB = re.compile(r'\t+')
     
     def __init__(self):
         self.executor = ThreadPoolExecutor(max_workers=4)
@@ -38,9 +48,9 @@ class FileHandler:
         try:
             import fitz
             self.has_pymupdf = True
-            print("✅ pymupdf (fitz) available")
+            logger.info("pymupdf (fitz) available")
         except ImportError:
-            print("⚠️ pymupdf not installed. Run: pip install pymupdf")
+            logger.warning("pymupdf not installed. Run: pip install pymupdf")
         
         try:
             import pdfplumber
@@ -57,9 +67,17 @@ class FileHandler:
         try:
             from docx import Document
             self.has_docx = True
-            print("✅ python-docx available")
+            logger.info("python-docx available")
         except ImportError:
-            print("⚠️ python-docx not installed. Run: pip install python-docx")
+            logger.warning("python-docx not installed. Run: pip install python-docx")
+
+        self.has_docx2txt = False
+        try:
+            import docx2txt
+            self.has_docx2txt = True
+            logger.info("docx2txt available (for .doc files)")
+        except ImportError:
+            pass
     
     async def extract_text(self, file_path: str, use_vision: bool = False) -> Dict[str, Any]:
         """
@@ -116,14 +134,14 @@ class FileHandler:
             result = await self._extract_pdf_pymupdf(file_path)
             if self._is_quality_good(result.get("text", "")):
                 return result
-            print("⚠️ PyMuPDF quality poor, trying pdfplumber...")
+            logger.warning("PyMuPDF quality poor, trying pdfplumber...")
         
         # Method 2: pdfplumber
         if self.has_pdfplumber:
             result = await self._extract_pdf_pdfplumber(file_path)
             if self._is_quality_good(result.get("text", "")):
                 return result
-            print("⚠️ pdfplumber quality poor, trying pypdf...")
+            logger.warning("pdfplumber quality poor, trying pypdf...")
         
         # Method 3: pypdf (fallback)
         if self.has_pypdf:
@@ -270,7 +288,7 @@ class FileHandler:
                     })
                 
                 doc.close()
-                print(f"✅ PyMuPDF rendered {len(base64_images)} pages to images")
+                logger.info("PyMuPDF rendered {len(base64_images)} pages to images")
                 return base64_images, len(base64_images)
             
             # Method 2: pdf2image (needs poppler) - FALLBACK
@@ -291,11 +309,11 @@ class FileHandler:
                         "mime_type": "image/jpeg"
                     })
                 
-                print(f"✅ pdf2image rendered {len(base64_images)} pages to images")
+                logger.info("pdf2image rendered {len(base64_images)} pages to images")
                 return base64_images, len(base64_images)
                 
             except ImportError:
-                print("❌ Neither pymupdf nor pdf2image available!")
+                logger.error("Neither pymupdf nor pdf2image available!")
                 return [], 0
         
         images, page_count = await loop.run_in_executor(self.executor, convert)
@@ -350,13 +368,13 @@ class FileHandler:
                                 })
                             
                             doc.close()
-                            print(f"✅ DOCX → PDF → {len(base64_images)} images")
+                            logger.info("DOCX → PDF → {len(base64_images)} images")
                             return base64_images, len(base64_images)
             except Exception as e:
-                print(f"⚠️ LibreOffice conversion failed: {e}")
+                logger.warning("LibreOffice conversion failed: {e}")
             
             # Fallback: extract text instead
-            print("⚠️ Cannot convert DOCX to images, falling back to text extraction")
+            logger.warning("Cannot convert DOCX to images, falling back to text extraction")
             return [], 0
         
         images, page_count = await loop.run_in_executor(self.executor, convert)
@@ -431,6 +449,15 @@ class FileHandler:
             except Exception:
                 pass
             
+            # Method 0: Try docx2txt (pure Python, works without system tools)
+            try:
+                import docx2txt
+                text_out = docx2txt.process(file_path)
+                if text_out and len(text_out.strip()) > 50:
+                    return text_out.strip(), 'docx2txt'
+            except Exception:
+                pass
+
             # Method 2: Try antiword (Linux)
             try:
                 result = subprocess.run(
@@ -582,30 +609,32 @@ class FileHandler:
         return True
     
     def _clean_text(self, text: str) -> str:
-        """Clean and normalize text"""
+        """Clean and normalize text. OPT: uses pre-compiled class-level regex."""
         if not text:
             return ""
-        
-        # Remove control characters
-        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
-        
-        # Normalize whitespace
-        text = re.sub(r'\n{4,}', '\n\n\n', text)
-        text = re.sub(r' {3,}', '  ', text)
-        text = re.sub(r'\t+', ' ', text)
-        
-        # Fix Vietnamese encoding issues
+        text = self._RE_CTRL.sub('', text)
+        text = self._RE_MULTI_NL.sub('\n\n\n', text)
+        text = self._RE_MULTI_SP.sub('  ', text)
+        text = self._RE_MULTI_TAB.sub(' ', text)
         text = text.replace('Ð', 'Đ').replace('ð', 'đ')
-        
         return text.strip()
     
     async def _compute_hash(self, file_path: str) -> str:
-        """Compute MD5 hash of file"""
-        hash_md5 = hashlib.md5()
-        with open(file_path, 'rb') as f:
-            for chunk in iter(lambda: f.read(8192), b''):
-                hash_md5.update(chunk)
-        return hash_md5.hexdigest()
+        """Compute MD5 hash of file.
+
+        OPT: File I/O is blocking — run in executor to avoid freezing the
+        event loop on large files (a 20MB PDF takes ~50ms to hash synchronously).
+        """
+        loop = asyncio.get_running_loop()
+
+        def _hash():
+            h = hashlib.md5()
+            with open(file_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(65536), b''):  # 64KB chunks
+                    h.update(chunk)
+            return h.hexdigest()
+
+        return await loop.run_in_executor(self.executor, _hash)
 
 
 # ==================== TEST ====================

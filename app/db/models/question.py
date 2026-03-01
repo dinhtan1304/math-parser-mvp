@@ -65,4 +65,7 @@ class Question(Base):
         # Curriculum indexes
         Index("ix_question_user_grade", "user_id", "grade"),
         Index("ix_question_user_grade_chapter", "user_id", "grade", "chapter"),
+        # OPT: Covering index for list_questions ORDER BY created_at DESC + user filter
+        # Without this, SQLite does a full table scan on ORDER BY created_at.
+        Index("ix_question_user_created", "user_id", "created_at"),
     )

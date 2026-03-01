@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 from app.db.base_class import Base
@@ -16,3 +16,11 @@ class Exam(Base):
     error_message = Column(Text, nullable=True)
 
     user = relationship("User", backref="exams")
+
+    __table_args__ = (
+        # OPT: Covering index for list_exams ORDER BY created_at DESC + user filter.
+        # Without this, SQLite does a full table scan on ORDER BY exam.created_at.
+        Index("ix_exam_user_created", "user_id", "created_at"),
+        # Index for cache lookup: file_hash + status + created_at
+        Index("ix_exam_hash_status", "file_hash", "status"),
+    )

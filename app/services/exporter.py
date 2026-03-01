@@ -28,6 +28,9 @@ from docx.oxml.ns import qn
 
 from app.services.latex_to_omml import add_math_to_paragraph
 
+# ── Pre-compiled patterns for hot paths ──
+_RE_XML_INVALID = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
+
 # ─── Difficulty helpers ───────────────────────────────────────
 DIFF_LABELS = {
     "NB": "Nhận biết",
@@ -110,14 +113,10 @@ def _strip_latex_delimiters(text: str) -> str:
 
 
 def _sanitize_for_xml(text: str) -> str:
-    """Remove characters that are invalid in XML (python-docx requirement).
-    
-    XML 1.0 allows: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD]
-    Everything else (NULL, control chars 0x01-0x08, 0x0B-0x0C, 0x0E-0x1F) must go.
-    """
+    """Remove XML-invalid control chars. Uses pre-compiled regex."""
     if not text:
         return ""
-    return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    return _RE_XML_INVALID.sub('', text)
 
 
 # ═══════════════════════════════════════════════════════════════

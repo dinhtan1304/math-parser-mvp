@@ -30,35 +30,41 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # ── SSE progress tracking (Sprint 3, Task 18) ──
 # In-memory store: exam_id → asyncio.Queue of SSE events
 _progress_queues: Dict[int, List[asyncio.Queue]] = {}
+# FIX #11: Lock to prevent concurrent subscribe/unsubscribe corruption
+_queues_lock = asyncio.Lock()
 
 
 def _publish_progress(exam_id: int, event: str, data: dict):
-    """Publish a progress event to all connected SSE clients."""
+    """Publish a progress event to all connected SSE clients.
+    No lock needed here: list reads are safe in asyncio single-threaded model.
+    """
     queues = _progress_queues.get(exam_id, [])
     msg = json.dumps(data, ensure_ascii=False)
-    for q in queues:
+    for q in list(queues):  # FIX #11: iterate copy to avoid mutation during loop
         try:
             q.put_nowait((event, msg))
         except asyncio.QueueFull:
             pass  # Drop if client is too slow
 
 
-def _subscribe(exam_id: int) -> asyncio.Queue:
+async def _subscribe(exam_id: int) -> asyncio.Queue:
     """Subscribe to progress events for an exam."""
     q = asyncio.Queue(maxsize=100)
-    if exam_id not in _progress_queues:
-        _progress_queues[exam_id] = []
-    _progress_queues[exam_id].append(q)
+    async with _queues_lock:  # FIX #11: protect list mutation
+        if exam_id not in _progress_queues:
+            _progress_queues[exam_id] = []
+        _progress_queues[exam_id].append(q)
     return q
 
 
-def _unsubscribe(exam_id: int, q: asyncio.Queue):
+async def _unsubscribe(exam_id: int, q: asyncio.Queue):
     """Unsubscribe from progress events."""
-    queues = _progress_queues.get(exam_id, [])
-    if q in queues:
-        queues.remove(q)
-    if not queues and exam_id in _progress_queues:
-        del _progress_queues[exam_id]
+    async with _queues_lock:  # FIX #11: protect list mutation
+        queues = _progress_queues.get(exam_id, [])
+        if q in queues:
+            queues.remove(q)
+        if not queues and exam_id in _progress_queues:
+            del _progress_queues[exam_id]
 
 
 # ==================== Response Models ====================
@@ -232,21 +238,26 @@ async def _save_questions_to_bank(
         )
         saved_ids = [row[0] for row in result.fetchall()]
 
-        # Sync FTS5 index (background, non-blocking)
-        try:
-            from app.services.fts import sync_fts_questions
-            await sync_fts_questions(db, saved_ids)
-            logger.info(f"Exam {exam_id}: FTS indexed {len(saved_ids)} questions")
-        except Exception as e:
-            logger.debug(f"FTS sync skipped: {e}")
+        # OPT: FTS + embedding as truly non-blocking background tasks.
+        # FIX: _save_questions_to_bank is called inside `async with AsyncSessionLocal() as db`
+        # in process_file. The task outlives that context, so we open a NEW session.
+        async def _index_in_background(ids):
+            from app.db.session import AsyncSessionLocal
+            async with AsyncSessionLocal() as _db:
+                try:
+                    from app.services.fts import sync_fts_questions
+                    await sync_fts_questions(_db, ids)
+                    logger.info(f"Exam {exam_id}: FTS indexed {len(ids)} questions")
+                except Exception as e:
+                    logger.debug(f"FTS sync skipped: {e}")
+                try:
+                    from app.services.vector_search import embed_questions
+                    await embed_questions(_db, ids)
+                    logger.info(f"Exam {exam_id}: Embedded {len(ids)} questions")
+                except Exception as e:
+                    logger.debug(f"Embedding skipped: {e}")
 
-        # Generate vector embeddings (background, non-blocking)
-        try:
-            from app.services.vector_search import embed_questions
-            await embed_questions(db, saved_ids)
-            logger.info(f"Exam {exam_id}: Embedded {len(saved_ids)} questions")
-        except Exception as e:
-            logger.debug(f"Embedding skipped: {e}")
+        asyncio.create_task(_index_in_background(saved_ids))
 
     except Exception as e:
         logger.error(f"Exam {exam_id}: Failed to save questions to bank: {e}")
@@ -311,17 +322,24 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
                         questions = None
 
             # Auto-fallback: text mode failed → try vision
+            # OPT: Only re-extract if text was actually poor quality AND no images yet.
+            # If images were already extracted in step 1 (e.g. use_vision=True path), skip re-read.
             if questions is None:
                 if not use_vision and (not extracted_text.strip() or _is_math_text_poor_quality(extracted_text)):
                     logger.info(f"Exam {exam_id}: Text quality poor, falling back to Vision mode")
                     _publish_progress(exam_id, "progress", {"percent": 30, "message": "Chuyển sang Vision mode..."})
-                    try:
-                        extracted = await file_handler.extract_text(exam.file_path, use_vision=True)
-                        images = extracted.get("images", [])
-                        extracted_text = extracted.get("text", "")
+                    if images:
+                        # OPT: Images already extracted — no need to re-read file
+                        logger.info(f"Exam {exam_id}: Reusing {len(images)} already-extracted images")
                         use_vision = True
-                    except Exception as e:
-                        logger.warning(f"Exam {exam_id}: Vision fallback failed: {e}")
+                    else:
+                        try:
+                            extracted = await file_handler.extract_text(exam.file_path, use_vision=True)
+                            images = extracted.get("images", [])
+                            extracted_text = extracted.get("text", "")
+                            use_vision = True
+                        except Exception as e:
+                            logger.warning(f"Exam {exam_id}: Vision fallback failed: {e}")
 
                 _publish_progress(exam_id, "progress", {"percent": 40, "message": "AI đang phân tích câu hỏi..."})
 
@@ -349,8 +367,24 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
             exam.result_json = result_json
             await db.commit()
 
+            # FIX #9: Delete uploaded file after successful parse — no need to keep it
+            # (result_json is stored in DB; file is large and not needed anymore)
+            try:
+                if exam.file_path and os.path.exists(exam.file_path):
+                    os.remove(exam.file_path)
+                    exam.file_path = None
+                    await db.commit()
+                    logger.info(f"Exam {exam_id}: Uploaded file deleted after successful parse")
+            except Exception as del_err:
+                logger.warning(f"Exam {exam_id}: Could not delete uploaded file: {del_err}")
+
             # Step 4: Populate Question Bank
-            await _save_questions_to_bank(db, exam.id, exam.user_id, questions)
+            # BUG FIX: Exam is already marked "completed" above. Any failure here
+            # should NOT mark exam as "failed" since parse itself succeeded.
+            try:
+                await _save_questions_to_bank(db, exam.id, exam.user_id, questions)
+            except Exception as save_err:
+                logger.error(f"Exam {exam_id}: Bank save failed (exam still complete): {save_err}")
 
             _publish_progress(exam_id, "complete", {
                 "message": f"Hoàn tất! {len(questions)} câu hỏi.",
@@ -367,6 +401,14 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
                 if exam:
                     exam.status = "failed"
                     exam.error_message = str(e)[:500]
+                    # FIX #13: Clean up file on failure too (no reason to keep a failed upload)
+                    try:
+                        if exam.file_path and os.path.exists(exam.file_path):
+                            os.remove(exam.file_path)
+                            exam.file_path = None
+                            logger.info(f"Exam {exam_id}: Cleaned up file after parse failure")
+                    except Exception:
+                        pass
                     await db.commit()
             except Exception as db_err:
                 logger.error(f"Failed to update exam {exam_id} status: {db_err}")
@@ -407,7 +449,7 @@ async def parse_file_endpoint(
         )
 
     # ── Save file ──
-    file_id = str(uuid.uuid4())[:8]
+    file_id = str(uuid.uuid4())[:16]  # FIX #8: 16 hex chars = 2^64 space, avoids filename collision
     safe_filename = f"{file_id}_{file.filename}"
     file_path = os.path.join(UPLOAD_DIR, safe_filename)
 
@@ -500,7 +542,7 @@ async def stream_progress(
         return StreamingResponse(_immediate_error(), media_type="text/event-stream")
 
     # Subscribe to progress events
-    queue = _subscribe(job_id)
+    queue = await _subscribe(job_id)
 
     async def _event_generator():
         try:
@@ -526,7 +568,7 @@ async def stream_progress(
             # Timeout — tell client to fall back to polling
             yield f"event: error_event\ndata: {json.dumps({'message': 'Stream timeout'})}\n\n"
         finally:
-            _unsubscribe(job_id, queue)
+            await _unsubscribe(job_id, queue)
 
     return StreamingResponse(
         _event_generator(),
@@ -557,6 +599,7 @@ async def list_exams(
 
     # Fetch page
     offset = (page - 1) * page_size
+    # OPT: ORDER BY exam.created_at DESC — covered by ix_exam_user_created index
     result = await db.execute(
         select(Exam)
         .filter(Exam.user_id == current_user.id)

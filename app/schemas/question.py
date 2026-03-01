@@ -2,9 +2,10 @@
 Pydantic schemas for Question API.
 """
 
-from typing import Optional, List
+from typing import Optional, List, Union
 from datetime import datetime
-from pydantic import BaseModel
+import json
+from pydantic import BaseModel, field_validator
 
 
 class QuestionResponse(BaseModel):
@@ -19,9 +20,28 @@ class QuestionResponse(BaseModel):
     chapter: Optional[str] = None
     lesson_title: Optional[str] = None
     answer: Optional[str] = None
-    solution_steps: Optional[str] = None  # JSON string
+    # FIX #14: solution_steps normalized to List[str] for ALL responses.
+    # DB stores it as JSON string; this validator auto-parses it.
+    # Frontend always receives List[str] from both /questions and /generate.
+    solution_steps: Optional[List[str]] = None
     question_order: int = 0
     created_at: datetime
+
+    @field_validator("solution_steps", mode="before")
+    @classmethod
+    def parse_solution_steps(cls, v):
+        """Auto-deserialize JSON string → List[str] from DB storage."""
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                return parsed if isinstance(parsed, list) else [str(parsed)]
+            except (json.JSONDecodeError, ValueError):
+                return [v] if v.strip() else []
+        return []
 
     class Config:
         from_attributes = True
@@ -55,7 +75,18 @@ class QuestionCreateItem(BaseModel):
     chapter: Optional[str] = ""
     lesson_title: Optional[str] = ""
     answer: Optional[str] = ""
-    solution_steps: Optional[str] = "[]"
+    # FIX #4: Accept both List[str] (from /generate) and str (JSON) and normalize to str for DB storage
+    solution_steps: Union[List[str], Optional[str]] = "[]"
+
+    @field_validator("solution_steps", mode="before")
+    @classmethod
+    def normalize_solution_steps(cls, v):
+        """Normalize List[str] → JSON string for DB storage."""
+        if v is None:
+            return "[]"
+        if isinstance(v, list):
+            return json.dumps(v, ensure_ascii=False)
+        return v  # Already a string
 
 
 class QuestionListResponse(BaseModel):

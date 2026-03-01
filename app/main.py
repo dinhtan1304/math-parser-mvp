@@ -27,6 +27,12 @@ async def lifespan(app: FastAPI):
         ("question", "chapter", "ALTER TABLE question ADD COLUMN chapter VARCHAR(200)"),
         ("question", "lesson_title", "ALTER TABLE question ADD COLUMN lesson_title VARCHAR(200)"),
     ]
+    # OPT: Index migrations (CREATE INDEX IF NOT EXISTS is idempotent)
+    _index_migrations = [
+        "CREATE INDEX IF NOT EXISTS ix_question_user_created ON question(user_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_exam_user_created ON exam(user_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_exam_hash_status ON exam(file_hash, status)",
+    ]
     async with engine.begin() as conn:
         for table, col, sql in _migrations:
             try:
@@ -35,6 +41,25 @@ async def lifespan(app: FastAPI):
                 logging.getLogger(__name__).info(f"Migration: added {table}.{col}")
             except Exception:
                 pass  # Column already exists
+        for idx_sql in _index_migrations:
+            try:
+                await conn.execute(text(idx_sql))
+            except Exception:
+                pass  # Index already exists
+
+    # Migrate old broken FTS5 table (had wrong content= definition) — drop and recreate
+    try:
+        async with engine.begin() as _conn:
+            # Check if old FTS table exists with broken content= schema
+            _result = await _conn.execute(text("SELECT sql FROM sqlite_master WHERE type='table' AND name='question_fts'"))
+            _row = _result.fetchone()
+            if _row and 'content=' in (_row[0] or ''):
+                # Old external-content FTS5 table — drop it so init_fts can recreate correctly
+                await _conn.execute(text("DROP TABLE IF EXISTS question_fts"))
+                import logging
+                logging.getLogger(__name__).info("Dropped old FTS5 table with broken content= schema")
+    except Exception:
+        pass
 
     # Init FTS5 full-text search index (SQLite only — skipped on PostgreSQL)
     try:
@@ -63,12 +88,25 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
-cors_origins = ["*"] if settings.ENV == "development" else (
-    [str(origin) for origin in settings.BACKEND_CORS_ORIGINS] 
-    if settings.BACKEND_CORS_ORIGINS 
-    else ["*"]  # Fallback if no origins configured
-)
+# FIX #12: CORS — no wildcard fallback in production
+# In production, BACKEND_CORS_ORIGINS must be explicitly set.
+import logging as _log
+_cors_logger = _log.getLogger(__name__)
+
+if settings.ENV == "development":
+    cors_origins = ["*"]
+elif settings.BACKEND_CORS_ORIGINS:
+    cors_origins = [str(origin) for origin in settings.BACKEND_CORS_ORIGINS]
+else:
+    # Production with no CORS origins configured — log a warning, restrict to empty list
+    # (This blocks all cross-origin requests, which is safer than allowing everything)
+    _cors_logger.warning(
+        "PRODUCTION: BACKEND_CORS_ORIGINS not configured. "
+        "All cross-origin requests will be blocked. "
+        "Set BACKEND_CORS_ORIGINS env var to your frontend URL(s)."
+    )
+    cors_origins = []
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,

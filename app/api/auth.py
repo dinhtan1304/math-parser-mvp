@@ -1,4 +1,3 @@
-
 from datetime import timedelta
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -52,11 +51,12 @@ async def register_user(
             detail="The user with this username already exists in the system.",
         )
     
+    # SECURITY: Force role="user" — never trust user-supplied role on registration
     user = User(
         email=user_in.email,
         hashed_password=security.get_password_hash(user_in.password),
         full_name=user_in.full_name,
-        role=user_in.role
+        role="user",
     )
     db.add(user)
     await db.commit()
