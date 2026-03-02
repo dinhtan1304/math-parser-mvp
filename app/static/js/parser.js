@@ -224,6 +224,7 @@ function renderQCard(q, num, showSource) {
 
     let steps = q.solution_steps || [];
     if (typeof steps === 'string') { try { steps = JSON.parse(steps); } catch { steps = []; } }
+    steps = steps.filter(s => s && String(s).trim());
 
     const actions = qId ? `<div class="q-actions">
         <button class="q-act-btn q-edit-btn" onclick="openEditModal(${qId})" title="Sửa">✏️</button>
@@ -232,17 +233,40 @@ function renderQCard(q, num, showSource) {
 
     const ans = q.answer || '';
 
+    const solId = 'sol-' + (qId || Math.random().toString(36).slice(2, 8));
+    const solutionHtml = steps.length ? `<div class="q-solution">
+        <button class="q-solution-toggle" onclick="toggleSolutionSteps(this,'${solId}')">
+            <span class="q-sol-arrow">▶</span>
+            <span>Xem lời giải</span>
+            <span class="q-sol-count">${steps.length} bước</span>
+        </button>
+        <ul class="q-steps" id="${solId}">${steps.map(s => '<li>' + esc(s) + '</li>').join('')}</ul>
+    </div>` : '';
+
     return `<div class="q-card" data-qid="${qId}">
         <div class="q-top">
             <span class="q-num">Câu ${num}</span>
             <div class="q-badges">
                 ${renderCurriculumBadges(q)}
-                ${actions}
             </div>
+            ${actions}
         </div>
         <div class="q-text">${esc(text)}</div>
         ${ans ? `<div class="q-answer"><div class="q-answer-label">Đáp án</div><div class="q-answer-text">${esc(ans)}</div></div>` : ''}
-        ${steps.length ? `<div class="q-solution"><div class="q-solution-label">Lời giải</div><ul class="q-steps">${steps.map(s => '<li>' + esc(s) + '</li>').join('')}</ul></div>` : ''}
+        ${solutionHtml}
         ${showSource ? `<div class="q-source">Nguồn: <span class="q-source-name">${esc(showSource)}</span></div>` : ''}
     </div>`;
+}
+
+/* ===== Solution steps toggle ===== */
+function toggleSolutionSteps(btn, stepsId) {
+    const ul = document.getElementById(stepsId);
+    if (!ul) return;
+    const isOpen = ul.classList.toggle('open');
+    btn.classList.toggle('open', isOpen);
+    // Re-render math inside steps if opening for the first time
+    if (isOpen && !ul.dataset.mathRendered) {
+        renderMath(ul);
+        ul.dataset.mathRendered = '1';
+    }
 }

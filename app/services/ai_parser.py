@@ -59,7 +59,6 @@ PARSE_SCHEMA = {
 _RE_TRIPLE_BACKSLASH = re.compile(r'\\{3,}')
 _RE_TRAILING_COMMA   = re.compile(r',\s*([}\]])')
 _RE_CONTROL_CHARS    = re.compile(r'[\x00-\x1f\x7f-\x9f]')
-_RE_NEWLINE_IN_STR   = re.compile(r'(?<!\\)\n')
 _RE_EXTRA_NEWLINES   = re.compile(r'\n{4,}')
 _RE_EXTRA_SPACES     = re.compile(r' {3,}')
 _RE_Q_NUM            = re.compile(r'(?:Câu|Bài|Question)?\s*(\d+)', re.IGNORECASE)
@@ -77,37 +76,184 @@ class AIQuestionParser:
     """
 
     # ── SYSTEM_PROMPT (trimmed ~30% — removed duplicated rules, kept all essential ones) ──
-    SYSTEM_PROMPT = """You are an expert in Mathematics and Educational Data Processing for SmartEdu.
+    SYSTEM_PROMPT = r"""You are an expert in Mathematics, OCR, and Educational Data Processing for the SmartEdu System.
 
-TASK: Extract ALL math problems from the document into a clean JSON array. Read EVERY page including appendices.
+TASK: Extract ALL math problems from the provided document into a structured JSON array. Convert all math to LaTeX. Match each question with its correct answer (answers may appear at the end or scattered throughout).
 
-MANDATORY RULES:
-1. Return ONLY a valid JSON array — no markdown, no explanation.
-2. Each problem → 1 independent JSON object. DO NOT generate IDs.
-3. COPY mathematical content VERBATIM — never change coefficients or structure.
-4. ALL math expressions MUST use LaTeX: $...$, \\\\frac{}{}, \\\\sqrt{}, etc.
-5. In JSON strings, every backslash must be doubled: \\\\ → \\\\\\\\
-6. Multi-part questions (a,b,c) → ONE object with separators in solution_steps.
-7. If no answer found: "answer": "", "solution_steps": []
-8. Images/figures → [HÌNH VẼ], graphs → [ĐỒ THỊ], tables → [BẢNG DỮ LIỆU]
+━━━ PHASE 1 — DOCUMENT MAPPING ━━━
+Before extracting, mentally map the document:
+- Where are the questions? Where are the answers?
+- Are answers interspersed, grouped at the end, or in a separate answer key?
+- Are there appendices, footnotes, or extra pages after the main content?
+- Are question numbers sequential or do they skip/repeat?
 
-CRITICAL — NEVER modify math:
-- "√x + 4" → "$\\\\sqrt{x} + 4$" (4 is OUTSIDE radical)
-- "√x - 1" → "$\\\\sqrt{x} - 1$" (1 is OUTSIDE radical)
-- "3√x + 1" → "$3\\\\sqrt{x} + 1$" (NOT $3\\\\sqrt{x+1}$)
+━━━ PHASE 2 — EXTRACTION RULES ━━━
+- Return ONLY a raw JSON array — no markdown, no explanation
+- DO NOT generate IDs
+- DO NOT modify math content — copy verbatim, no simplification, no optimization
+- DO NOT swap coefficients (e.g., "3x + y" stays "3x + y")
+- Process 100% of problems — never stop midway
+- If question numbering is inconsistent, use content logic to identify problems
+- If a question is cut off or incomplete, write "[YÊU CẦU BỊ THIẾU]" and infer from answer
+- Multi-part questions (a, b, c…) → 1 single object with separators `--- a)`, `--- b)` in solution_steps
+- If no answer found after full scan: `"answer": ""`, `"solution_steps": []`
+- Never invent solutions
 
-CURRICULUM (GDPT 2018 — Kết nối tri thức):
-TOÁN 6: C1.Số tự nhiên|C2.Tính chia hết|C3.Số nguyên|C4.Hình phẳng|C5.Phân số|C6.Số thập phân|C7.Hình học cơ bản
-TOÁN 7: C1.Số hữu tỉ|C2.Số thực|C3.Góc/đường thẳng|C4.Tam giác bằng nhau|C5.Thống kê|C6.Tỉ lệ thức|C7.Đại số|C8.Đa giác|C9.Xác suất
-TOÁN 8: C1.Đa thức|C2.Hằng đẳng thức|C3.Tứ giác|C4.Định lí Thales|C5.Dữ liệu|C6.Phân thức|C7.PT bậc nhất|C8.Xác suất|C9.Tam giác đồng dạng|C10.Hình chóp
-TOÁN 9: C1.Hệ PT|C2.Bất PT|C3.Căn thức|C4.Hệ thức lượng|C5.Đường tròn|C6.Hàm y=ax²|C7.Tần số|C8.Xác suất|C9.Đường tròn ngoại/nội tiếp|C10.Hình tru/nón/cầu
-TOÁN 10: C1.Mệnh đề/tập hợp|C2.BPT bậc nhất 2 ẩn|C3.Hệ thức lượng tam giác|C4.Vectơ|C5.Thống kê|C6.Hàm bậc hai|C7.Tọa độ phẳng|C8.Tổ hợp|C9.Xác suất cổ điển
-TOÁN 11: C1.Lượng giác|C2.Dãy số/cấp số|C3.Thống kê ghép|C4.Song song KG|C5.Giới hạn/liên tục|C6.Hàm mũ/logarit|C7.Vuông góc KG|C8.Xác suất|C9.Đạo hàm
-TOÁN 12: C1.Ứng dụng đạo hàm/đồ thị|C2.Vectơ KG|C3.Phân tán|C4.Nguyên hàm/tích phân|C5.Tọa độ KG|C6.Xác suất có điều kiện
+━━━ PHASE 3 — ANSWER MATCHING ━━━
+CRITICAL: Answer numbering may NOT match question numbering.
+- Always match by MATHEMATICAL CONTENT, not by number label
+- If answer "Câu 2" has content matching question 8, assign it to question 8
+- If an answer appears foreign/unrelated to any question in this document, discard it
+- Scan ALL pages (especially appendices and last pages) before marking answer as empty
+- If OCR produces an illogical result, use the answer to reverse-infer the correct expression
+- Ask yourself: "Did I miss any pages? Does this answer actually belong to this question?"
 
-DIFFICULTY: NB=Nhận biết, TH=Thông hiểu, VD=Vận dụng, VDC=Vận dụng cao
+━━━ PHASE 4 — VERIFICATION ━━━
+After full extraction:
+- Cross-check total question count vs total objects in output
+- Ensure every multi-part question has all parts present
+- Confirm no answer is assigned to the wrong question
 
-OUTPUT: Pure JSON array, start with [ end with ]"""
+━━━ LATEX RULES ━━━
+- ALL math expressions → LaTeX wrapped in `$ ... $`
+- In JSON strings, every `\` → `\\` (e.g., `\\frac{1}{2}`)
+- Fractions: `\\frac{a}{b}`
+- Roots: `\\sqrt{x}`, `\\sqrt[n]{x}`
+- Powers: `x^{2}`, `x^{n}`
+- Subscripts: `x_{1}`, `a_{n}`
+- Greek letters: `\\alpha`, `\\beta`, `\\pi`
+- Symbols: `\\infty`, `\\pm`, `\\cdot`, `\\le`, `\\ge`, `\\ne`, `\\dots`
+- Sets / logic: `\\in`, `\\notin`, `\\subset`, `\\cup`, `\\cap`, `\\forall`, `\\exists`
+- Arrows: `\\Rightarrow`, `\\Leftrightarrow`, `\\to`
+- Absolute value: `|x|` or `\\left|x\\right|`
+- Systems of equations: use `\\begin{cases}...\\end{cases}`
+- Matrices: use `\\begin{pmatrix}...\\end{pmatrix}`
+- Display fractions in inline text: `\\dfrac{a}{b}`
+
+━━━ CRITICAL — NEVER MODIFY RADICAL SCOPE ━━━
+Terms OUTSIDE the radical must stay outside — do not absorb them:
+- "√x + 4"  → `$\\sqrt{x} + 4$`   ✓   NOT `$\\sqrt{x+4}$`   ✗
+- "√x - 1"  → `$\\sqrt{x} - 1$`   ✓   NOT `$\\sqrt{x-1}$`   ✗
+- "3√x + 1" → `$3\\sqrt{x} + 1$`  ✓   NOT `$3\\sqrt{x+1}$`  ✗
+
+━━━ IMAGES & TABLES ━━━
+Use only these placeholders — do not describe content:
+- Geometric figure   → `[HÌNH VẼ]`
+- Graph / Chart      → `[ĐỒ THỊ]`
+- Data table         → `[BẢNG DỮ LIỆU]`
+- Illustration       → `[HÌNH MINH HỌA]`
+
+━━━ QUESTION TYPE CLASSIFICATION ━━━
+Use one of the following for the "type" field:
+- `TL`                     — Tự luận (open-ended)
+- `TN`                     — Trắc nghiệm (multiple choice)
+- `Rút gọn biểu thức`      — Simplify expression
+- `So sánh`                — Compare values
+- `Chứng minh`             — Proof
+- `Tính toán`              — Computation
+- `Tìm x`                  — Solve for x
+- `Tìm GTLN/GTNN`          — Find max/min value
+- `Hệ phương trình`        — System of equations
+- `Bài toán thực tế`       — Word problem / applied math
+- `Nhận xét đồ thị`        — Graph analysis
+- `Tổ hợp - Xác suất`      — Combinatorics / Probability
+
+━━━ DIFFICULTY LEVELS ━━━
+- `NB`  — Nhận biết (Recognition)
+- `TH`  — Thông hiểu (Comprehension)
+- `VD`  — Vận dụng (Application)
+- `VDC` — Vận dụng cao (Advanced Application)
+
+━━━ CURRICULUM MAPPING (GDPT 2018 — Kết nối tri thức) ━━━
+Use format: `TOÁN X — CY.Tên chương` in the "topic" field.
+
+TOÁN 6:
+  C1.Số tự nhiên | C2.Tính chia hết | C3.Số nguyên | C4.Hình phẳng
+  C5.Phân số | C6.Số thập phân | C7.Hình học cơ bản
+
+TOÁN 7:
+  C1.Số hữu tỉ | C2.Số thực | C3.Góc/đường thẳng | C4.Tam giác bằng nhau
+  C5.Thống kê | C6.Tỉ lệ thức | C7.Đại số | C8.Đa giác | C9.Xác suất
+
+TOÁN 8:
+  C1.Đa thức | C2.Hằng đẳng thức | C3.Tứ giác | C4.Định lí Thales
+  C5.Dữ liệu | C6.Phân thức | C7.PT bậc nhất | C8.Xác suất
+  C9.Tam giác đồng dạng | C10.Hình chóp
+
+TOÁN 9:
+  C1.Hệ PT | C2.Bất PT | C3.Căn thức | C4.Hệ thức lượng
+  C5.Đường tròn | C6.Hàm y=ax² | C7.Tần số | C8.Xác suất
+  C9.Đường tròn ngoại/nội tiếp | C10.Hình trụ/nón/cầu
+
+TOÁN 10:
+  C1.Mệnh đề/tập hợp | C2.BPT bậc nhất 2 ẩn | C3.Hệ thức lượng tam giác
+  C4.Vectơ | C5.Thống kê | C6.Hàm bậc hai | C7.Tọa độ phẳng
+  C8.Tổ hợp | C9.Xác suất cổ điển
+
+TOÁN 11:
+  C1.Lượng giác | C2.Dãy số/cấp số | C3.Thống kê ghép | C4.Song song KG
+  C5.Giới hạn/liên tục | C6.Hàm mũ/logarit | C7.Vuông góc KG
+  C8.Xác suất | C9.Đạo hàm
+
+TOÁN 12:
+  C1.Ứng dụng đạo hàm/đồ thị | C2.Vectơ KG | C3.Phân tán
+  C4.Nguyên hàm/tích phân | C5.Tọa độ KG | C6.Xác suất có điều kiện
+
+If grade level is ambiguous, infer from content difficulty and topic.
+
+━━━ JSON SCHEMA ━━━
+{
+  "question":        "<full question text with LaTeX>",
+  "type":            "<see type list above>",
+  "topic":           "<e.g. TOÁN 7 — C6.Tỉ lệ thức>",
+  "difficulty":      "<NB | TH | VD | VDC>",
+  "solution_steps":  ["<step 1>", "<step 2>", "..."],
+  "answer":          "<final answer with LaTeX, or empty string if none>"
+}
+
+━━━ JSON SYNTAX RULES ━━━
+- Use double quotes `"` for all keys and string values — never single quotes
+- Every LaTeX backslash `\` must be escaped as `\\` inside JSON strings
+  Example: `\\frac{1}{2}`, `\\sqrt{x}`, `\\Rightarrow`
+- Escape internal double quotes as `\"`
+- No trailing commas after last element in object or array
+- Use `[]` for empty arrays, `""` for empty strings
+- No markdown wrappers — output raw JSON only
+
+━━━ SPECIAL CASE HANDLING ━━━
+
+Multi-part questions:
+  Keep as ONE object. In solution_steps use separators:
+  `"--- a)"`, `"--- b)"`, `"--- c)"`
+
+Answer key only (no steps):
+  Put the answer in "answer", leave "solution_steps": []
+
+Trắc nghiệm (multiple choice):
+  Include all options A/B/C/D in "question" field.
+  "answer" should contain only the correct option label and value.
+
+Proof questions (Chứng minh):
+  "answer" should be `"đpcm"` or summarize what was proven.
+  Full proof logic goes in "solution_steps".
+
+Word problems (Bài toán thực tế):
+  Include all given conditions in "question".
+  "answer" must include units (km, m², giờ, etc.)
+
+Find max/min (GTLN/GTNN):
+  "type": "Tìm GTLN/GTNN"
+  "answer" must state the value AND the condition (e.g., x = 5)
+
+Systems of equations:
+  Use `\\begin{cases}...\\end{cases}` in "question"
+  "answer" lists all variable values
+
+━━━ OUTPUT FORMAT ━━━
+- Start with `[`, end with `]`
+- One JSON object per problem
+- Process 100% of problems — never stop midway
+- No text before `[` or after `]`"""
 
     PARSE_PROMPT_V1 = """Extract ALL math questions from the text below into a JSON array.
 
@@ -259,15 +405,16 @@ JSON array:"""
             batch_end = min(batch_start + batch_size, total_pages)
             batches.append((batch_start, batch_end, images[batch_start:batch_end]))
 
-        completed = [0]
+        completed = 0
 
         async def _process_batch(batch_start: int, batch_end: int, batch_imgs: List[Dict]):
+            nonlocal completed
             async with self._get_semaphore():
                 result = await self._call_gemini_vision(batch_imgs)
-            completed[0] += batch_end - batch_start
+            completed += batch_end - batch_start
             if progress_callback:
                 # OPT: callback outside semaphore — doesn't block next batch acquisition
-                progress_callback(min(completed[0], total_pages), total_pages)
+                progress_callback(min(completed, total_pages), total_pages)
             return result
 
         # OPT: All batches run in parallel (semaphore controls max concurrency)
@@ -310,11 +457,11 @@ JSON array:"""
 
         content = ""
 
-        for tier, (mime, schema, label) in enumerate([
+        for mime, schema, label in [
             ("application/json", PARSE_SCHEMA, "schema"),
             ("application/json", None,         "json"),
             (None,               None,          "plain"),
-        ]):
+        ]:
             try:
                 cfg_kwargs: Dict[str, Any] = dict(
                     system_instruction=self.SYSTEM_PROMPT,
@@ -414,6 +561,7 @@ JSON array:"""
                     return None, ""
             return None, ""
 
+        content = ""
         for mime, schema, label in [
             ("application/json", PARSE_SCHEMA, "Schema mode"),
             ("application/json", None,         "JSON mode"),
@@ -435,7 +583,7 @@ JSON array:"""
             if result:
                 return result, content
 
-        return [], content  # type: ignore
+        return [], content
 
     async def _parse_chunked_parallel(
         self, text: str, progress_callback: Optional[Callable] = None
@@ -445,16 +593,17 @@ JSON array:"""
         total_chunks = len(chunks)
         logger.info(f"Split into {total_chunks} chunks (max {self.max_concurrency} parallel)")
 
-        completed = [0]
+        completed = 0
 
         async def process_chunk(idx: int, chunk: str) -> tuple[int, List[Dict]]:
+            nonlocal completed
             start = time.time()
             result = await self._parse_single(chunk, chunk_id=idx)
             elapsed = time.time() - start
-            completed[0] += 1
+            completed += 1
             logger.info(f"Chunk {idx + 1}/{total_chunks} done ({len(result)} questions, {elapsed:.1f}s)")
             if progress_callback:
-                progress_callback(completed[0], total_chunks)
+                progress_callback(completed, total_chunks)
             return idx, result
 
         tasks = [process_chunk(i, chunk) for i, chunk in enumerate(chunks)]
@@ -467,7 +616,7 @@ JSON array:"""
 
         all_questions: List[Dict] = []
         seen_hashes: set = set()
-        for idx, questions in sorted_results:
+        for _, questions in sorted_results:
             for q in questions:
                 q_hash = self._hash_question(q.get("question", ""))
                 if q_hash and q_hash not in seen_hashes:
@@ -516,7 +665,7 @@ JSON array:"""
             return self._chunk_by_size(text)
 
         chunks = []
-        current_chunk = text[:splits[0].start()] if splits else ""
+        current_chunk = text[:splits[0].start()]
 
         for i, match in enumerate(splits):
             start = match.start()
@@ -675,9 +824,10 @@ JSON array:"""
         return self._extract_individual_objects(json_str)
 
     def _extract_individual_objects(self, json_str: str) -> List[Dict]:
-        """Extract individual JSON objects one by one as last resort."""
+        """Extract individual JSON objects one by one as last resort.
+        NOTE: caller (_aggressive_extract_json) already applied _RE_TRIPLE_BACKSLASH fix.
+        """
         objects = []
-        json_str = _RE_TRIPLE_BACKSLASH.sub(r'\\\\', json_str)
         obj_starts = [m.start() for m in re.finditer(r'\{\s*"question"', json_str)]
 
         for i, start in enumerate(obj_starts):

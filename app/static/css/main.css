@@ -190,7 +190,10 @@ body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:var(--bg);c
 
 /* ── UPLOAD ZONE ── */
 .upload-zone{border:2px dashed var(--border-2);border-radius:var(--radius-lg);padding:44px 24px;text-align:center;cursor:pointer;transition:all var(--transition);background:var(--surface)}
-.upload-zone:hover,.upload-zone.drag-over{border-color:var(--accent);background:var(--accent-soft)}
+.upload-zone:hover,.upload-zone.dragover{border-color:var(--accent);background:var(--accent-soft)}
+.upload-zone.has-file{border-style:solid;border-color:var(--accent)}
+#filePreview,#progressSection,#resultsSection,#jsonPanel{display:none}
+#filePreview.visible,#progressSection.visible,#resultsSection.visible,#jsonPanel.visible{display:block}
 .upload-icon{font-size:44px;margin-bottom:10px;opacity:0.6}
 .upload-title{font-size:15px;font-weight:700;margin-bottom:4px}
 .upload-sub{font-size:12px;color:var(--text-2)}
@@ -204,20 +207,58 @@ body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:var(--bg);c
 .history-meta{font-size:10px;color:var(--text-3);margin-top:2px}
 
 /* ── QUESTION CARDS ── */
-.question-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:13px 15px;margin-bottom:7px;transition:all var(--transition)}
-.question-card:hover{border-color:var(--border-2)}
-.question-card .q-header{display:flex;align-items:flex-start;gap:10px;margin-bottom:8px}
-.q-num{background:var(--accent-soft);color:var(--accent);font-size:11px;font-weight:800;padding:2px 7px;border-radius:5px;flex-shrink:0}
-.q-text{font-size:13px;font-weight:600;flex:1;line-height:1.5}
-.q-answer{background:var(--green-soft);border:1px solid rgba(16,185,129,0.2);border-radius:6px;padding:7px 12px;font-size:12px;margin-top:7px}
+/* ── QUESTION CARD (bank list + parse results) ── */
+.question-card,.q-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;margin-bottom:8px;transition:border-color var(--transition)}
+.question-card:hover,.q-card:hover{border-color:var(--border-2)}
+.question-card .q-header,.q-top{display:flex;align-items:flex-start;gap:8px;margin-bottom:10px}
+.q-badges{display:flex;align-items:center;flex-wrap:wrap;gap:4px;flex:1;min-width:0}
+.q-num{background:var(--accent-soft);color:var(--accent);font-size:11px;font-weight:800;padding:2px 8px;border-radius:5px;flex-shrink:0;line-height:1.8;white-space:nowrap}
+.q-text{font-size:13px;line-height:1.75;color:var(--text);overflow-x:auto}
+.q-text .katex-display,.q-answer-text .katex-display,.q-steps li .katex-display{overflow-x:auto;overflow-y:hidden;padding:.15em 0}
+/* Answer */
+.q-answer{background:var(--green-soft);border:1px solid rgba(16,185,129,.2);border-radius:6px;padding:9px 13px;margin-top:10px}
+.q-answer-label{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--green);margin-bottom:4px}
+.q-answer-text{font-size:13px;font-weight:600;color:var(--text);overflow-x:auto}
+/* Solution (collapsible) */
+.q-solution{margin-top:10px}
+.q-solution-toggle{display:flex;align-items:center;gap:7px;width:100%;font-size:12px;font-weight:700;color:var(--accent);cursor:pointer;background:var(--accent-soft);border:1px solid rgba(124,58,237,.25);border-radius:7px;padding:7px 11px;text-align:left;transition:all var(--transition)}
+.q-solution-toggle:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.q-sol-arrow{font-size:9px;transition:transform .2s;flex-shrink:0}
+.q-solution-toggle.open .q-sol-arrow{transform:rotate(90deg)}
+.q-sol-count{font-size:10px;font-weight:800;margin-left:auto;opacity:.7}
+.q-steps{list-style:none;margin:9px 0 0;padding:0;display:none;flex-direction:column;gap:5px}
+.q-steps.open{display:flex!important;flex-direction:column}
+.q-steps li{font-size:12.5px;line-height:1.65;color:var(--text-2);padding:7px 11px;background:var(--surface-2);border-radius:5px;border-left:2px solid var(--border-2);overflow-x:auto}
+/* Source label */
+.q-source{margin-top:8px;padding-top:7px;border-top:1px solid var(--border);font-size:11px;color:var(--text-3)}
+.q-source-name{color:var(--accent);font-weight:600}
+/* Action buttons */
+.q-actions{display:flex;gap:4px;margin-left:4px;flex-shrink:0}
+.q-act-btn{width:26px;height:26px;border-radius:5px;border:1px solid var(--border);background:var(--surface-2);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:13px;transition:all var(--transition);line-height:1}
+.q-act-btn:hover{border-color:var(--border-2);background:var(--surface-3)}
+.q-del-btn:hover{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.08)}
 .q-footer{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px}
-.q-actions{display:flex;gap:5px;margin-left:auto}
 
 /* ── PAGINATION ── */
 .pagination{display:flex;align-items:center;gap:5px;justify-content:center;margin-top:18px}
 .page-btn{width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text-2);cursor:pointer;font-size:13px;font-weight:600;transition:all var(--transition)}
 .page-btn:hover{border-color:var(--accent);color:var(--accent)}
 .page-btn.active{background:var(--accent);border-color:var(--accent);color:#fff}
+
+/* ── SKELETON LOADING ── */
+@keyframes shimmer{0%{background-position:-400px 0}100%{background-position:400px 0}}
+.skeleton{background:linear-gradient(90deg,var(--surface-2) 25%,var(--surface-3) 50%,var(--surface-2) 75%);background-size:400px 100%;animation:shimmer 1.4s ease-in-out infinite;border-radius:5px}
+.skeleton-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;margin-bottom:8px}
+.skeleton-badge{display:inline-block;height:20px;width:60px}
+.skeleton-text{display:block;height:13px;margin-bottom:6px;width:100%}
+.skeleton-text.w80{width:80%}
+.skeleton-text.w60{width:60%}
+
+/* ── BANK EMPTY STATE ── */
+.bank-empty{text-align:center;padding:52px 24px;color:var(--text-2)}
+.bank-empty-icon{font-size:48px;margin-bottom:12px;opacity:.45}
+.bank-empty-text{font-size:15px;font-weight:700;color:var(--text);margin-bottom:5px}
+.bank-empty-hint{font-size:13px;color:var(--text-3)}
 
 /* ── TOASTS ── */
 #toastContainer{position:fixed;bottom:20px;right:20px;z-index:2000;display:flex;flex-direction:column;gap:7px}

@@ -288,7 +288,7 @@ class FileHandler:
                     })
                 
                 doc.close()
-                logger.info("PyMuPDF rendered {len(base64_images)} pages to images")
+                logger.info(f"PyMuPDF rendered {len(base64_images)} pages to images")
                 return base64_images, len(base64_images)
             
             # Method 2: pdf2image (needs poppler) - FALLBACK
@@ -309,7 +309,7 @@ class FileHandler:
                         "mime_type": "image/jpeg"
                     })
                 
-                logger.info("pdf2image rendered {len(base64_images)} pages to images")
+                logger.info(f"pdf2image rendered {len(base64_images)} pages to images")
                 return base64_images, len(base64_images)
                 
             except ImportError:
@@ -368,10 +368,10 @@ class FileHandler:
                                 })
                             
                             doc.close()
-                            logger.info("DOCX → PDF → {len(base64_images)} images")
+                            logger.info(f"DOCX → PDF → {len(base64_images)} images")
                             return base64_images, len(base64_images)
             except Exception as e:
-                logger.warning("LibreOffice conversion failed: {e}")
+                logger.warning(f"LibreOffice conversion failed: {e}")
             
             # Fallback: extract text instead
             logger.warning("Cannot convert DOCX to images, falling back to text extraction")

@@ -8,3 +8,4 @@ from app.db.models.question import Question
 from app.db.models.classroom import (
     Class, ClassMember, Assignment, Submission, AnswerDetail, StudentXP, Badge
 )
+from app.db.models.curriculum import Curriculum

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \":*)",
+      "Bash(venv/Scripts/python.exe -c \":*)",
+      "Bash(node -e \":*)"
+    ]
+  }
+}
