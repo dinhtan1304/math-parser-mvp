@@ -2,6 +2,62 @@
  * generator.js — AI question generation + save to bank + export (gen & bank)
  */
 
+/* ===== Exam config presets ===== */
+const EXAM_TYPE_PRESETS = {
+  kt15:    { countTN: 5,  countTL: 1,  label: 'Kiểm tra 15 phút' },
+  kt1tiet: { countTN: 28, countTL: 2,  label: 'Kiểm tra 1 tiết' },
+  giuaky:  { countTN: 28, countTL: 2,  label: 'Giữa kỳ' },
+  cuoiky:  { countTN: 28, countTL: 3,  label: 'Cuối kỳ' },
+  thpt:    { countTN: 50, countTL: 0,  label: 'THPT Quốc gia' },
+  custom:  { countTN: null, countTL: null, label: 'Tùy chọn' }
+};
+
+const DIFF_PRESETS = {
+  balanced: { NB: 40, TH: 30, VD: 20, VDC: 10 },
+  easy:     { NB: 50, TH: 35, VD: 15, VDC: 0  },
+  hard:     { NB: 25, TH: 30, VD: 30, VDC: 15 },
+  hsg:      { NB: 10, TH: 20, VD: 40, VDC: 30 }
+};
+
+let _currentExamType = 'giuaky';
+let _currentDiffPreset = 'balanced';
+let _currentScope = 'chapter';
+
+window.selectExamType = function(btn, type) {
+  document.querySelectorAll('.gen-exam-type-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  _currentExamType = type;
+  const preset = EXAM_TYPE_PRESETS[type];
+  const cfg = $('genCustomConfig');
+  if (type === 'custom') {
+    cfg.style.display = 'block';
+  } else {
+    cfg.style.display = 'none';
+    if ($('genCountTN')) $('genCountTN').value = preset.countTN;
+    if ($('genCountTL')) $('genCountTL').value = preset.countTL;
+  }
+};
+
+window.selectDiff = function(btn, diff) {
+  document.querySelectorAll('.gen-diff-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  _currentDiffPreset = diff;
+  if ($('genDiff')) $('genDiff').value = diff;
+};
+
+window.selectScope = function(btn, scope) {
+  document.querySelectorAll('.gen-scope-tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  _currentScope = scope;
+  if ($('genScope')) $('genScope').value = scope;
+  // Ẩn/hiện cascade chương khi chuyển phạm vi
+  const chGroup = $('genChapterGroup');
+  const lsGroup = $('genLessonGroup');
+  if (chGroup) chGroup.style.display = scope === 'chapter' ? '' : 'none';
+  if (lsGroup) lsGroup.style.display = 'none';
+  updateBankInfo();
+};
+
 /* ===== Generator filters ===== */
 async function loadGenFilters() {
     try {
@@ -254,4 +310,236 @@ window.printPreview = function() {
         frame.contentWindow.focus();
         frame.contentWindow.print();
     }
+};
+
+/* ═══════════════════════════════════════════════════════════════
+   CURRICULUM CASCADE — Lớp → Chương → Bài → Đếm câu
+   ═══════════════════════════════════════════════════════════════ */
+
+/** Cache để tránh gọi API lặp lại */
+const _curriculumCache = {};
+let _curriculumTree = null;   // full tree loaded once
+
+/** Load cây chương trình một lần duy nhất */
+async function ensureCurriculumTree() {
+    if (_curriculumTree) return _curriculumTree;
+    try {
+        const token = localStorage.getItem('token');
+        const res = await fetch('/api/v1/curriculum/tree', {
+            headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (!res.ok) throw new Error('Cannot load curriculum');
+        _curriculumTree = await res.json();
+        return _curriculumTree;
+    } catch (e) {
+        console.warn('Curriculum load failed:', e);
+        return null;
+    }
+}
+
+/** Khi giáo viên click chọn lớp */
+window.selectGrade = async function(btn, grade) {
+    // Update pill UI
+    document.querySelectorAll('.gen-grade-pill').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    $('genGrade').value = grade;
+
+    // Reset chapter/lesson
+    $('genChapter').innerHTML = '<option value="">Tất cả chương</option>';
+    $('genLesson').innerHTML  = '<option value="">Tất cả bài</option>';
+    $('genLessonGroup').style.display = 'none';
+
+    // Hiện/ẩn scope group
+    const scopeGroup = $('genScopeGroup');
+    if (scopeGroup) scopeGroup.style.display = grade ? '' : 'none';
+
+    if (!grade) {
+        $('genChapterGroup').style.display = 'none';
+        updateBankInfo();
+        return;
+    }
+
+    // Nếu scope không phải 'chapter' → không load cascade
+    if (_currentScope !== 'chapter') {
+        updateBankInfo(null, grade, null, null);
+        return;
+    }
+
+    // Show chapter group with spinner label
+    $('genChapterGroup').style.display = '';
+    $('genChapterCount').textContent = '...';
+
+    const tree = await ensureCurriculumTree();
+    if (!tree) { $('genChapterCount').textContent = ''; return; }
+
+    const gradeNode = tree.grades.find(g => g.grade == grade);
+    if (!gradeNode) { $('genChapterCount').textContent = ''; return; }
+
+    // Populate chapter select
+    const chapterSel = $('genChapter');
+    chapterSel.innerHTML = '<option value="">Tất cả chương</option>' +
+        gradeNode.chapters.map(ch => {
+            const qLabel = ch.question_count > 0 ? ` (${ch.question_count} câu)` : '';
+            // Shorten chapter title: "Chương I. Tên dài..." → "Ch.I – Tên dài..."
+            const short = ch.chapter.replace(/^Chương\s+/, 'Ch.').replace(/\.\s+/, ' – ');
+            return `<option value="${ch.chapter_no}" data-chapter="${esc(ch.chapter)}">${esc(short)}${qLabel}</option>`;
+        }).join('');
+
+    // Total count for this grade
+    $('genChapterCount').textContent = gradeNode.question_count > 0
+        ? `${gradeNode.question_count} câu`
+        : 'Chưa có câu';
+
+    updateBankInfo(gradeNode.question_count, grade, null, null);
+};
+
+/** Khi chọn chương */
+window.onChapterChange = async function() {
+    const grade = $('genGrade').value;
+    const chapterNo = $('genChapter').value;
+
+    $('genLesson').innerHTML = '<option value="">Tất cả bài</option>';
+    $('genLessonGroup').style.display = 'none';
+
+    if (!chapterNo) {
+        const tree = await ensureCurriculumTree();
+        const gradeNode = tree?.grades.find(g => g.grade == grade);
+        updateBankInfo(gradeNode?.question_count, grade, null, null);
+        return;
+    }
+
+    const tree = await ensureCurriculumTree();
+    if (!tree) return;
+    const gradeNode = tree.grades.find(g => g.grade == grade);
+    const chNode = gradeNode?.chapters.find(c => c.chapter_no == chapterNo);
+    if (!chNode) return;
+
+    // Populate lesson select
+    const lessonSel = $('genLesson');
+    lessonSel.innerHTML = '<option value="">Tất cả bài trong chương</option>' +
+        chNode.lessons.map(ls => {
+            const qLabel = ls.question_count > 0 ? ` (${ls.question_count} câu)` : '';
+            return `<option value="${ls.id}" data-title="${esc(ls.lesson_title)}">${esc(ls.lesson_title)}${qLabel}</option>`;
+        }).join('');
+
+    $('genLessonGroup').style.display = '';
+    $('genLessonCount').textContent = chNode.question_count > 0
+        ? `${chNode.question_count} câu`
+        : 'Chưa có câu';
+
+    // Sync topic textarea với tên chương để AI hiểu ngữ cảnh
+    const chapterName = chNode.chapter.replace(/^Chương\s+[IVXLC\d]+\.\s*/i, '');
+    if (!$('genTopic').value.trim()) {
+        $('genTopic').value = chapterName;
+    }
+
+    updateBankInfo(chNode.question_count, grade, chapterNo, null);
+};
+
+/** Khi chọn bài cụ thể */
+window.onLessonChange = async function() {
+    const grade = $('genGrade').value;
+    const chapterNo = $('genChapter').value;
+    const lessonSel = $('genLesson');
+    const lessonId = lessonSel.value;
+
+    const tree = await ensureCurriculumTree();
+    const gradeNode = tree?.grades.find(g => g.grade == grade);
+    const chNode = gradeNode?.chapters.find(c => c.chapter_no == chapterNo);
+    const lsNode = chNode?.lessons.find(l => l.id == lessonId);
+
+    // Auto-fill topic textarea with lesson title
+    if (lsNode) {
+        $('genTopic').value = lsNode.lesson_title;
+        updateBankInfo(lsNode.question_count, grade, chapterNo, lessonId);
+    } else {
+        updateBankInfo(chNode?.question_count, grade, chapterNo, null);
+    }
+};
+
+/** Cập nhật thanh thông tin ngân hàng */
+function updateBankInfo(count, grade, chapterNo, lessonId) {
+    const bar = $('genBankInfo');
+    const txt = $('genBankInfoText');
+    if (!bar || !txt) return;
+
+    if (grade === undefined || grade === null || grade === '') {
+        bar.style.display = 'none'; return;
+    }
+
+    bar.style.display = 'flex';
+    bar.classList.remove('has-data', 'no-data');
+
+    const n = count || 0;
+    if (n > 0) {
+        bar.classList.add('has-data');
+        txt.textContent = `${n} câu trong ngân hàng — AI sẽ tham khảo`;
+    } else {
+        bar.classList.add('no-data');
+        txt.textContent = 'Chưa có câu trong ngân hàng — AI sẽ sinh từ đầu';
+    }
+}
+
+/** generateQuestions — called by button onclick, wraps doGenerate with curriculum context */
+window.generateQuestions = async function() {
+    const grade = $('genGrade').value;
+    const chapterNo = $('genChapter')?.value;
+    const lessonSel = $('genLesson');
+    const lessonTitle = lessonSel?.options[lessonSel.selectedIndex]?.dataset?.title || '';
+
+    // Build context-rich topic for AI if not manually typed
+    let topicText = $('genTopic').value.trim();
+    if (!topicText && lessonTitle) topicText = lessonTitle;
+    if (!topicText && chapterNo && grade) {
+        const tree = _curriculumTree;
+        const gradeNode = tree?.grades.find(g => g.grade == grade);
+        const chNode = gradeNode?.chapters.find(c => c.chapter_no == chapterNo);
+        if (chNode) topicText = chNode.chapter.replace(/^Chương\s+[IVXLC\d]+\.\s*/i, '');
+    }
+    if (topicText) $('genTopic').value = topicText;
+
+    // Inject new config params into doGenerate
+    const preset = EXAM_TYPE_PRESETS[_currentExamType] || EXAM_TYPE_PRESETS.giuaky;
+    const countTN = _currentExamType === 'custom'
+        ? (parseInt($('genCountTN')?.value) || 28)
+        : preset.countTN;
+    const countTL = _currentExamType === 'custom'
+        ? (parseInt($('genCountTL')?.value) || 2)
+        : preset.countTL;
+    const totalCount = (countTN || 0) + (countTL || 0);
+
+    // Patch genCount for doGenerate legacy call
+    if ($('genCount')) $('genCount').value = totalCount;
+
+    // Build extended context string for AI prompt
+    const scopeLabels = { chapter: 'theo chương', hk1: 'Học kỳ I', hk2: 'Học kỳ II', full: 'cả năm' };
+    const diffLabels = { balanced: 'cân bằng (40–30–20–10)', easy: 'dễ (50–35–15–0)', hard: 'khó (25–30–30–15)', hsg: 'HSG (10–20–40–30)' };
+    const targetLabels = { dattra: 'đại trà', kha: 'khá–giỏi', hsg: 'học sinh giỏi/thi chuyên' };
+    const target = $('genTarget')?.value || 'dattra';
+
+    const contextParts = [];
+    if (grade) contextParts.push(`Lớp ${grade}`);
+    if (_currentScope !== 'chapter') contextParts.push(`Phạm vi: ${scopeLabels[_currentScope]}`);
+    contextParts.push(`Loại đề: ${preset.label || _currentExamType}`);
+    contextParts.push(`${countTN} câu trắc nghiệm, ${countTL} câu tự luận`);
+    contextParts.push(`Độ khó ${diffLabels[_currentDiffPreset] || _currentDiffPreset}`);
+    contextParts.push(`Đối tượng: ${targetLabels[target] || target}`);
+    if (topicText) contextParts.push(`Nội dung: ${topicText}`);
+
+    // Temporarily enrich genTopic with full context for AI
+    const origTopic = $('genTopic').value;
+    $('genTopic').value = contextParts.join(' · ');
+
+    await window.doGenerate();
+
+    // Restore user-typed topic
+    $('genTopic').value = origTopic;
+};
+
+/* Override loadGenFilters to reset cache on tab switch */
+const _origLoadGenFilters = window.loadGenFilters;
+window.loadGenFilters = async function() {
+    _curriculumTree = null;
+    if (_origLoadGenFilters) await _origLoadGenFilters();
+    ensureCurriculumTree().catch(() => {});
 };

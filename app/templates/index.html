@@ -1,1074 +1,951 @@
 <!doctype html>
-<html lang="vi">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Math Exam Parser</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
-      rel="stylesheet"
-    />
-    <link
-      rel="stylesheet"
-      href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"
-    />
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-    <link rel="stylesheet" href="/static/css/main.css" />
-  </head>
-  <body>
-    <!-- Mobile bar -->
-    <div class="mobile-bar">
-      <button class="mobile-menu-btn" onclick="toggleSidebar()">
-        <svg
-          width="22"
-          height="22"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-        >
-          <path d="M3 6h18M3 12h18M3 18h18" />
-        </svg>
-      </button>
-      <div class="brand-icon">∑</div>
-      <div class="brand-name">Math Parser</div>
-    </div>
-    <div
-      class="sidebar-overlay"
-      id="sidebarOverlay"
-      onclick="toggleSidebar()"
-    ></div>
+<html lang="vi" data-theme="dark">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>MathPlay — Bảng điều khiển</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="/static/css/main.css"/>
+</head>
+<body>
 
-    <!-- Sidebar -->
-    <nav class="sidebar" id="sidebar">
-      <div class="sidebar-header">
-        <div class="sidebar-brand">
-          <div class="brand-icon">∑</div>
-          <div class="brand-name">Math Parser</div>
+<!-- Mobile bar -->
+<div class="mobile-bar">
+  <button class="mobile-menu-btn" onclick="toggleSidebar()">
+    <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+  </button>
+  <div class="brand-icon" style="width:28px;height:28px;font-size:14px">∑</div>
+  <span style="font-weight:800;font-size:14px">MathPlay</span>
+</div>
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+
+<!-- SIDEBAR -->
+<nav class="sidebar" id="sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-icon">∑</div>
+    <div>
+      <div class="brand-title">MathPlay</div>
+      <div class="brand-sub">Teacher Dashboard</div>
+    </div>
+  </div>
+
+  <div class="sidebar-user" onclick="showProfile()">
+    <div class="user-avatar" id="userAvatar">?</div>
+    <div>
+      <div class="user-name" id="userName">Đang tải...</div>
+      <div class="user-role">Giáo viên</div>
+    </div>
+  </div>
+
+  <nav class="sidebar-nav">
+    <div class="nav-section-label">Chính</div>
+    <button class="nav-item active" onclick="switchTab('dashboard')" data-tab="dashboard">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="4" height="4" rx="1"/><rect x="3" y="9" width="4" height="4" rx="1"/><rect x="9" y="3" width="4" height="4" rx="1"/><rect x="9" y="9" width="4" height="4" rx="1"/></svg>
+      Dashboard
+    </button>
+    <button class="nav-item" onclick="switchTab('upload')" data-tab="upload">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+      Upload PDF
+    </button>
+
+    <div class="nav-section-label">Quản lý</div>
+    <button class="nav-item" onclick="switchTab('bank')" data-tab="bank">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 10h16M4 14h16"/></svg>
+      Ngân hàng đề
+    </button>
+    <button class="nav-item" onclick="switchTab('generate')" data-tab="generate">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zM12 8v4l3 3"/></svg>
+      Sinh đề AI
+    </button>
+    <button class="nav-item" onclick="switchTab('classes')" data-tab="classes">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+      Lớp học
+      <span class="nav-badge hidden" id="classBadge">0</span>
+    </button>
+  </nav>
+
+  <div class="sidebar-footer">
+    <button class="footer-btn" onclick="toggleTheme()">
+      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+      <span id="themeLabel">Light Mode</span>
+      <div class="theme-toggle" style="margin-left:auto" id="themeToggle"></div>
+    </button>
+    <button class="footer-btn danger" onclick="logout()">
+      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3H5a2 2 0 00-2 2v14a2 2 0 002 2h4M16 17l5-5-5-5M21 12H9"/></svg>
+      Đăng xuất
+    </button>
+  </div>
+</nav>
+
+<!-- MAIN WRAP -->
+<div class="main-wrap">
+  <!-- TOP BAR -->
+  <div class="topbar">
+    <div class="topbar-tabs">
+      <button class="topbar-tab active" onclick="switchTab('dashboard')" data-tab="dashboard">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="4" height="4" rx="1"/><rect x="3" y="9" width="4" height="4" rx="1"/><rect x="9" y="3" width="4" height="4" rx="1"/><rect x="9" y="9" width="4" height="4" rx="1"/></svg>
+        Dashboard
+      </button>
+      <button class="topbar-tab" onclick="switchTab('upload')" data-tab="upload">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+        Upload
+      </button>
+      <button class="topbar-tab" onclick="switchTab('bank')" data-tab="bank">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 10h16M4 14h16"/></svg>
+        Ngân hàng
+      </button>
+      <button class="topbar-tab" onclick="switchTab('generate')" data-tab="generate">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        Sinh đề
+      </button>
+      <button class="topbar-tab" onclick="switchTab('classes')" data-tab="classes">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+        Lớp học
+      </button>
+    </div>
+    <div class="topbar-actions">
+      <button class="btn btn-sm btn-primary" onclick="switchTab('upload')">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+        Upload đề
+      </button>
+    </div>
+  </div>
+
+  <!-- CONTENT -->
+  <div class="content">
+
+    <!-- ═══════════════════════════════════════
+         TAB: DASHBOARD
+    ═══════════════════════════════════════ -->
+    <div class="tab-panel active" id="tabDashboard">
+      <div class="section-header mb-3">
+        <div>
+          <div class="section-title">Tổng quan 👋</div>
+          <div class="section-sub" id="dashGreeting">Chào mừng trở lại!</div>
         </div>
-        <div class="user-info">
-          <div class="user-avatar" id="userAvatar">?</div>
-          <div class="user-name" id="userName">Đang tải...</div>
-        </div>
-      </div>
-      <div class="sidebar-section-label">Lịch sử phân tích</div>
-      <div class="history-list" id="historyList">
-        <div class="history-empty">Chưa có bài phân tích nào</div>
-      </div>
-      <div class="sidebar-footer">
-        <button class="logout-btn" onclick="logout()">
-          <svg
-            width="16"
-            height="16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-          >
-            <path d="M9 3H5a2 2 0 00-2 2v6a2 2 0 002 2h4M12 7l3 3-3 3M7 10h8" />
-          </svg>
-          Đăng xuất
+        <button class="btn btn-secondary btn-sm" onclick="loadDashboard()">
+          <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 109.1-9"/><path d="M3 3v9h9"/></svg>
+          Làm mới
         </button>
       </div>
-    </nav>
 
-    <!-- Main -->
-    <main class="main">
-      <div class="main-header">
-        <div class="tabs">
-          <button
-            class="tab-btn active"
-            data-tab="dashboard"
-            onclick="switchTab('dashboard')"
-          >
-            <svg
-              width="16"
-              height="16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <path d="M3 9l4-4 4 4 4-4" />
-              <path d="M3 5v14h18V5" />
-            </svg>
-            Dashboard
-          </button>
-          <button
-            class="tab-btn"
-            data-tab="upload"
-            onclick="switchTab('upload')"
-          >
-            <svg
-              width="16"
-              height="16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <path
-                d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"
-              />
-            </svg>
-            Upload & Parse
-          </button>
-          <button class="tab-btn" data-tab="bank" onclick="switchTab('bank')">
-            <svg
-              width="16"
-              height="16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <path d="M4 6h16M4 10h16M4 14h10" />
-            </svg>
-            Ngân hàng
-            <span class="tab-count" id="bankCount">0</span>
-          </button>
-          <button
-            class="tab-btn"
-            data-tab="generate"
-            onclick="switchTab('generate')"
-          >
-            <svg
-              width="16"
-              height="16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <path d="M12 2L2 12l4 4L16 6zM9 5l4 4" />
-            </svg>
-            Sinh đề
-          </button>
+      <!-- Stats -->
+      <div class="stats-row" id="statsRow">
+        <div class="stat-card"><div class="stat-icon" style="background:var(--accent-soft)">📄</div><div><div class="stat-number text-accent" id="statExams">—</div><div class="stat-label">Đề đã tải lên</div></div></div>
+        <div class="stat-card"><div class="stat-icon" style="background:var(--green-soft)">❓</div><div><div class="stat-number text-green" id="statQuestions">—</div><div class="stat-label">Câu hỏi trong ngân hàng</div></div></div>
+        <div class="stat-card"><div class="stat-icon" style="background:var(--blue-soft)">🏫</div><div><div class="stat-number text-muted" style="color:var(--blue)" id="statClasses">—</div><div class="stat-label">Lớp đang dạy</div></div></div>
+        <div class="stat-card"><div class="stat-icon" style="background:var(--yellow-soft)">🎓</div><div><div class="stat-number text-yellow" id="statStudents">—</div><div class="stat-label">Học sinh</div></div></div>
+      </div>
+
+      <!-- Quick actions -->
+      <div class="section-header mb-2">
+        <div class="section-title">Thao tác nhanh</div>
+      </div>
+      <div class="quick-actions mb-3">
+        <button class="quick-action" onclick="switchTab('upload')">
+          <div class="qa-icon">📤</div>
+          <div class="qa-title">Upload đề PDF</div>
+          <div class="qa-sub">Phân tích bằng AI</div>
+        </button>
+        <button class="quick-action" onclick="switchTab('generate')">
+          <div class="qa-icon">⚡</div>
+          <div class="qa-title">Sinh đề mới</div>
+          <div class="qa-sub">Từ ngân hàng câu hỏi</div>
+        </button>
+        <button class="quick-action" onclick="openCreateClassModal()">
+          <div class="qa-icon">🏫</div>
+          <div class="qa-title">Tạo lớp học</div>
+          <div class="qa-sub">Cấp mã cho học sinh</div>
+        </button>
+        <button class="quick-action" onclick="switchTab('classes')">
+          <div class="qa-icon">📊</div>
+          <div class="qa-title">Xem lớp học</div>
+          <div class="qa-sub">Bài tập và học sinh</div>
+        </button>
+      </div>
+
+      <!-- Charts -->
+      <div class="dashboard-grid">
+        <div class="chart-card">
+          <div class="chart-title">📊 Phân bố câu hỏi theo dạng</div>
+          <canvas id="chartType" height="180"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">📈 Câu hỏi theo độ khó</div>
+          <canvas id="chartDiff" height="180"></canvas>
         </div>
       </div>
 
-      <div class="main-body">
-        <!-- ===== TAB 0: Dashboard ===== -->
-        <div class="tab-panel active" id="tabDashboard">
-          <!-- Stats Grid -->
-          <div class="dash-grid">
-            <div class="stat-card">
-              <div class="stat-icon">
-                <svg
-                  width="20"
-                  height="20"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                >
-                  <path d="M4 6h16M4 10h16M4 14h10" />
-                </svg>
-              </div>
-              <div class="stat-value" id="dTotal">-</div>
-              <div class="stat-label">Tổng câu hỏi</div>
-              <div class="stat-badge neutral" id="dGrowth">—</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-icon">
-                <svg
-                  width="20"
-                  height="20"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                >
-                  <path
-                    d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"
-                  />
-                  <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
-                </svg>
-              </div>
-              <div class="stat-value" id="dExams">-</div>
-              <div class="stat-label">Đề đã phân tích</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-icon">
-                <svg
-                  width="20"
-                  height="20"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                >
-                  <path
-                    d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2zM22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"
-                  />
-                </svg>
-              </div>
-              <div class="stat-value" id="dTopics">-</div>
-              <div class="stat-label">Chủ đề</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-icon">
-                <svg
-                  width="20"
-                  height="20"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                >
-                  <path d="M12 2L2 12l4 4L16 6zM9 5l4 4" />
-                </svg>
-              </div>
-              <div class="stat-value" id="dNewWeek">-</div>
-              <div class="stat-label">Câu mới tuần này</div>
-            </div>
-          </div>
+      <!-- Recent exams -->
+      <div class="section-header mt-3 mb-2">
+        <div class="section-title">Đề gần đây</div>
+        <button class="btn btn-ghost btn-sm" onclick="switchTab('bank')">Xem tất cả →</button>
+      </div>
+      <div id="recentExams">
+        <div class="empty-state"><div class="spinner"></div></div>
+      </div>
+    </div>
 
-          <!-- Charts Row -->
-          <div class="dash-row">
-            <div class="dash-card">
-              <div class="dash-card-title">
-                <svg
-                  width="16"
-                  height="16"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                >
-                  <circle cx="12" cy="12" r="10" />
-                  <path d="M12 2a10 10 0 0110 10" />
-                </svg>
-                Phân bố độ khó
-              </div>
-              <div class="chart-container">
-                <canvas id="chartDifficulty"></canvas>
-              </div>
-            </div>
-            <div class="dash-card">
-              <div class="dash-card-title">
-                <svg
-                  width="16"
-                  height="16"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                >
-                  <path d="M18 20V10M12 20V4M6 20v-6" />
-                </svg>
-                Top chủ đề
-              </div>
-              <div class="chart-container">
-                <canvas id="chartTopics"></canvas>
-              </div>
-            </div>
-          </div>
-
-          <!-- Bottom Row: Activity + Quick Actions -->
-          <div class="dash-row">
-            <div class="dash-card">
-              <div class="dash-card-title">
-                <svg
-                  width="16"
-                  height="16"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                >
-                  <circle cx="12" cy="12" r="10" />
-                  <path d="M12 6v6l4 2" />
-                </svg>
-                Hoạt động gần đây
-              </div>
-              <div class="activity-list" id="activityList">
-                <div class="empty-state">
-                  <svg
-                    width="32"
-                    height="32"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.5"
-                  >
-                    <circle cx="16" cy="16" r="14" />
-                    <path d="M16 10v6l3 3" />
-                  </svg>
-                  <p>Chưa có hoạt động</p>
-                </div>
-              </div>
-            </div>
-            <div class="dash-card">
-              <div class="dash-card-title">
-                <svg
-                  width="16"
-                  height="16"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                >
-                  <path
-                    d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"
-                  />
-                  <path d="M13 2v7h7" />
-                </svg>
-                Thao tác nhanh
-              </div>
-              <div class="quick-actions">
-                <button class="quick-btn" onclick="switchTab('upload')">
-                  <svg
-                    width="16"
-                    height="16"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                  >
-                    <path
-                      d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"
-                    />
-                  </svg>
-                  Upload đề mới
-                </button>
-                <button class="quick-btn" onclick="switchTab('generate')">
-                  <svg
-                    width="16"
-                    height="16"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                  >
-                    <path d="M12 2L2 12l4 4L16 6zM9 5l4 4" />
-                  </svg>
-                  Sinh đề AI
-                </button>
-                <button class="quick-btn" onclick="switchTab('bank')">
-                  <svg
-                    width="16"
-                    height="16"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                  >
-                    <path d="M4 6h16M4 10h16M4 14h10" />
-                  </svg>
-                  Ngân hàng câu hỏi
-                </button>
-                <button class="quick-btn" onclick="switchTab('bank')">
-                  <svg
-                    width="16"
-                    height="16"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                  >
-                    <circle cx="11" cy="11" r="8" />
-                    <path d="M21 21l-4.35-4.35" />
-                  </svg>
-                  Tìm kiếm câu hỏi
-                </button>
-              </div>
-
-              <!-- Type breakdown -->
-              <div class="dash-card-title" style="margin-top: 20px">
-                <svg
-                  width="16"
-                  height="16"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                >
-                  <rect x="3" y="3" width="7" height="7" />
-                  <rect x="14" y="3" width="7" height="7" />
-                  <rect x="3" y="14" width="7" height="7" />
-                  <rect x="14" y="14" width="7" height="7" />
-                </svg>
-                Loại câu hỏi
-              </div>
-              <div class="chart-container" style="height: 140px">
-                <canvas id="chartType"></canvas>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- ===== TAB 1: Upload & Parse ===== -->
-        <div class="tab-panel" id="tabUpload">
-          <div class="upload-card">
-            <div class="upload-dropzone" id="uploadArea">
-              <div id="dropzoneDefault">
-                <div class="dropzone-icon">
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.5"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  >
-                    <path
-                      d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"
-                    />
-                  </svg>
-                </div>
-                <p class="dropzone-title">
-                  Kéo thả file hoặc <span>chọn từ máy</span>
-                </p>
-                <p class="dropzone-subtitle">
-                  PDF, DOCX, PNG, JPG, TXT — tối đa 50MB
-                </p>
-              </div>
-              <div class="file-preview" id="filePreview">
-                <div class="file-thumb" id="fileThumb">📄</div>
-                <div class="file-info">
-                  <div class="file-name" id="fileName"></div>
-                  <div class="file-size" id="fileSize"></div>
-                </div>
-                <button class="file-remove" id="fileRemove" title="Xóa file">
-                  <svg
-                    width="18"
-                    height="18"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                  >
-                    <path d="M18 6L6 18M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-              <input
-                type="file"
-                id="fileInput"
-                accept=".pdf,.docx,.doc,.png,.jpg,.jpeg,.txt,.md"
-              />
-            </div>
-            <div class="upload-controls">
-              <label class="vision-toggle">
-                <input type="checkbox" id="visionMode" />
-                <div class="toggle-track"></div>
-                <span class="toggle-text">Vision mode</span>
-              </label>
-              <button class="btn-parse" id="uploadBtn" disabled>
-                <span class="parse-text">Phân tích</span>
-                <div class="spinner"></div>
-              </button>
-            </div>
-          </div>
-
-          <div class="progress-card" id="progressSection">
-            <div class="progress-label">
-              <div class="pulse-dot"></div>
-              <span id="progressText">Đang xử lý...</span>
-            </div>
-            <div class="progress-bar">
-              <div class="progress-fill" id="progressFill"></div>
-            </div>
-          </div>
-
-          <div class="results-card" id="resultsSection">
-            <div class="results-toolbar">
-              <div class="results-count" id="resultsCount">
-                <span>0</span> câu hỏi
-              </div>
-              <div class="toolbar-actions">
-                <button class="btn-toolbar" id="jsonToggle">JSON</button>
-                <button class="btn-toolbar primary" id="downloadBtn">
-                  Tải xuống
-                </button>
-              </div>
-            </div>
-            <div class="json-panel" id="jsonPanel">
-              <pre id="jsonOutput"></pre>
-            </div>
-            <div class="questions-list" id="questionsContainer"></div>
-          </div>
-        </div>
-
-        <!-- ===== TAB 2: Question Bank ===== -->
-        <div class="tab-panel" id="tabBank">
-          <div class="bank-toolbar">
-            <div class="bank-stats" id="bankStats">
-              <div class="stat-chip">
-                <strong id="statTotal">0</strong> câu hỏi
-              </div>
-              <div class="stat-chip">
-                <strong id="statTypes">0</strong> dạng bài
-              </div>
-              <div class="stat-chip">
-                <strong id="statTopics">0</strong> chủ đề
-              </div>
-            </div>
-            <div class="bank-filters">
-              <select class="filter-select" id="filterGrade">
-                <option value="">Tất cả lớp</option>
-              </select>
-              <select class="filter-select" id="filterChapter">
-                <option value="">Tất cả chương</option>
-              </select>
-              <select class="filter-select" id="filterType">
-                <option value="">Tất cả dạng</option>
-              </select>
-              <select class="filter-select" id="filterTopic">
-                <option value="">Tất cả chủ đề</option>
-              </select>
-              <select class="filter-select" id="filterDiff">
-                <option value="">Tất cả độ khó</option>
-              </select>
-              <input
-                class="filter-input"
-                type="text"
-                id="filterKeyword"
-                placeholder="Tìm theo nội dung câu hỏi..."
-              />
-              <button class="btn-filter" onclick="searchBank()">Tìm</button>
-              <button class="btn-reset" onclick="resetFilters()">
-                Xóa lọc
-              </button>
-            </div>
-          </div>
-
-          <div class="bank-results" id="bankResults">
-            <div class="bank-results-header">
-              <div class="bank-results-count" id="bankResultsCount">
-                Kết quả: <span>0</span> câu
-              </div>
-              <div class="export-dropdown" id="bankExportDropdown">
-                <button
-                  class="export-btn"
-                  onclick="toggleExportMenu('bankExportMenu')"
-                  style="font-size: 0.75rem; padding: 5px 12px"
-                >
-                  <svg fill="none" stroke="currentColor" stroke-width="2">
-                    <path
-                      d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"
-                    />
-                  </svg>
-                  Xuất ▾
-                </button>
-                <div class="export-menu" id="bankExportMenu">
-                  <button
-                    class="export-menu-item"
-                    onclick="exportBankAs('pdf')"
-                  >
-                    <svg fill="none" stroke="currentColor" stroke-width="2">
-                      <path
-                        d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"
-                      />
-                      <path d="M14 2v6h6" />
-                    </svg>
-                    PDF <span class="ext">.pdf</span>
-                  </button>
-                  <button
-                    class="export-menu-item"
-                    onclick="exportBankAs('docx')"
-                  >
-                    <svg fill="none" stroke="currentColor" stroke-width="2">
-                      <path
-                        d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"
-                      />
-                      <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
-                    </svg>
-                    Word <span class="ext">.docx</span>
-                  </button>
-                  <button
-                    class="export-menu-item"
-                    onclick="exportBankAs('latex')"
-                  >
-                    <svg fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M4 7V4h16v3M9 20h6M12 4v16" />
-                    </svg>
-                    LaTeX <span class="ext">.tex</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-            <div class="bank-questions-list" id="bankQuestionsList"></div>
-            <div class="bank-pagination" id="bankPagination"></div>
-          </div>
-        </div>
-
-        <!-- ===== TAB 3: Generate ===== -->
-        <div class="tab-panel" id="tabGenerate">
-          <div class="gen-split-layout">
-            <!-- LEFT COLUMN: Form + Results -->
-            <div class="gen-left-col">
-              <div class="gen-form-card">
-                <div class="gen-form-title">Chế độ sinh đề</div>
-                <div
-                  class="gen-form-grid"
-                  style="grid-template-columns: 1fr 1fr; margin-bottom: 16px"
-                >
-                  <div class="gen-field">
-                    <label>Chế độ</label>
-                    <select id="genMode" onchange="toggleGenMode()">
-                      <option value="single">Sinh câu hỏi (1 mức độ)</option>
-                      <option value="exam">Đề kiểm tra tổng hợp</option>
-                    </select>
-                  </div>
-                  <div class="gen-field">
-                    <label>Chủ đề</label>
-                    <select id="genTopic">
-                      <option value="">Chủ đề bất kỳ</option>
-                    </select>
-                  </div>
-                </div>
-
-                <!-- Single mode fields -->
-                <div id="singleModeFields">
-                  <div class="gen-form-grid">
-                    <div class="gen-field">
-                      <label>Dạng bài</label>
-                      <select id="genType">
-                        <option value="">Dạng bất kỳ</option>
-                      </select>
-                    </div>
-                    <div class="gen-field">
-                      <label>Độ khó</label>
-                      <select id="genDiff">
-                        <option value="">Độ khó bất kỳ</option>
-                        <option value="NB">NB - Nhận biết</option>
-                        <option value="TH">TH - Thông hiểu</option>
-                        <option value="VD">VD - Vận dụng</option>
-                        <option value="VDC">VDC - Vận dụng cao</option>
-                      </select>
-                    </div>
-                    <div class="gen-field">
-                      <label>Số lượng câu</label>
-                      <input
-                        type="number"
-                        id="genCount"
-                        value="5"
-                        min="1"
-                        max="50"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Exam mode fields -->
-                <div id="examModeFields" style="display: none">
-                  <div class="gen-form-grid" style="grid-template-columns: 1fr">
-                    <div class="gen-field">
-                      <label>Dạng bài</label>
-                      <select id="genTypeExam">
-                        <option value="">Kết hợp TN và TL</option>
-                        <option value="TN">Chỉ trắc nghiệm</option>
-                        <option value="TL">Chỉ tự luận</option>
-                      </select>
-                    </div>
-                  </div>
-                  <div style="margin-top: 12px">
-                    <label
-                      style="
-                        font-size: 0.78rem;
-                        font-weight: 600;
-                        color: var(--text-secondary);
-                        text-transform: uppercase;
-                        letter-spacing: 0.03em;
-                      "
-                      >Phân bổ câu hỏi</label
-                    >
-                    <div
-                      class="exam-dist"
-                      style="
-                        display: grid;
-                        grid-template-columns: repeat(4, 1fr);
-                        gap: 12px;
-                        margin-top: 8px;
-                      "
-                    >
-                      <div class="dist-item">
-                        <div
-                          class="dist-label"
-                          style="
-                            font-size: 0.82rem;
-                            font-weight: 600;
-                            color: #16a34a;
-                          "
-                        >
-                          NB - Nhận biết
-                        </div>
-                        <input
-                          type="number"
-                          id="distNB"
-                          value="3"
-                          min="0"
-                          max="50"
-                          class="dist-input"
-                          onchange="updateExamTotal()"
-                        />
-                      </div>
-                      <div class="dist-item">
-                        <div
-                          class="dist-label"
-                          style="
-                            font-size: 0.82rem;
-                            font-weight: 600;
-                            color: #2563eb;
-                          "
-                        >
-                          TH - Thông hiểu
-                        </div>
-                        <input
-                          type="number"
-                          id="distTH"
-                          value="3"
-                          min="0"
-                          max="50"
-                          class="dist-input"
-                          onchange="updateExamTotal()"
-                        />
-                      </div>
-                      <div class="dist-item">
-                        <div
-                          class="dist-label"
-                          style="
-                            font-size: 0.82rem;
-                            font-weight: 600;
-                            color: #d97706;
-                          "
-                        >
-                          VD - Vận dụng
-                        </div>
-                        <input
-                          type="number"
-                          id="distVD"
-                          value="2"
-                          min="0"
-                          max="50"
-                          class="dist-input"
-                          onchange="updateExamTotal()"
-                        />
-                      </div>
-                      <div class="dist-item">
-                        <div
-                          class="dist-label"
-                          style="
-                            font-size: 0.82rem;
-                            font-weight: 600;
-                            color: #dc2626;
-                          "
-                        >
-                          VDC - Vận dụng cao
-                        </div>
-                        <input
-                          type="number"
-                          id="distVDC"
-                          value="2"
-                          min="0"
-                          max="50"
-                          class="dist-input"
-                          onchange="updateExamTotal()"
-                        />
-                      </div>
-                    </div>
-                    <div
-                      class="exam-total"
-                      id="examTotal"
-                      style="
-                        margin-top: 10px;
-                        font-size: 0.88rem;
-                        font-weight: 600;
-                        color: var(--text);
-                      "
-                    >
-                      Tổng: 10 câu
-                    </div>
-                  </div>
-                </div>
-
-                <div class="gen-actions" style="margin-top: 16px">
-                  <button
-                    class="btn-generate"
-                    id="genBtn"
-                    onclick="doGenerate()"
-                  >
-                    <span class="gen-btn-text">Sinh đề</span>
-                    <div class="spinner"></div>
-                  </button>
-                  <span class="gen-hint" id="genHint"
-                    >AI sẽ tham khảo câu mẫu từ ngân hàng đề của bạn</span
-                  >
-                </div>
-              </div>
-
-              <div class="gen-results" id="genResults">
-                <div class="gen-results-header">
-                  <div class="gen-results-info" id="genResultsInfo">
-                    <span>0</span> cau da sinh
-                  </div>
-                  <div class="toolbar-actions">
-                    <button
-                      class="btn-toolbar"
-                      onclick="saveGenToBank()"
-                      id="btnSaveToBank"
-                      style="
-                        background: #16a34a;
-                        color: white;
-                        font-weight: 600;
-                      "
-                    >
-                      💾 Lưu vào ngân hàng
-                    </button>
-                    <button class="btn-toolbar" onclick="downloadGenerated()">
-                      JSON
-                    </button>
-                    <div class="export-dropdown" id="genExportDropdown">
-                      <button
-                        class="export-btn"
-                        onclick="toggleExportMenu('genExportMenu')"
-                      >
-                        <svg fill="none" stroke="currentColor" stroke-width="2">
-                          <path
-                            d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"
-                          />
-                        </svg>
-                        Xuất file ▾
-                      </button>
-                      <div class="export-menu" id="genExportMenu">
-                        <button
-                          class="export-menu-item"
-                          onclick="exportGenAs('pdf')"
-                        >
-                          <svg
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                          >
-                            <path
-                              d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"
-                            />
-                            <path d="M14 2v6h6" />
-                          </svg>
-                          PDF (in chuẩn A4) <span class="ext">.pdf</span>
-                        </button>
-                        <button
-                          class="export-menu-item"
-                          onclick="exportGenAs('docx')"
-                        >
-                          <svg
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                          >
-                            <path
-                              d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"
-                            />
-                            <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
-                          </svg>
-                          Word (đề + đáp án) <span class="ext">.docx</span>
-                        </button>
-                        <button
-                          class="export-menu-item"
-                          onclick="exportGenAs('docx-split')"
-                        >
-                          <svg
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                          >
-                            <path
-                              d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"
-                            />
-                            <path
-                              d="M15 2H9a1 1 0 00-1 1v2a1 1 0 001 1h6a1 1 0 001-1V3a1 1 0 00-1-1z"
-                            />
-                          </svg>
-                          Word (đề riêng / đáp án riêng)
-                          <span class="ext">.zip</span>
-                        </button>
-                        <div class="export-menu-sep"></div>
-                        <button
-                          class="export-menu-item"
-                          onclick="exportGenAs('latex')"
-                        >
-                          <svg
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                          >
-                            <path d="M4 7V4h16v3M9 20h6M12 4v16" />
-                          </svg>
-                          LaTeX <span class="ext">.tex</span>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <div class="gen-results-list" id="genResultsList"></div>
-              </div>
-            </div>
-            <!-- /gen-left-col -->
-
-            <!-- RIGHT COLUMN: PDF Preview (hidden until results) -->
-            <div
-              class="gen-right-col"
-              id="genPreviewPanel"
-              style="display: none"
-            >
-              <div class="gen-preview-header" id="genPreviewHeader">
-                <div class="preview-header-left">
-                  <svg
-                    width="16"
-                    height="16"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"
-                    />
-                    <path d="M14 2v6h6" />
-                  </svg>
-                  <span>Xem trước đề thi</span>
-                </div>
-                <div class="preview-header-actions">
-                  <label class="preview-toggle"
-                    ><input
-                      type="checkbox"
-                      id="previewAnswers"
-                      checked
-                      onchange="refreshPreview()"
-                    /><span>Đáp án</span></label
-                  >
-                  <label class="preview-toggle"
-                    ><input
-                      type="checkbox"
-                      id="previewSolutions"
-                      checked
-                      onchange="refreshPreview()"
-                    /><span>Lời giải</span></label
-                  >
-                  <button
-                    class="preview-print-btn"
-                    onclick="printPreview()"
-                    title="In / Lưu PDF"
-                  >
-                    <svg
-                      width="14"
-                      height="14"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"
-                      />
-                      <rect x="6" y="14" width="12" height="8" />
-                    </svg>
-                    In PDF
-                  </button>
-                </div>
-              </div>
-              <iframe id="genPreviewFrame" class="gen-preview-frame"></iframe>
-            </div>
-            <!-- /gen-right-col -->
-          </div>
-          <!-- /gen-split-layout -->
+    <!-- ═══════════════════════════════════════
+         TAB: UPLOAD
+    ═══════════════════════════════════════ -->
+    <div class="tab-panel" id="tabUpload">
+      <div class="section-header mb-3">
+        <div>
+          <div class="section-title">Upload & Phân tích đề 📤</div>
+          <div class="section-sub">Tải lên file PDF — AI sẽ tự động trích xuất câu hỏi</div>
         </div>
       </div>
-    </main>
 
-    <!-- ── Edit Question Modal (Sprint 2 Task 11) ── -->
-    <div class="modal-overlay" id="editModal">
-      <div class="modal-box">
-        <div class="modal-header">
-          <span>✏️ Sửa câu hỏi</span>
-          <button class="modal-close" onclick="closeEditModal()">✕</button>
-        </div>
-        <div class="modal-body">
-          <input type="hidden" id="editQId" />
-          <div class="modal-field">
-            <label>Nội dung câu hỏi (hỗ trợ LaTeX: $...$)</label>
-            <textarea id="editQText" rows="4"></textarea>
+      <div class="split-panel">
+        <div class="split-left">
+          <!-- Upload zone -->
+          <div class="upload-zone" id="uploadZone" onclick="$('fileInput').click()" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event)">
+            <div class="upload-icon">📄</div>
+            <div class="upload-title">Kéo thả file PDF vào đây</div>
+            <div class="upload-sub">hoặc nhấn để chọn file · Tối đa 50MB</div>
+            <input type="file" id="fileInput" accept=".pdf" style="display:none" onchange="handleFileSelect(event)"/>
           </div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px">
-            <div class="modal-field">
-              <label>Dạng bài</label>
-              <input
-                type="text"
-                id="editQType"
-                placeholder="TN, TL, Rút gọn..."
-              />
-            </div>
-            <div class="modal-field">
-              <label>Độ khó</label>
-              <select id="editQDiff">
-                <option value="NB">NB — Nhận biết</option>
-                <option value="TH">TH — Thông hiểu</option>
-                <option value="VD">VD — Vận dụng</option>
-                <option value="VDC">VDC — Vận dụng cao</option>
-              </select>
+
+          <!-- Selected file preview -->
+          <div id="filePreview" class="hidden mt-2">
+            <div class="card">
+              <div class="card-header mb-0">
+                <div>
+                  <div class="card-title" id="fileName">file.pdf</div>
+                  <div class="card-sub" id="fileSize">0 KB</div>
+                </div>
+                <div class="flex gap-2">
+                  <button class="btn btn-primary" id="uploadBtn" onclick="startUpload()">
+                    <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                    Phân tích
+                  </button>
+                  <button class="btn btn-ghost btn-sm" onclick="clearFile()">✕</button>
+                </div>
+              </div>
             </div>
           </div>
-          <div class="modal-field">
-            <label>Chủ đề</label>
-            <input
-              type="text"
-              id="editQTopic"
-              placeholder="Đại số, Hình học..."
-            />
-          </div>
-          <div
-            style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px"
-          >
-            <div class="modal-field">
-              <label>Lớp</label>
-              <select id="editQGrade">
-                <option value="">—</option>
-                <option value="6">Lớp 6</option>
-                <option value="7">Lớp 7</option>
-                <option value="8">Lớp 8</option>
-                <option value="9">Lớp 9</option>
-                <option value="10">Lớp 10</option>
-                <option value="11">Lớp 11</option>
-                <option value="12">Lớp 12</option>
-              </select>
-            </div>
-            <div class="modal-field" style="grid-column: span 2">
-              <label>Chương</label>
-              <input
-                type="text"
-                id="editQChapter"
-                placeholder="Chương I. Ứng dụng đạo hàm..."
-              />
+
+          <!-- Progress -->
+          <div id="uploadProgress" class="hidden">
+            <div class="progress-wrap">
+              <div class="progress-label"><span id="progressText">Đang xử lý...</span><span id="progressPct">0%</span></div>
+              <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressBar" style="width:0%"></div></div>
             </div>
           </div>
-          <div class="modal-field">
-            <label>Tiêu đề bài</label>
-            <input
-              type="text"
-              id="editQLesson"
-              placeholder="Tính đơn điệu và cực trị..."
-            />
-          </div>
-          <div class="modal-field">
-            <label>Đáp án</label>
-            <textarea id="editQAnswer" rows="2"></textarea>
-          </div>
-          <div class="modal-field">
-            <label>Lời giải (JSON array, mỗi bước 1 string)</label>
-            <textarea
-              id="editQSteps"
-              rows="3"
-              placeholder='["Bước 1: ...", "Bước 2: ..."]'
-            ></textarea>
+
+          <!-- Results -->
+          <div id="parseResults" class="hidden">
+            <div class="section-header mt-3 mb-2">
+              <div class="section-title">Kết quả phân tích</div>
+              <div id="parseActions" class="flex gap-2"></div>
+            </div>
+            <div id="parseQuestionsList"></div>
           </div>
         </div>
-        <div class="modal-footer">
-          <button class="modal-btn" onclick="closeEditModal()">Hủy</button>
-          <button
-            class="modal-btn primary"
-            id="editSaveBtn"
-            onclick="submitEdit()"
-          >
-            Lưu thay đổi
-          </button>
+
+        <!-- Right: History -->
+        <div class="split-right">
+          <div class="card-header mb-2">
+            <div class="card-title">📋 Lịch sử đề</div>
+            <button class="btn-icon" onclick="loadHistory()">
+              <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 109.1-9"/><path d="M3 3v9h9"/></svg>
+            </button>
+          </div>
+          <div class="history-list" id="historyList">
+            <div class="empty-state"><div class="spinner"></div></div>
+          </div>
         </div>
       </div>
     </div>
 
-    <div class="toast-container" id="toastContainer"></div>
+    <!-- ═══════════════════════════════════════
+         TAB: BANK
+    ═══════════════════════════════════════ -->
+    <div class="tab-panel" id="tabBank">
+      <div class="section-header mb-3">
+        <div>
+          <div class="section-title">Ngân hàng câu hỏi 📚</div>
+          <div class="section-sub">Tìm kiếm, lọc và quản lý câu hỏi</div>
+        </div>
+        <div class="flex gap-2">
+          <button class="btn btn-secondary btn-sm" id="exportBankBtn" onclick="exportSelected()">📤 Xuất đề</button>
+        </div>
+      </div>
 
-    <!-- KaTeX -->
-    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+      <!-- Filters -->
+      <div class="card mb-3">
+        <div class="form-row">
+          <div class="form-group mb-0">
+            <label class="form-label">Tìm kiếm</label>
+            <input type="text" class="form-input" id="bankSearch" placeholder="Nhập từ khóa..." oninput="debounceSearch()"/>
+          </div>
+          <div class="form-group mb-0">
+            <label class="form-label">Dạng câu</label>
+            <select class="form-select" id="bankType" onchange="loadBank()">
+              <option value="">Tất cả dạng</option>
+              <option value="TN">Trắc nghiệm</option>
+              <option value="TL">Tự luận</option>
+              <option value="DT">Đúng/Sai</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row mt-2">
+          <div class="form-group mb-0">
+            <label class="form-label">Độ khó</label>
+            <select class="form-select" id="bankDiff" onchange="loadBank()">
+              <option value="">Tất cả độ khó</option>
+              <option value="NB">Nhận biết</option>
+              <option value="TH">Thông hiểu</option>
+              <option value="VD">Vận dụng</option>
+              <option value="VDC">Vận dụng cao</option>
+            </select>
+          </div>
+          <div class="form-group mb-0">
+            <label class="form-label">Lớp</label>
+            <select class="form-select" id="bankGrade" onchange="loadBank()">
+              <option value="">Tất cả lớp</option>
+              <option value="10">Lớp 10</option>
+              <option value="11">Lớp 11</option>
+              <option value="12">Lớp 12</option>
+            </select>
+          </div>
+        </div>
+      </div>
 
-    <!-- App modules (Sprint 3, Task 17) -->
-    <script src="/static/js/utils.js"></script>
-    <script src="/static/js/auth.js"></script>
-    <script src="/static/js/dashboard.js"></script>
-    <script src="/static/js/parser.js"></script>
-    <script src="/static/js/bank.js"></script>
-    <script src="/static/js/generator.js"></script>
-  </body>
-</html>
+      <div id="bankList">
+        <div class="empty-state"><div class="spinner"></div></div>
+      </div>
+      <div class="pagination" id="bankPagination"></div>
+    </div>
+
+    <!-- ═══════════════════════════════════════
+         TAB: GENERATE
+    ═══════════════════════════════════════ -->
+    <div class="tab-panel flex-panel" id="tabGenerate">
+      <!-- Left: config -->
+      <div style="width:320px;flex-shrink:0">
+        <div class="card mb-3">
+          <div class="card-header mb-3">
+            <div class="card-title">⚙️ Cấu hình đề</div>
+          </div>
+
+          <!-- LOẠI ĐỀ -->
+          <div class="gen-divider" style="margin-top:0"><span>Loại đề thi</span></div>
+          <div class="gen-exam-type-grid">
+            <button class="gen-exam-type-btn" data-type="kt15" onclick="selectExamType(this,'kt15')">
+              <span class="gen-type-label">⏱ 15 phút</span>
+              <span class="gen-type-desc">5–6 câu · TN/TL</span>
+            </button>
+            <button class="gen-exam-type-btn" data-type="kt1tiet" onclick="selectExamType(this,'kt1tiet')">
+              <span class="gen-type-label">📋 1 tiết</span>
+              <span class="gen-type-desc">28 TN + 2 TL · 45'</span>
+            </button>
+            <button class="gen-exam-type-btn active" data-type="giuaky" onclick="selectExamType(this,'giuaky')">
+              <span class="gen-type-label">📝 Giữa kỳ</span>
+              <span class="gen-type-desc">28 TN + 2 TL · 90'</span>
+            </button>
+            <button class="gen-exam-type-btn" data-type="cuoiky" onclick="selectExamType(this,'cuoiky')">
+              <span class="gen-type-label">📝 Cuối kỳ</span>
+              <span class="gen-type-desc">28 TN + 3 TL · 90'</span>
+            </button>
+            <button class="gen-exam-type-btn" data-type="thpt" onclick="selectExamType(this,'thpt')">
+              <span class="gen-type-label">🎓 THPT QG</span>
+              <span class="gen-type-desc">50 TN · 90'</span>
+            </button>
+            <button class="gen-exam-type-btn" data-type="custom" onclick="selectExamType(this,'custom')">
+              <span class="gen-type-label">⚙️ Tùy chọn</span>
+              <span class="gen-type-desc">Tự cấu hình</span>
+            </button>
+          </div>
+
+          <!-- Cấu hình tùy chọn (ẩn mặc định) -->
+          <div id="genCustomConfig" style="display:none;margin-top:8px">
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">Số câu TN</label>
+                <input type="number" class="form-input" id="genCountTN" value="28" min="0" max="100"/>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Số câu TL</label>
+                <input type="number" class="form-input" id="genCountTL" value="2" min="0" max="20"/>
+              </div>
+            </div>
+          </div>
+          <!-- Hidden inputs for legacy compat -->
+          <input type="hidden" id="genCount" value="30"/>
+          <input type="hidden" id="genType" value=""/>
+
+          <!-- PHẠM VI -->
+          <div class="gen-divider"><span>Phạm vi nội dung</span></div>
+
+          <!-- Khối lớp -->
+          <div class="form-group">
+            <label class="form-label">Khối lớp</label>
+            <div class="gen-grade-pills" id="genGradePills">
+              <button class="gen-grade-pill active" data-grade="" onclick="selectGrade(this,'')">Tất cả</button>
+              <button class="gen-grade-pill" data-grade="6"  onclick="selectGrade(this,6)">Lớp 6</button>
+              <button class="gen-grade-pill" data-grade="7"  onclick="selectGrade(this,7)">Lớp 7</button>
+              <button class="gen-grade-pill" data-grade="8"  onclick="selectGrade(this,8)">Lớp 8</button>
+              <button class="gen-grade-pill" data-grade="9"  onclick="selectGrade(this,9)">Lớp 9</button>
+              <button class="gen-grade-pill" data-grade="10" onclick="selectGrade(this,10)">Lớp 10</button>
+              <button class="gen-grade-pill" data-grade="11" onclick="selectGrade(this,11)">Lớp 11</button>
+              <button class="gen-grade-pill" data-grade="12" onclick="selectGrade(this,12)">Lớp 12</button>
+            </div>
+            <input type="hidden" id="genGrade" value=""/>
+          </div>
+
+          <!-- Tabs phạm vi (hiện sau khi chọn lớp) -->
+          <div class="form-group" id="genScopeGroup" style="display:none">
+            <label class="form-label">Phạm vi đề</label>
+            <div class="gen-scope-tabs">
+              <button class="gen-scope-tab active" data-scope="chapter" onclick="selectScope(this,'chapter')">Theo chương</button>
+              <button class="gen-scope-tab" data-scope="hk1"  onclick="selectScope(this,'hk1')">HK I</button>
+              <button class="gen-scope-tab" data-scope="hk2"  onclick="selectScope(this,'hk2')">HK II</button>
+              <button class="gen-scope-tab" data-scope="full" onclick="selectScope(this,'full')">Cả năm</button>
+            </div>
+            <input type="hidden" id="genScope" value="chapter"/>
+          </div>
+
+          <!-- Chương (cascading) -->
+          <div class="form-group" id="genChapterGroup" style="display:none">
+            <label class="form-label">
+              Chương
+              <span class="gen-count-badge" id="genChapterCount"></span>
+            </label>
+            <select class="form-select" id="genChapter" onchange="onChapterChange()">
+              <option value="">Tất cả chương</option>
+            </select>
+          </div>
+
+          <!-- Bài/Chủ đề (cascading) -->
+          <div class="form-group" id="genLessonGroup" style="display:none">
+            <label class="form-label">
+              Bài / Chủ đề
+              <span class="gen-count-badge" id="genLessonCount"></span>
+            </label>
+            <select class="form-select" id="genLesson" onchange="onLessonChange()">
+              <option value="">Tất cả bài</option>
+            </select>
+          </div>
+
+          <!-- Số câu trong ngân hàng -->
+          <div class="gen-bank-info" id="genBankInfo" style="display:none">
+            <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 10h16M4 14h16"/></svg>
+            <span id="genBankInfoText">0 câu trong ngân hàng</span>
+          </div>
+
+          <!-- MỨC ĐỘ & ĐỐI TƯỢNG -->
+          <div class="gen-divider"><span>Mức độ &amp; đối tượng</span></div>
+
+          <div class="form-group">
+            <label class="form-label">Phân phối độ khó</label>
+            <div class="gen-diff-grid">
+              <button class="gen-diff-btn active" data-diff="balanced" onclick="selectDiff(this,'balanced')">
+                <span class="gen-diff-label">⚖️ Cân bằng</span>
+                <span class="gen-diff-ratio">40–30–20–10</span>
+              </button>
+              <button class="gen-diff-btn" data-diff="easy" onclick="selectDiff(this,'easy')">
+                <span class="gen-diff-label">🟢 Dễ</span>
+                <span class="gen-diff-ratio">50–35–15–0</span>
+              </button>
+              <button class="gen-diff-btn" data-diff="hard" onclick="selectDiff(this,'hard')">
+                <span class="gen-diff-label">🔴 Khó</span>
+                <span class="gen-diff-ratio">25–30–30–15</span>
+              </button>
+              <button class="gen-diff-btn" data-diff="hsg" onclick="selectDiff(this,'hsg')">
+                <span class="gen-diff-label">🏆 HSG</span>
+                <span class="gen-diff-ratio">10–20–40–30</span>
+              </button>
+            </div>
+            <div class="gen-diff-legend"><span>NB</span><span>TH</span><span>VD</span><span>VDC</span></div>
+            <input type="hidden" id="genDiff" value="balanced"/>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Đối tượng học sinh</label>
+            <select class="form-select" id="genTarget">
+              <option value="dattra">Đại trà</option>
+              <option value="kha">Khá – Giỏi</option>
+              <option value="hsg">Học sinh giỏi / Thi chuyên</option>
+            </select>
+          </div>
+
+          <!-- GỢI Ý THÊM -->
+          <div class="gen-divider"><span>Gợi ý thêm (tùy chọn)</span></div>
+          <div class="form-group">
+            <label class="form-label">Yêu cầu riêng cho AI</label>
+            <textarea class="form-textarea" id="genTopic"
+              placeholder="VD: tập trung bài toán cực trị có tham số, tránh câu về tích phân..."
+              style="min-height:60px"></textarea>
+          </div>
+
+          <button class="btn btn-primary" style="width:100%;margin-top:4px" onclick="generateQuestions()">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            Sinh đề AI
+          </button>
+        </div>
+      </div>
+
+      <!-- Right: results -->
+      <div class="flex-1">
+        <div class="section-header mb-2">
+          <div class="section-title">Kết quả sinh đề</div>
+          <div id="genActions" class="flex gap-2"></div>
+        </div>
+        <div id="genResults">
+          <div class="empty-state">
+            <div class="empty-icon">⚡</div>
+            <div class="empty-title">Chưa có đề nào</div>
+            <div class="empty-sub">Cấu hình bên trái và nhấn "Sinh đề AI"</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════
+         TAB: CLASSES
+    <!-- ═══════════════════════════════════════
+         CLASSES TAB
+    ═══════════════════════════════════════ -->
+    <div class="tab-panel" id="tabClasses">
+
+      <!-- ── LIST VIEW ── -->
+      <div id="classesListView">
+        <div class="cls-page-header">
+          <div>
+            <h2 class="cls-page-title">Lớp học</h2>
+            <p class="cls-page-sub">Quản lý lớp và giao bài tập cho học sinh</p>
+          </div>
+          <div class="flex gap-2">
+            <button class="btn btn-secondary btn-sm" onclick="loadClasses()">
+              <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 109.1-9"/><path d="M3 3v9h9"/></svg>
+              Làm mới
+            </button>
+            <button class="btn btn-primary btn-sm" onclick="openCreateClassModal()">
+              <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Tạo lớp mới
+            </button>
+          </div>
+        </div>
+
+        <!-- Quick summary bar -->
+        <div class="cls-summary-bar" id="classSummaryBar" style="display:none">
+          <div class="cls-summary-item">
+            <span class="cls-summary-num" id="summaryClasses">0</span>
+            <span class="cls-summary-lbl">Lớp</span>
+          </div>
+          <div class="cls-summary-div"></div>
+          <div class="cls-summary-item">
+            <span class="cls-summary-num" id="summaryStudents">0</span>
+            <span class="cls-summary-lbl">Học sinh</span>
+          </div>
+          <div class="cls-summary-div"></div>
+          <div class="cls-summary-item">
+            <span class="cls-summary-num" id="summaryAssignments">0</span>
+            <span class="cls-summary-lbl">Bài tập</span>
+          </div>
+        </div>
+
+        <div class="classes-grid" id="classesGrid">
+          <div class="empty-state" style="grid-column:1/-1"><div class="spinner"></div></div>
+        </div>
+      </div>
+
+      <!-- ── DETAIL VIEW ── -->
+      <div id="classDetailView" class="hidden">
+
+        <!-- Breadcrumb -->
+        <button class="cls-breadcrumb" onclick="showClassesList()">
+          <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+          Tất cả lớp học
+        </button>
+
+        <!-- Class hero header -->
+        <div class="cls-hero" id="classHero">
+          <div class="cls-hero-left">
+            <div class="cls-hero-code" id="detailCode">MAT12A</div>
+            <div>
+              <div class="cls-hero-name" id="detailName">Tên lớp</div>
+              <div class="cls-hero-meta" id="detailMeta">Môn · Lớp</div>
+            </div>
+          </div>
+          <div class="cls-hero-stats" id="heroStats">
+            <div class="cls-hero-stat">
+              <div class="cls-hero-num" id="heroStudents">—</div>
+              <div class="cls-hero-lbl">Học sinh</div>
+            </div>
+            <div class="cls-hero-stat-div"></div>
+            <div class="cls-hero-stat">
+              <div class="cls-hero-num" id="heroAssignments">—</div>
+              <div class="cls-hero-lbl">Bài tập</div>
+            </div>
+            <div class="cls-hero-stat-div"></div>
+            <div class="cls-hero-stat">
+              <div class="cls-hero-num" id="heroCompletion">—</div>
+              <div class="cls-hero-lbl">Hoàn thành</div>
+            </div>
+          </div>
+          <div class="cls-hero-actions">
+            <button class="btn btn-ghost btn-sm" onclick="copyClassCode()" id="btnCopyCode" title="Copy mã lớp">
+              <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+              <span id="heroCodeLabel">MAT12A</span>
+            </button>
+            <button class="btn btn-primary btn-sm" onclick="openSendAssignmentModal()">
+              <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+              Giao bài
+            </button>
+            <button class="btn btn-ghost btn-sm btn-icon" onclick="openEditClassModal()" title="Chỉnh sửa lớp">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="cls-tabs">
+          <button class="cls-tab active" onclick="showDetailTab('members')" data-detail="members">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+            Học sinh
+            <span class="cls-tab-badge" id="tabBadgeMembers">0</span>
+          </button>
+          <button class="cls-tab" onclick="showDetailTab('assignments')" data-detail="assignments">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            Bài tập
+            <span class="cls-tab-badge" id="tabBadgeAssignments">0</span>
+          </button>
+          <button class="cls-tab" onclick="showDetailTab('analytics')" data-detail="analytics">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            Phân tích
+          </button>
+          <button class="cls-tab" onclick="showDetailTab('leaderboard')" data-detail="leaderboard">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6l4-4 4 4M16 10a4 4 0 01-8 0"/><path d="M12 18v-8M5 21h14"/></svg>
+            Bảng xếp hạng
+          </button>
+        </div>
+
+        <!-- ── TAB: MEMBERS ── -->
+        <div id="detailMembers">
+          <div class="cls-tab-toolbar">
+            <div class="cls-search-wrap">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input type="text" class="cls-search" id="memberSearch" placeholder="Tìm học sinh..." oninput="filterMembers(this.value)">
+            </div>
+            <span class="badge badge-neutral" id="memberCount">0 học sinh</span>
+          </div>
+          <div id="membersList">
+            <div class="empty-state"><div class="spinner"></div></div>
+          </div>
+        </div>
+
+        <!-- ── TAB: ASSIGNMENTS ── -->
+        <div id="detailAssignments" class="hidden">
+          <div class="cls-tab-toolbar">
+            <div style="flex:1"></div>
+            <button class="btn btn-primary btn-sm" onclick="openSendAssignmentModal()">
+              <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Giao bài mới
+            </button>
+          </div>
+          <div id="assignmentsList">
+            <div class="empty-state"><div class="spinner"></div></div>
+          </div>
+        </div>
+
+        <!-- ── TAB: ANALYTICS ── -->
+        <div id="detailAnalytics" class="hidden">
+          <div class="cls-analytics-grid">
+            <div class="cls-an-card">
+              <div class="cls-an-card-title">📊 Điểm trung bình lớp</div>
+              <div class="cls-an-big-num" id="anAvgScore">—</div>
+              <div class="cls-an-sub" id="anAvgScoreSub">Chưa có dữ liệu</div>
+            </div>
+            <div class="cls-an-card">
+              <div class="cls-an-card-title">✅ Tỉ lệ hoàn thành</div>
+              <div class="cls-an-big-num" id="anCompletion">—</div>
+              <div class="cls-an-sub" id="anCompletionSub">Bài tập mới nhất</div>
+            </div>
+            <div class="cls-an-card">
+              <div class="cls-an-card-title">🔥 Hoạt động 7 ngày</div>
+              <div class="cls-an-big-num" id="anActive7d">—</div>
+              <div class="cls-an-sub" id="anActive7dSub">Học sinh đã làm bài</div>
+            </div>
+          </div>
+
+          <div class="cls-an-2col">
+            <div>
+              <div class="cls-an-section-title">🎯 Học sinh nổi bật</div>
+              <div id="anTopStudents" class="cls-an-list">
+                <div class="empty-state"><div class="spinner"></div></div>
+              </div>
+            </div>
+            <div>
+              <div class="cls-an-section-title">⚠️ Chủ đề học sinh yếu</div>
+              <div id="anWeakTopics" class="cls-an-list">
+                <div class="empty-state"><div class="spinner"></div></div>
+              </div>
+            </div>
+          </div>
+
+          <div style="margin-top:20px">
+            <div class="cls-an-section-title">📋 Tất cả học sinh</div>
+            <div id="anAllStudents" class="cls-an-table-wrap">
+              <div class="empty-state"><div class="spinner"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── TAB: LEADERBOARD ── -->
+        <div id="detailLeaderboard" class="hidden">
+          <div class="cls-lb-header">
+            <div class="cls-lb-title">🏆 Bảng xếp hạng tuần này</div>
+            <button class="btn btn-ghost btn-sm" onclick="loadLeaderboard()">
+              <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 109.1-9"/><path d="M3 3v9h9"/></svg>
+              Cập nhật
+            </button>
+          </div>
+
+          <!-- Podium top 3 -->
+          <div class="cls-podium" id="lbPodium">
+            <div class="cls-pod-item cls-pod-2">
+              <div class="cls-pod-avatar" id="pod2Av">?</div>
+              <div class="cls-pod-bar cls-pod-bar-2"></div>
+              <div class="cls-pod-medal">🥈</div>
+              <div class="cls-pod-name" id="pod2Name">—</div>
+              <div class="cls-pod-xp" id="pod2XP">0 XP</div>
+            </div>
+            <div class="cls-pod-item cls-pod-1">
+              <div class="cls-pod-crown">👑</div>
+              <div class="cls-pod-avatar cls-pod-avatar-1" id="pod1Av">?</div>
+              <div class="cls-pod-bar cls-pod-bar-1"></div>
+              <div class="cls-pod-medal">🥇</div>
+              <div class="cls-pod-name" id="pod1Name">—</div>
+              <div class="cls-pod-xp" id="pod1XP">0 XP</div>
+            </div>
+            <div class="cls-pod-item cls-pod-3">
+              <div class="cls-pod-avatar" id="pod3Av">?</div>
+              <div class="cls-pod-bar cls-pod-bar-3"></div>
+              <div class="cls-pod-medal">🥉</div>
+              <div class="cls-pod-name" id="pod3Name">—</div>
+              <div class="cls-pod-xp" id="pod3XP">0 XP</div>
+            </div>
+          </div>
+
+          <!-- Full list -->
+          <div id="lbList" class="cls-lb-list">
+            <div class="empty-state"><div class="spinner"></div></div>
+          </div>
+        </div>
+
+      </div><!-- /classDetailView -->
+    </div><!-- /tabClasses -->
+
+  </div><!-- /content -->
+</div><!-- /main-wrap -->
+
+<!-- ═══════════════════════════════════════
+     MODAL: Create Class
+═══════════════════════════════════════ -->
+<div class="modal-overlay" id="modalCreateClass">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">🏫 Tạo lớp học mới</div>
+      <button class="modal-close" onclick="closeModal('modalCreateClass')">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Tên lớp *</label>
+        <input type="text" class="form-input" id="newClassName" placeholder="VD: Toán 12A, Vật lý 11B"/>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Môn học</label>
+          <input type="text" class="form-input" id="newClassSubject" placeholder="Toán, Vật lý, Hóa học..."/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Khối lớp</label>
+          <select class="form-select" id="newClassGrade">
+            <option value="">Chọn khối</option>
+            <option value="6">Lớp 6</option><option value="7">Lớp 7</option>
+            <option value="8">Lớp 8</option><option value="9">Lớp 9</option>
+            <option value="10">Lớp 10</option><option value="11">Lớp 11</option>
+            <option value="12">Lớp 12</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Mô tả (tùy chọn)</label>
+        <textarea class="form-textarea" id="newClassDesc" placeholder="Ghi chú về lớp học..."></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modalCreateClass')">Hủy</button>
+      <button class="btn btn-primary" onclick="createClass()">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Tạo lớp
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════
+     MODAL: Edit Class
+═══════════════════════════════════════ -->
+<div class="modal-overlay" id="modalEditClass">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">✏️ Chỉnh sửa lớp</div>
+      <button class="modal-close" onclick="closeModal('modalEditClass')">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Tên lớp *</label>
+        <input type="text" class="form-input" id="editClassName"/>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Môn học</label>
+          <input type="text" class="form-input" id="editClassSubject"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Khối lớp</label>
+          <select class="form-select" id="editClassGrade">
+            <option value="">Chọn khối</option>
+            <option value="6">Lớp 6</option><option value="7">Lớp 7</option>
+            <option value="8">Lớp 8</option><option value="9">Lớp 9</option>
+            <option value="10">Lớp 10</option><option value="11">Lớp 11</option>
+            <option value="12">Lớp 12</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Mô tả</label>
+        <textarea class="form-textarea" id="editClassDesc"></textarea>
+      </div>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:600">
+          <input type="checkbox" id="editClassActive" style="width:16px;height:16px;accent-color:var(--accent)"/>
+          Lớp đang hoạt động
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-danger btn-sm" onclick="deleteCurrentClass()" style="margin-right:auto">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+        Xóa lớp
+      </button>
+      <button class="btn btn-ghost" onclick="closeModal('modalEditClass')">Hủy</button>
+      <button class="btn btn-primary" onclick="saveEditClass()">Lưu thay đổi</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════
+     MODAL: Send Assignment
+═══════════════════════════════════════ -->
+<div class="modal-overlay" id="modalSendAssignment">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div class="modal-title">📤 Giao bài tập cho học sinh</div>
+      <button class="modal-close" onclick="closeModal('modalSendAssignment')">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Tiêu đề bài tập *</label>
+        <input type="text" class="form-input" id="assignTitle" placeholder="VD: Đạo hàm — Bài tập tuần 5"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Chọn đề từ ngân hàng</label>
+        <select class="form-select" id="assignExam">
+          <option value="">— Đang tải —</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Hạn nộp bài</label>
+          <input type="datetime-local" class="form-input" id="assignDeadline"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Số lần làm tối đa</label>
+          <input type="number" class="form-input" id="assignAttempts" value="3" min="1" max="10"/>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="assignShowAnswer" checked style="width:16px;height:16px;accent-color:var(--accent)"/>
+          Hiển thị đáp án sau khi nộp bài
+        </label>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Giao vào lớp *</label>
+        <div id="assignClassList" class="cls-class-checklist">
+          <div class="text-muted" style="font-size:13px;padding:8px 0">Đang tải...</div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Mô tả / Hướng dẫn (tùy chọn)</label>
+        <textarea class="form-textarea" id="assignDesc" placeholder="Hướng dẫn làm bài cho học sinh..."></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modalSendAssignment')">Hủy</button>
+      <button class="btn btn-success" onclick="sendAssignment()">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+        Giao bài tập
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════
+     MODAL: View Submissions
+═══════════════════════════════════════ -->
+<div class="modal-overlay" id="modalSubmissions">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title" id="submissionsTitle">Kết quả bài tập</div>
+        <div style="font-size:12px;color:var(--text-2);margin-top:3px" id="submissionsMeta"></div>
+      </div>
+      <button class="modal-close" onclick="closeModal('modalSubmissions')">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <!-- Score distribution mini chart -->
+      <div id="scoreDistWrap" style="display:none" class="cls-score-dist">
+        <div class="cls-score-dist-title">Phân phối điểm</div>
+        <div class="cls-score-bars" id="scoreBars"></div>
+      </div>
+      <div id="submissionsList">
+        <div class="empty-state"><div class="spinner"></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+  </div>
+</div>
+
+<!-- Toast container -->
+<div id="toastContainer"></div>
+
+<!-- Scripts -->
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script src="/static/js/utils.js"></script>
+<script src="/static/js/auth.js"></script>
+<script src="/static/js/dashboard.js"></script>
+<script src="/static/js/parser.js"></script>
+<script src="/static/js/bank.js"></script>
+<script src="/static/js/generator.js"></script>
+<script src="/static/js/classes.js"></script>
+</body>
