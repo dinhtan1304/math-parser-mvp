@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 import os
 
 from app.core.config import settings
-from app.api import auth, parser, questions, generator, dashboard, export, classes, assignments, submissions, game, analytics
+from app.api import auth, parser, questions, generator, dashboard, export, classes, assignments, submissions, game, analytics, curriculum
 from app.db.session import engine
 from app.db.base import Base
 
@@ -139,6 +139,7 @@ app.include_router(assignments.router, prefix=f"{settings.API_V1_STR}/assignment
 app.include_router(submissions.router, prefix=f"{settings.API_V1_STR}/submissions", tags=["classroom"])
 app.include_router(game.router,        prefix=f"{settings.API_V1_STR}/game",        tags=["game"])
 app.include_router(analytics.router,   prefix=f"{settings.API_V1_STR}/analytics",   tags=["analytics"])
+app.include_router(curriculum.router,  prefix=f"{settings.API_V1_STR}/curriculum",  tags=["curriculum"])
 
 # Templates
 templates = Jinja2Templates(directory="app/templates")

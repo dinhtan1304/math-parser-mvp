@@ -4,9 +4,9 @@ from pydantic import BaseModel, Field
 
 class GenerateRequest(BaseModel):
     """Request for generating questions of ONE type/difficulty."""
-    question_type: str = Field(default="TN", description="TN, TL, ...")
-    topic: str = Field(default="", description="Dai so, Hinh hoc, ...")
-    difficulty: str = Field(default="TH", description="NB, TH, VD, VDC")
+    question_type: Optional[str] = Field(default=None, description="TN, TL, ... (None = any)")
+    topic: Optional[str] = Field(default=None, description="Dai so, Hinh hoc, ... (None = any)")
+    difficulty: Optional[str] = Field(default=None, description="NB, TH, VD, VDC (None = any)")
     count: int = Field(default=5, ge=1, le=50)
 
 
@@ -18,8 +18,8 @@ class ExamSection(BaseModel):
 
 class ExamGenerateRequest(BaseModel):
     """Request for generating a mixed-difficulty exam."""
-    topic: str = Field(default="", description="Chu de chinh")
-    question_type: str = Field(default="", description="TN, TL or empty for mixed")
+    topic: Optional[str] = Field(default=None, description="Chu de chinh")
+    question_type: Optional[str] = Field(default=None, description="TN, TL or None for mixed")
     sections: List[ExamSection] = Field(
         default=[
             ExamSection(difficulty="NB", count=3),
