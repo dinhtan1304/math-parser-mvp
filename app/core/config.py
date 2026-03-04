@@ -1,5 +1,5 @@
 from typing import List, Union, Optional
-from pydantic import AnyHttpUrl, field_validator
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 import os
@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE_MB: int = 50  # Max file size in MB
 
     # CORS
-    BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = []
+    BACKEND_CORS_ORIGINS: List[str] = []
 
     # EXTERNAL APIS
     GOOGLE_API_KEY: Optional[str] = None

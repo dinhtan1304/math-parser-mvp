@@ -99,7 +99,7 @@ _cors_logger = _log.getLogger(__name__)
 if settings.ENV == "development":
     cors_origins = ["*"]
 elif settings.BACKEND_CORS_ORIGINS:
-    cors_origins = [str(origin) for origin in settings.BACKEND_CORS_ORIGINS]
+    cors_origins = settings.BACKEND_CORS_ORIGINS
 else:
     # Production with no CORS origins configured — log a warning, restrict to empty list
     # (This blocks all cross-origin requests, which is safer than allowing everything)
