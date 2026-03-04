@@ -1,8 +1,5 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from contextlib import asynccontextmanager
 import os
@@ -11,7 +8,6 @@ from app.core.config import settings
 from app.api import auth, parser, questions, generator, dashboard, export, classes, assignments, submissions, game, analytics, curriculum
 from app.db.session import engine
 from app.db.base import Base
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -89,7 +85,6 @@ async def lifespan(app: FastAPI):
     # Shutdown
     await engine.dispose()
 
-
 app = FastAPI(
     title=settings.PROJECT_NAME,
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
@@ -141,13 +136,6 @@ app.include_router(game.router,        prefix=f"{settings.API_V1_STR}/game",    
 app.include_router(analytics.router,   prefix=f"{settings.API_V1_STR}/analytics",   tags=["analytics"])
 app.include_router(curriculum.router,  prefix=f"{settings.API_V1_STR}/curriculum",  tags=["curriculum"])
 
-# Templates
-templates = Jinja2Templates(directory="app/templates")
-
-# Static files (Sprint 3, Task 17)
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
-
-
 # ── Health check (Sprint 1, Task 8) ──
 @app.get("/health", tags=["system"])
 async def health_check():
@@ -171,20 +159,3 @@ async def health_check():
     checks["ai_configured"] = bool(settings.GOOGLE_API_KEY)
 
     return checks
-
-# Frontend Routes
-@app.get("/", response_class=HTMLResponse)
-async def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
-
-@app.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request})
-
-@app.get("/register", response_class=HTMLResponse)
-async def register_page(request: Request):
-    return templates.TemplateResponse("register.html", {"request": request})
-
-@app.get("/classes", response_class=HTMLResponse)
-async def classes_page(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
