@@ -52,8 +52,9 @@ async def list_questions(
     exposing other users' question data. Now filtered to current user's questions.
     """
 
-    # BUG FIX: Always filter by current user's questions for data isolation
-    conditions = [Question.user_id == current_user.id]
+    # Shared bank: all users see all questions
+    # user_id filter only applied on write operations (delete/update)
+    conditions = []
 
     if question_type:
         conditions.append(Question.question_type == question_type)
@@ -120,24 +121,22 @@ async def get_filters(
     to fire all 6 selects concurrently on the same connection pool.
     ~6x faster on cold DB connections.
     """
-    uid = current_user.id
-
     # OPT: Run all 6 queries in parallel instead of sequential await
     import asyncio as _aio
     (
         types_r, topics_r, diffs_r, grades_r, chapters_r, count_r
     ) = await _aio.gather(
         db.execute(select(distinct(Question.question_type)).where(
-            Question.question_type.isnot(None), Question.user_id == uid)),
+            Question.question_type.isnot(None))),
         db.execute(select(distinct(Question.topic)).where(
-            Question.topic.isnot(None), Question.user_id == uid)),
+            Question.topic.isnot(None))),
         db.execute(select(distinct(Question.difficulty)).where(
-            Question.difficulty.isnot(None), Question.user_id == uid)),
+            Question.difficulty.isnot(None))),
         db.execute(select(distinct(Question.grade)).where(
-            Question.grade.isnot(None), Question.user_id == uid)),
+            Question.grade.isnot(None))),
         db.execute(select(distinct(Question.chapter)).where(
-            Question.chapter.isnot(None), Question.user_id == uid)),
-        db.execute(select(func.count(Question.id)).where(Question.user_id == uid)),
+            Question.chapter.isnot(None))),
+        db.execute(select(func.count(Question.id))),
     )
 
     return QuestionFilters(
@@ -156,13 +155,9 @@ async def get_question(
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a single question by ID (shared)."""
-    # FIX #6: Filter by user_id to prevent reading other users' questions by ID enumeration
+    """Get a single question by ID (shared bank)."""
     result = await db.execute(
-        select(Question).where(
-            Question.id == question_id,
-            Question.user_id == current_user.id,
-        )
+        select(Question).where(Question.id == question_id)
     )
     question = result.scalars().first()
 
