@@ -473,10 +473,13 @@ JSON array:"""
                 if schema:
                     cfg_kwargs["response_schema"] = schema
 
-                response = await self._client.aio.models.generate_content(
-                    model=self.gemini_model,
-                    contents=parts,
-                    config=types.GenerateContentConfig(**cfg_kwargs),
+                response = await asyncio.wait_for(
+                    self._client.aio.models.generate_content(
+                        model=self.gemini_model,
+                        contents=parts,
+                        config=types.GenerateContentConfig(**cfg_kwargs),
+                    ),
+                    timeout=120,  # Vision calls can take longer (images)
                 )
                 content = self._safe_text(response)
                 if content:
@@ -484,6 +487,8 @@ JSON array:"""
                     if result:
                         logger.info(f"Vision {label}: {len(result)} questions from {len(images)} pages")
                         return result
+            except asyncio.TimeoutError:
+                logger.warning(f"Vision {label} timed out after 120s")
             except Exception as e:
                 logger.warning(f"Vision {label} failed: {e}")
 
@@ -536,12 +541,15 @@ JSON array:"""
         prompt = prompt_template.format(text=text)
 
         async def _try_with_retry(config, label):
-            for attempt in range(3):
+            for attempt in range(3):  # 3 attempts per tier
                 try:
-                    response = await self._client.aio.models.generate_content(
-                        model=self.gemini_model,
-                        contents=prompt,
-                        config=config,
+                    response = await asyncio.wait_for(
+                        self._client.aio.models.generate_content(
+                            model=self.gemini_model,
+                            contents=prompt,
+                            config=config,
+                        ),
+                        timeout=90,  # 90s per call — prevents indefinite hang
                     )
                     content = self._safe_text(response)
                     if content:
@@ -550,11 +558,30 @@ JSON array:"""
                             logger.info(f"{label}: {len(result)} questions")
                             return result, content
                     return None, content or ""
+                except asyncio.TimeoutError:
+                    logger.warning(f"{label} timed out after 90s (attempt {attempt + 1})")
+                    if attempt < 2:
+                        await asyncio.sleep(10)
+                        continue
+                    return None, ""
                 except Exception as e:
                     err_str = str(e)
+                    err_lower = err_str.lower()
                     if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                        wait = (attempt + 1) * 10
+                        wait = (attempt + 1) * 5  # 5/10/15s
                         logger.warning(f"{label} rate limited, waiting {wait}s...")
+                        await asyncio.sleep(wait)
+                        continue
+                    # 5xx server errors (502, 503, 500) — transient, retry with back-off
+                    if (
+                        "502" in err_str or "503" in err_str or "500" in err_str
+                        or "bad gateway" in err_lower
+                        or "unavailable" in err_lower
+                        or "server error" in err_lower
+                        or "internal error" in err_lower
+                    ):
+                        wait = (attempt + 1) * 15  # 15s / 30s — then give up this tier
+                        logger.warning(f"{label} server error (attempt {attempt + 1}), retry in {wait}s: {err_str[:80]}")
                         await asyncio.sleep(wait)
                         continue
                     logger.warning(f"{label} failed: {e}")

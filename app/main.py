@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 import os
 
 from app.core.config import settings
-from app.api import auth, parser, questions, generator, dashboard, export, classes, assignments, submissions, game, analytics, curriculum
+from app.api import auth, parser, questions, generator, dashboard, export, classes, assignments, submissions, game, analytics, curriculum, chat
 from app.db.session import engine
 from app.db.base import Base
 
@@ -77,6 +77,16 @@ async def lifespan(app: FastAPI):
     try:
         from app.services.vector_search import init_vector_table
         await init_vector_table(engine)
+        try:
+            from app.services.chat_rag import ensure_chat_tables
+            await ensure_chat_tables(engine)
+        except Exception as e:
+            logger.warning(f"Chat tables init skipped: {e}")
+        try:
+            from app.services.similarity_detector import ensure_similarity_table
+            await ensure_similarity_table(engine)
+        except Exception as e:
+            logger.warning(f"Similarity table init skipped: {e}")
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Vector table init skipped: {e}")
@@ -135,6 +145,7 @@ app.include_router(submissions.router, prefix=f"{settings.API_V1_STR}/submission
 app.include_router(game.router,        prefix=f"{settings.API_V1_STR}/game",        tags=["game"])
 app.include_router(analytics.router,   prefix=f"{settings.API_V1_STR}/analytics",   tags=["analytics"])
 app.include_router(curriculum.router,  prefix=f"{settings.API_V1_STR}/curriculum",  tags=["curriculum"])
+app.include_router(chat.router,       prefix=f"{settings.API_V1_STR}/chat",         tags=["chat"])
 
 # ── Health check (Sprint 1, Task 8) ──
 @app.get("/health", tags=["system"])

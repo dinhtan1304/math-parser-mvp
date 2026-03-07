@@ -49,3 +49,23 @@ class GenerateResponse(BaseModel):
     questions: List[GeneratedQuestion]
     sample_count: int = 0
     message: str = ""
+
+class PromptGenerateRequest(BaseModel):
+    """RAG: Sinh đề từ mô tả tự do bằng tiếng Việt."""
+    prompt: str = Field(
+        description="Mô tả yêu cầu, ví dụ: 'Tạo 10 câu TN lớp 8 về hằng đẳng thức và phân thức, mix NB/TH/VD'",
+        min_length=5,
+    )
+    # Optional overrides — nếu user muốn ép cứng
+    grade: Optional[int] = Field(default=None, ge=6, le=12)
+    count: Optional[int] = Field(default=None, ge=1, le=50)
+
+
+class ParsedCriteria(BaseModel):
+    """Kết quả parse từ prompt tự do — dùng nội bộ."""
+    grade: Optional[int] = None
+    chapters: List[str] = []          # ["C2.Hằng đẳng thức", "C6.Phân thức"]
+    difficulty_mix: dict = {}         # {"NB": 2, "TH": 4, "VD": 3, "VDC": 1}
+    question_type: str = "TN"
+    total_count: int = 10
+    topic_hint: str = ""              # raw topic string để vector search

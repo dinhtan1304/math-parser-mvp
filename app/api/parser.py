@@ -96,6 +96,110 @@ class ExamListResponse(BaseModel):
 
 # ==================== Helpers ====================
 
+# AI error types — used by FE to show appropriate UI
+AI_ERROR_NOT_CONFIGURED = "ai_not_configured"
+AI_ERROR_RATE_LIMIT     = "ai_rate_limit"
+AI_ERROR_MAINTENANCE    = "ai_maintenance"
+AI_ERROR_TIMEOUT        = "ai_timeout"
+AI_ERROR_CONTENT        = "ai_content_blocked"
+AI_ERROR_NETWORK        = "ai_network"
+
+
+def _classify_ai_error(e: Exception) -> tuple[str, str] | tuple[None, None]:
+    """Phân loại lỗi AI và trả về (error_type, thông báo thân thiện).
+
+    Trả về (None, None) nếu không phải lỗi AI — để caller xử lý như lỗi thường.
+
+    error_type được đưa vào SSE event 'error_event' để FE hiển thị đúng UI:
+      - ai_not_configured  → hướng dẫn admin cấu hình API key
+      - ai_rate_limit      → thông báo quá tải, thử lại sau
+      - ai_maintenance     → dịch vụ bảo trì, thử lại sau
+      - ai_timeout         → timeout, thử lại
+      - ai_content_blocked → nội dung bị lọc bởi bộ lọc an toàn
+      - ai_network         → lỗi kết nối mạng
+    """
+    err = str(e)
+    err_lower = err.lower()
+
+    # API key chưa cấu hình
+    if (
+        "google_api_key" in err_lower
+        or "chưa được cấu hình" in err
+        or "api key" in err_lower
+        or "no google" in err_lower
+    ):
+        return AI_ERROR_NOT_CONFIGURED, (
+            "Dịch vụ AI chưa được cấu hình. "
+            "Vui lòng liên hệ quản trị viên để thiết lập Google API key."
+        )
+
+    # Quá tải / hết quota (429 / RESOURCE_EXHAUSTED)
+    if (
+        "429" in err
+        or "resource_exhausted" in err_lower
+        or "quota" in err_lower
+        or "rate limit" in err_lower
+        or "too many requests" in err_lower
+    ):
+        return AI_ERROR_RATE_LIMIT, (
+            "Dịch vụ AI đang quá tải (rate limit). "
+            "Vui lòng thử lại sau 1–2 phút."
+        )
+
+    # Dịch vụ tạm dừng (503 / SERVICE_UNAVAILABLE / UNAVAILABLE)
+    if (
+        "503" in err
+        or "service_unavailable" in err_lower
+        or "unavailable" in err_lower
+        or "server error" in err_lower
+        or "internal error" in err_lower
+        or "500" in err
+    ):
+        return AI_ERROR_MAINTENANCE, (
+            "Dịch vụ AI đang bảo trì. "
+            "Vui lòng thử lại sau ít phút."
+        )
+
+    # Timeout / deadline exceeded
+    if (
+        "timeout" in err_lower
+        or "deadline" in err_lower
+        or "timed out" in err_lower
+        or "deadline_exceeded" in err_lower
+    ):
+        return AI_ERROR_TIMEOUT, (
+            "Dịch vụ AI phản hồi quá chậm (timeout). "
+            "File có thể quá dài — hãy thử lại hoặc dùng file nhỏ hơn."
+        )
+
+    # Nội dung bị chặn bởi safety filter
+    if (
+        "safety" in err_lower
+        or "blocked" in err_lower
+        or "harm" in err_lower
+        or "recitation" in err_lower
+    ):
+        return AI_ERROR_CONTENT, (
+            "Nội dung file bị chặn bởi bộ lọc an toàn AI. "
+            "Vui lòng kiểm tra lại nội dung đề thi."
+        )
+
+    # Lỗi kết nối mạng
+    if (
+        "connection" in err_lower
+        or "network" in err_lower
+        or "dns" in err_lower
+        or "connect" in err_lower
+        or "ssl" in err_lower
+    ):
+        return AI_ERROR_NETWORK, (
+            "Không thể kết nối đến dịch vụ AI. "
+            "Kiểm tra kết nối mạng của server hoặc thử lại sau."
+        )
+
+    return None, None  # Không phải lỗi AI
+
+
 def _is_mock_result(questions: list) -> bool:
     """Detect if cached result was from mock parser (regex garbage).
 
@@ -177,6 +281,13 @@ async def _save_questions_to_bank(
         )
 
         # ── Task 22: Pre-compute hashes and check duplicates ──
+        # Curriculum matching: map AI grade/chapter to DB entries
+        try:
+            from app.services.curriculum_matcher import match_questions_to_curriculum
+            questions = await match_questions_to_curriculum(db, questions)
+        except Exception as e:
+            logger.warning(f"Curriculum matching skipped: {e}")
+
         new_questions = []
         for i, q in enumerate(questions):
             q_text = q.get("question", "")
@@ -185,18 +296,11 @@ async def _save_questions_to_bank(
             c_hash = _question_hash(q_text)
             new_questions.append((i, q, c_hash))
 
-        # Find existing hashes for this user
-        if new_questions:
-            hashes = [h for _, _, h in new_questions]
-            existing_result = await db.execute(
-                select(Question.content_hash).filter(
-                    Question.user_id == user_id,
-                    Question.content_hash.in_(hashes),
-                )
-            )
-            existing_hashes = {row[0] for row in existing_result.fetchall()}
-        else:
-            existing_hashes = set()
+        # FIX: intra-batch dedup only.
+        # Cross-exam dedup removed: the same question can legitimately appear in
+        # multiple exams (re-upload, different class). Similarity detection
+        # (background step 3) surfaces near-duplicates without data loss.
+        existing_hashes: set = set()
 
         # Insert, skipping duplicates
         saved = 0
@@ -256,6 +360,20 @@ async def _save_questions_to_bank(
                     logger.info(f"Exam {exam_id}: Embedded {len(ids)} questions")
                 except Exception as e:
                     logger.debug(f"Embedding skipped: {e}")
+                try:
+                    from app.services.similarity_detector import detect_similar_for_exam
+                    found = await detect_similar_for_exam(_db, exam_id, user_id)
+                    if found:
+                        logger.info(f"Exam {exam_id}: {found} similar question pairs detected")
+                except Exception as e:
+                    logger.debug(f"Similarity detection skipped: {e}")
+                try:
+                    from app.services.difficulty_inferrer import infer_difficulty_for_exam
+                    inferred = await infer_difficulty_for_exam(_db, exam_id, user_id)
+                    if inferred:
+                        logger.info(f"Exam {exam_id}: difficulty inferred for {inferred} questions")
+                except Exception as e:
+                    logger.debug(f"Difficulty inference skipped: {e}")
 
         asyncio.create_task(_index_in_background(saved_ids))
 
@@ -269,7 +387,8 @@ async def _save_questions_to_bank(
 
 async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool = False):
     """Background task: extract text from file and parse with AI."""
-    async with AsyncSessionLocal() as db:
+    try:
+      async with AsyncSessionLocal() as db:
         try:
             # Get exam
             result = await db.execute(select(Exam).filter(Exam.id == exam_id))
@@ -328,30 +447,52 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
                 if not use_vision and (not extracted_text.strip() or _is_math_text_poor_quality(extracted_text)):
                     logger.info(f"Exam {exam_id}: Text quality poor, falling back to Vision mode")
                     _publish_progress(exam_id, "progress", {"percent": 30, "message": "Chuyển sang Vision mode..."})
-                    if images:
-                        # OPT: Images already extracted — no need to re-read file
-                        logger.info(f"Exam {exam_id}: Reusing {len(images)} already-extracted images")
+                    # NOTE: text-mode extraction never returns images, so we always re-extract here
+                    try:
+                        extracted = await file_handler.extract_text(exam.file_path, use_vision=True)
+                        images = extracted.get("images", [])
+                        extracted_text = extracted.get("text", "")
                         use_vision = True
-                    else:
-                        try:
-                            extracted = await file_handler.extract_text(exam.file_path, use_vision=True)
-                            images = extracted.get("images", [])
-                            extracted_text = extracted.get("text", "")
-                            use_vision = True
-                        except Exception as e:
-                            logger.warning(f"Exam {exam_id}: Vision fallback failed: {e}")
+                    except Exception as e:
+                        logger.warning(f"Exam {exam_id}: Vision fallback failed: {e}")
 
                 _publish_progress(exam_id, "progress", {"percent": 40, "message": "AI đang phân tích câu hỏi..."})
 
+                # Progress callback: publishes intermediate chunk progress so SSE
+                # stays alive and user sees meaningful updates during long parses.
+                def _chunk_progress(done: int, total: int):
+                    pct = 40 + int((done / max(total, 1)) * 35)  # 40% → 75%
+                    _publish_progress(exam_id, "progress", {
+                        "percent": pct,
+                        "message": f"AI đang xử lý... ({done}/{total} phần)",
+                    })
+
                 # Step 2: Parse with AI
                 if use_vision and images:
-                    questions = await ai_parser.parse_images(images)
+                    questions = await ai_parser.parse_images(images, progress_callback=_chunk_progress)
                 elif extracted_text.strip():
-                    questions = await ai_parser.parse(extracted_text)
+                    questions = await ai_parser.parse(extracted_text, progress_callback=_chunk_progress)
                 else:
                     raise ValueError("No content could be extracted from the file")
 
-                # Validate AI actually found questions
+                # If text-mode AI returned nothing, try vision as final fallback
+                # (text quality heuristic passed but AI still couldn't parse it)
+                if not questions and not use_vision:
+                    logger.info(f"Exam {exam_id}: Text parse returned empty — trying Vision fallback")
+                    _publish_progress(exam_id, "progress", {
+                        "percent": 60, "message": "Thử lại với Vision mode..."
+                    })
+                    try:
+                        _vis = await file_handler.extract_text(exam.file_path, use_vision=True)
+                        _vis_imgs = _vis.get("images", [])
+                        if _vis_imgs:
+                            questions = await ai_parser.parse_images(_vis_imgs, progress_callback=_chunk_progress)
+                            if questions:
+                                use_vision = True
+                                logger.info(f"Exam {exam_id}: Vision fallback found {len(questions)} questions")
+                    except Exception as _ve:
+                        logger.warning(f"Exam {exam_id}: Vision fallback failed: {_ve}")
+
                 if not questions:
                     mode = "Vision" if use_vision else "Text"
                     raise ValueError(
@@ -393,25 +534,49 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
 
         except Exception as e:
             logger.error(f"Error processing exam {exam_id}: {e}", exc_info=True)
-            _publish_progress(exam_id, "error_event", {"message": str(e)[:300]})
+
+            # Phân loại lỗi AI → thông báo bảo trì thân thiện với người dùng
+            error_type, friendly_msg = _classify_ai_error(e)
+            user_message = friendly_msg if friendly_msg else str(e)[:300]
+            event_data: dict = {"message": user_message}
+            if error_type:
+                event_data["error_type"] = error_type
+
+            _publish_progress(exam_id, "error_event", event_data)
+
+            # FIX: Neon closes idle connections; rollback on a dead connection throws
+            # InterfaceError. Always use a FRESH session to update exam status.
+            stored_msg = f"[{error_type}] {user_message}" if error_type else user_message
             try:
                 await db.rollback()
-                result = await db.execute(select(Exam).filter(Exam.id == exam_id))
-                exam = result.scalars().first()
-                if exam:
-                    exam.status = "failed"
-                    exam.error_message = str(e)[:500]
-                    # FIX #13: Clean up file on failure too (no reason to keep a failed upload)
-                    try:
-                        if exam.file_path and os.path.exists(exam.file_path):
-                            os.remove(exam.file_path)
-                            exam.file_path = None
-                            logger.info(f"Exam {exam_id}: Cleaned up file after parse failure")
-                    except Exception:
-                        pass
-                    await db.commit()
+            except Exception:
+                pass  # Connection may already be closed — that's fine
+
+            try:
+                async with AsyncSessionLocal() as _fail_db:
+                    _r = await _fail_db.execute(select(Exam).filter(Exam.id == exam_id))
+                    _exam = _r.scalars().first()
+                    if _exam:
+                        _exam.status = "failed"
+                        _exam.error_message = stored_msg[:500]
+                        try:
+                            if _exam.file_path and os.path.exists(_exam.file_path):
+                                os.remove(_exam.file_path)
+                                _exam.file_path = None
+                                logger.info(f"Exam {exam_id}: Cleaned up file after parse failure")
+                        except Exception:
+                            pass
+                        await _fail_db.commit()
             except Exception as db_err:
                 logger.error(f"Failed to update exam {exam_id} status: {db_err}")
+
+    except Exception as outer_e:
+        # Outer except: catches DB connection failures or unhandled exceptions
+        # that escaped before the inner try block (e.g. AsyncSessionLocal() failed)
+        logger.error(f"process_file outer exception for exam {exam_id}: {outer_e}", exc_info=True)
+        _publish_progress(exam_id, "error_event", {
+            "message": "Lỗi hệ thống khi xử lý file. Vui lòng thử lại sau.",
+        })
 
 
 # ==================== Endpoints ====================
@@ -450,13 +615,19 @@ async def parse_file_endpoint(
 
     # ── Save file ──
     file_id = str(uuid.uuid4())[:16]  # FIX #8: 16 hex chars = 2^64 space, avoids filename collision
-    safe_filename = f"{file_id}_{file.filename}"
+    # FIX: strip path separators from user-supplied filename to prevent directory traversal
+    safe_name = os.path.basename(file.filename or "unnamed")
+    safe_filename = f"{file_id}_{safe_name}"
     file_path = os.path.join(UPLOAD_DIR, safe_filename)
 
-    with open(file_path, "wb") as f:
-        f.write(content)
+    # FIX: wrap file write so we can clean up on DB failure (prevents orphaned files)
+    try:
+        with open(file_path, "wb") as f:
+            f.write(content)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Không thể lưu file: {e}")
 
-    # Create DB record
+    # Create DB record — clean up file if commit fails to avoid orphans
     exam = Exam(
         user_id=current_user.id,
         filename=file.filename,
@@ -464,8 +635,15 @@ async def parse_file_endpoint(
         status="pending",
     )
     db.add(exam)
-    await db.commit()
-    await db.refresh(exam)
+    try:
+        await db.commit()
+        await db.refresh(exam)
+    except Exception:
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
+        raise
 
     # Images/scanned PDFs benefit from vision, but let user decide
     # Auto-fallback happens inside process_file if text quality is poor
@@ -544,16 +722,39 @@ async def stream_progress(
     # Subscribe to progress events
     queue = await _subscribe(job_id)
 
+    # Re-check status after subscribing to close race window.
+    # process_file may have completed between our first DB read and subscription.
+    try:
+        async with AsyncSessionLocal() as _db2:
+            _r2 = await _db2.execute(select(Exam).filter(Exam.id == job_id))
+            _exam2 = _r2.scalars().first()
+            if _exam2 and _exam2.status == "completed":
+                await _unsubscribe(job_id, queue)
+                _rj = _exam2.result_json
+                async def _race_complete():
+                    yield f"event: complete\ndata: {json.dumps({'result_json': _rj}, ensure_ascii=False)}\n\n"
+                return StreamingResponse(_race_complete(), media_type="text/event-stream")
+            if _exam2 and _exam2.status == "failed":
+                await _unsubscribe(job_id, queue)
+                _em = _exam2.error_message or "Failed"
+                async def _race_error():
+                    yield f"event: error_event\ndata: {json.dumps({'message': _em})}\n\n"
+                return StreamingResponse(_race_error(), media_type="text/event-stream")
+    except Exception as _race_err:
+        # DB query failed — fall through to event generator; polling will catch completion
+        logger.warning(f"Stream race-check DB error for exam {job_id}: {_race_err}")
+
     async def _event_generator():
         try:
             # Send initial heartbeat
             yield f": connected\n\n"
 
             timeout_count = 0
-            while timeout_count < 300:  # Max 5 min (300 * 1s)
+            while timeout_count < 600:  # Max 10 min — reset on each event
                 try:
                     event, data = await asyncio.wait_for(queue.get(), timeout=1.0)
                     yield f"event: {event}\ndata: {data}\n\n"
+                    timeout_count = 0  # Reset: any event resets the idle clock
 
                     # Terminal events
                     if event in ("complete", "error_event"):
@@ -565,8 +766,8 @@ async def stream_progress(
                         yield f": keepalive\n\n"
                     continue
 
-            # Timeout — tell client to fall back to polling
-            yield f"event: error_event\ndata: {json.dumps({'message': 'Stream timeout'})}\n\n"
+            # 10 min of silence — tell client to fall back to polling
+            yield f"event: stream_timeout\ndata: {json.dumps({'message': 'Stream timeout'})}\n\n"
         finally:
             await _unsubscribe(job_id, queue)
 
@@ -643,3 +844,33 @@ async def delete_exam(
     await db.commit()
 
     return {"detail": "Deleted"}
+
+@router.get("/{exam_id}/similar")
+async def get_similar_questions(
+    exam_id: int,
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Trả về danh sách câu hỏi tương tự trong ngân hàng cho đề vừa upload.
+
+    Kết quả có thể rỗng nếu:
+    - Background similarity detection chưa chạy xong (thử lại sau vài giây)
+    - Không có câu nào đủ ngưỡng tương tự (>= 0.82 cosine)
+    """
+    from app.services.similarity_detector import get_exam_similarities
+
+    # Verify exam belongs to user
+    result = await db.execute(
+        select(Exam).where(Exam.id == exam_id, Exam.user_id == current_user.id)
+    )
+    exam = result.scalars().first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Đề thi không tồn tại")
+
+    similarities = await get_exam_similarities(db, exam_id, current_user.id)
+    return {
+        "exam_id": exam_id,
+        "total_questions_with_similar": len(similarities),
+        "results": similarities,
+    }

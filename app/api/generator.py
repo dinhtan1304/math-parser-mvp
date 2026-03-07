@@ -18,7 +18,7 @@ from app.db.models.question import Question
 from app.db.models.user import User
 from app.schemas.generator import (
     GenerateRequest, GenerateResponse, GeneratedQuestion,
-    ExamGenerateRequest,
+    ExamGenerateRequest, PromptGenerateRequest,
 )
 from app.services.ai_generator import ai_generator
 
@@ -58,11 +58,11 @@ async def generate_questions(
     # Step 1a: Try vector similarity search (finds semantically similar questions)
     try:
         from app.services.vector_search import find_similar
-        query_text = f"{req.topic or 'Toan'} {req.question_type or ''} {req.difficulty or ''}"
+        query_text = f"{req.topic or 'Toan hoc'} {req.question_type or ''} {req.difficulty or ''}".strip()
         similar = await find_similar(
             db, query_text, current_user.id,
-            topic=req.topic or None,
-            difficulty=req.difficulty or None,
+            topic=req.topic if req.topic else None,
+            difficulty=req.difficulty if req.difficulty else None,
             limit=MAX_SAMPLES,
         )
         if similar:
@@ -238,4 +238,53 @@ async def generate_exam(
         questions=questions,
         sample_count=len(sample_dicts),
         message=f"De kiem tra {len(questions)}/{total} cau ({len(sample_dicts)} cau mau)",
+    )
+
+@router.post("/from-prompt", response_model=GenerateResponse)
+async def generate_from_prompt(
+    req: PromptGenerateRequest,
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """RAG: Sinh đề từ mô tả tự do tiếng Việt.
+
+    Ví dụ prompt:
+    - "10 câu TN lớp 8 về hằng đẳng thức và phân thức, mix NB/TH/VD"
+    - "Tạo đề ôn thi HK2 lớp 9 tập trung hệ phương trình và bất phương trình"
+    - "5 câu tự luận lớp 12 về đạo hàm mức VDC"
+    """
+    from app.services.rag_generator import generate_from_prompt as _rag_generate
+
+    try:
+        result = await _rag_generate(
+            db=db,
+            prompt=req.prompt,
+            user_id=current_user.id,
+            grade_override=req.grade,
+            count_override=req.count,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.error(f"RAG generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"RAG generation failed: {e}")
+
+    questions = []
+    for q in result["questions"]:
+        questions.append(GeneratedQuestion(
+            question=q.get("question", ""),
+            type=q.get("type", "TN"),
+            topic=q.get("topic", ""),
+            difficulty=q.get("difficulty", "TH"),
+            grade=q.get("grade"),
+            chapter=q.get("chapter", ""),
+            lesson_title=q.get("lesson_title", ""),
+            answer=q.get("answer", ""),
+            solution_steps=q.get("solution_steps", []),
+        ))
+
+    return GenerateResponse(
+        questions=questions,
+        sample_count=result["sample_count"],
+        message=result["message"],
     )
