@@ -10,6 +10,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks,
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.future import select
+from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services import file_handler, ai_parser_service as ai_parser
@@ -20,6 +21,9 @@ from app.db.models.question import Question
 from app.db.models.user import User
 
 logger = logging.getLogger(__name__)
+
+# Keep references to background tasks to prevent garbage collection
+_background_tasks: set[asyncio.Task] = set()
 
 router = APIRouter()
 
@@ -233,11 +237,15 @@ def _is_mock_result(questions: list) -> bool:
 
 
 def _is_math_text_poor_quality(text: str) -> bool:
-    """Heuristic: check if extracted text is garbage or missing math symbols."""
+    """Heuristic: check if extracted text is garbage or has broken math.
+
+    v2: Uses deep math structure analysis from file_handler.
+    Detects broken formulas like "2 2 2 a b c" that old check missed.
+    """
     if not text or len(text) < 50:
         return True
 
-    # Math-related markers that should appear in a math exam
+    # Quick check: basic math markers
     math_markers = [
         '=', '+', '-', '/', '^', '²', '³',
         'x', 'y', 'sin', 'cos', 'tan', 'log', 'ln',
@@ -245,15 +253,25 @@ def _is_math_text_poor_quality(text: str) -> bool:
         'Câu', 'Bài', 'câu', 'bài',
     ]
     marker_count = sum(1 for m in math_markers if m in text)
-
-    # A math exam should have at least a few math markers
     if marker_count < 3:
         return True
 
-    # Too many garbled characters (ratio of non-printable / total)
+    # Too many garbled characters
     garbled = sum(1 for c in text if ord(c) > 0xFFFF or (ord(c) < 32 and c not in '\n\r\t'))
     if len(text) > 0 and garbled / len(text) > 0.1:
         return True
+
+    # v2: Deep math structure analysis
+    try:
+        analysis = file_handler.analyze_math_quality(text)
+        if analysis.get("should_use_vision"):
+            logger.info(
+                f"Math quality analysis: score={analysis['score']}, "
+                f"reason={analysis['reason']}"
+            )
+            return True
+    except Exception as e:
+        logger.debug(f"Math quality analysis failed: {e}")
 
     return False
 
@@ -347,35 +365,41 @@ async def _save_questions_to_bank(
         # in process_file. The task outlives that context, so we open a NEW session.
         async def _index_in_background(ids):
             from app.db.session import AsyncSessionLocal
-            async with AsyncSessionLocal() as _db:
+            try:
+              async with AsyncSessionLocal() as _db:
                 try:
                     from app.services.fts import sync_fts_questions
                     await sync_fts_questions(_db, ids)
                     logger.info(f"Exam {exam_id}: FTS indexed {len(ids)} questions")
                 except Exception as e:
-                    logger.debug(f"FTS sync skipped: {e}")
+                    logger.warning(f"Exam {exam_id}: FTS sync failed: {e}")
                 try:
                     from app.services.vector_search import embed_questions
                     await embed_questions(_db, ids)
                     logger.info(f"Exam {exam_id}: Embedded {len(ids)} questions")
                 except Exception as e:
-                    logger.debug(f"Embedding skipped: {e}")
+                    logger.warning(f"Exam {exam_id}: Embedding failed: {e}")
                 try:
                     from app.services.similarity_detector import detect_similar_for_exam
                     found = await detect_similar_for_exam(_db, exam_id, user_id)
                     if found:
                         logger.info(f"Exam {exam_id}: {found} similar question pairs detected")
                 except Exception as e:
-                    logger.debug(f"Similarity detection skipped: {e}")
+                    logger.warning(f"Exam {exam_id}: Similarity detection failed: {e}")
                 try:
                     from app.services.difficulty_inferrer import infer_difficulty_for_exam
                     inferred = await infer_difficulty_for_exam(_db, exam_id, user_id)
                     if inferred:
                         logger.info(f"Exam {exam_id}: difficulty inferred for {inferred} questions")
                 except Exception as e:
-                    logger.debug(f"Difficulty inference skipped: {e}")
+                    logger.warning(f"Exam {exam_id}: Difficulty inference failed: {e}")
+            except Exception as outer:
+                logger.error(f"Exam {exam_id}: Background indexing crashed: {outer}")
 
-        asyncio.create_task(_index_in_background(saved_ids))
+        # Keep reference to prevent garbage collection (Python asyncio gotcha)
+        task = asyncio.create_task(_index_in_background(saved_ids))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
     except Exception as e:
         logger.error(f"Exam {exam_id}: Failed to save questions to bank: {e}")
@@ -386,197 +410,238 @@ async def _save_questions_to_bank(
 
 
 async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool = False):
-    """Background task: extract text from file and parse with AI."""
+    """Background task: extract text from file and parse with AI.
+
+    v3: Short-lived DB sessions to survive Neon idle timeout.
+    Old approach: open session → 2min AI processing → save → connection dead.
+    New approach: open/close session for each DB operation.
+    """
     try:
-      async with AsyncSessionLocal() as db:
+        # ── Phase 1: Read exam info (short DB session) ──
+        file_path = None
+        user_id = None
         try:
-            # Get exam
-            result = await db.execute(select(Exam).filter(Exam.id == exam_id))
-            exam = result.scalars().first()
-            if not exam:
-                return
-
-            exam.status = "processing"
-            await db.commit()
-
-            _publish_progress(exam_id, "progress", {"percent": 10, "message": "Đang trích xuất nội dung..."})
-
-            # Step 1: Extract content
-            extracted = await file_handler.extract_text(exam.file_path, use_vision=use_vision)
-            extracted_text = extracted.get("text", "")
-            images = extracted.get("images", [])
-            file_hash = extracted.get("file_hash", "")
-
-            # Save file hash
-            if file_hash:
-                exam.file_hash = file_hash
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(select(Exam).filter(Exam.id == exam_id))
+                exam = result.scalars().first()
+                if not exam:
+                    return
+                file_path = exam.file_path
+                user_id = exam.user_id
+                exam.status = "processing"
                 await db.commit()
-
-            _publish_progress(exam_id, "progress", {"percent": 25, "message": "Trích xuất xong. Đang phân tích..."})
-
-            # ── Gemini Cache — check if same file already parsed ──
-            # BUT: skip cache if no AI provider (prevents serving old mock results)
-            questions = None
-            if file_hash and ai_parser._client:
-                cache_result = await db.execute(
-                    select(Exam.result_json).filter(
-                        Exam.file_hash == file_hash,
-                        Exam.status == "completed",
-                        Exam.result_json.isnot(None),
-                        Exam.id != exam_id,  # Not self
-                    ).order_by(Exam.created_at.desc()).limit(1)
-                )
-                cached_json = cache_result.scalar()
-                if cached_json:
-                    try:
-                        cached_questions = json.loads(cached_json)
-                        # Validate cache quality: reject if all topics are "Toán học" (mock parser output)
-                        if cached_questions and not _is_mock_result(cached_questions):
-                            questions = cached_questions
-                            logger.info(f"Exam {exam_id}: Cache HIT (hash={file_hash[:8]}), reusing {len(questions)} questions")
-                            _publish_progress(exam_id, "progress", {"percent": 70, "message": f"Cache hit! Tìm thấy {len(questions)} câu đã phân tích."})
-                        else:
-                            logger.info(f"Exam {exam_id}: Cache rejected (low quality mock data)")
-                    except json.JSONDecodeError:
-                        questions = None
-
-            # Auto-fallback: text mode failed → try vision
-            # OPT: Only re-extract if text was actually poor quality AND no images yet.
-            # If images were already extracted in step 1 (e.g. use_vision=True path), skip re-read.
-            if questions is None:
-                if not use_vision and (not extracted_text.strip() or _is_math_text_poor_quality(extracted_text)):
-                    logger.info(f"Exam {exam_id}: Text quality poor, falling back to Vision mode")
-                    _publish_progress(exam_id, "progress", {"percent": 30, "message": "Chuyển sang Vision mode..."})
-                    # NOTE: text-mode extraction never returns images, so we always re-extract here
-                    try:
-                        extracted = await file_handler.extract_text(exam.file_path, use_vision=True)
-                        images = extracted.get("images", [])
-                        extracted_text = extracted.get("text", "")
-                        use_vision = True
-                    except Exception as e:
-                        logger.warning(f"Exam {exam_id}: Vision fallback failed: {e}")
-
-                _publish_progress(exam_id, "progress", {"percent": 40, "message": "AI đang phân tích câu hỏi..."})
-
-                # Progress callback: publishes intermediate chunk progress so SSE
-                # stays alive and user sees meaningful updates during long parses.
-                def _chunk_progress(done: int, total: int):
-                    pct = 40 + int((done / max(total, 1)) * 35)  # 40% → 75%
-                    _publish_progress(exam_id, "progress", {
-                        "percent": pct,
-                        "message": f"AI đang xử lý... ({done}/{total} phần)",
-                    })
-
-                # Step 2: Parse with AI
-                if use_vision and images:
-                    questions = await ai_parser.parse_images(images, progress_callback=_chunk_progress)
-                elif extracted_text.strip():
-                    questions = await ai_parser.parse(extracted_text, progress_callback=_chunk_progress)
-                else:
-                    raise ValueError("No content could be extracted from the file")
-
-                # If text-mode AI returned nothing, try vision as final fallback
-                # (text quality heuristic passed but AI still couldn't parse it)
-                if not questions and not use_vision:
-                    logger.info(f"Exam {exam_id}: Text parse returned empty — trying Vision fallback")
-                    _publish_progress(exam_id, "progress", {
-                        "percent": 60, "message": "Thử lại với Vision mode..."
-                    })
-                    try:
-                        _vis = await file_handler.extract_text(exam.file_path, use_vision=True)
-                        _vis_imgs = _vis.get("images", [])
-                        if _vis_imgs:
-                            questions = await ai_parser.parse_images(_vis_imgs, progress_callback=_chunk_progress)
-                            if questions:
-                                use_vision = True
-                                logger.info(f"Exam {exam_id}: Vision fallback found {len(questions)} questions")
-                    except Exception as _ve:
-                        logger.warning(f"Exam {exam_id}: Vision fallback failed: {_ve}")
-
-                if not questions:
-                    mode = "Vision" if use_vision else "Text"
-                    raise ValueError(
-                        f"AI không tìm được câu hỏi nào ({mode} mode). "
-                        "Thử bật Vision mode hoặc kiểm tra file có chứa đề toán không."
-                    )
-
-            _publish_progress(exam_id, "progress", {"percent": 80, "message": f"Đã tìm {len(questions)} câu. Đang lưu..."})
-
-            # Step 3: Save result
-            result_json = json.dumps(questions, ensure_ascii=False)
-            exam.status = "completed"
-            exam.result_json = result_json
-            await db.commit()
-
-            # FIX #9: Delete uploaded file after successful parse — no need to keep it
-            # (result_json is stored in DB; file is large and not needed anymore)
-            try:
-                if exam.file_path and os.path.exists(exam.file_path):
-                    os.remove(exam.file_path)
-                    exam.file_path = None
-                    await db.commit()
-                    logger.info(f"Exam {exam_id}: Uploaded file deleted after successful parse")
-            except Exception as del_err:
-                logger.warning(f"Exam {exam_id}: Could not delete uploaded file: {del_err}")
-
-            # Step 4: Populate Question Bank
-            # BUG FIX: Exam is already marked "completed" above. Any failure here
-            # should NOT mark exam as "failed" since parse itself succeeded.
-            try:
-                await _save_questions_to_bank(db, exam.id, exam.user_id, questions)
-            except Exception as save_err:
-                logger.error(f"Exam {exam_id}: Bank save failed (exam still complete): {save_err}")
-
-            _publish_progress(exam_id, "complete", {
-                "message": f"Hoàn tất! {len(questions)} câu hỏi.",
-                "result_json": result_json,
-            })
-
         except Exception as e:
-            logger.error(f"Error processing exam {exam_id}: {e}", exc_info=True)
+            logger.error(f"Exam {exam_id}: Failed to read exam: {e}")
+            return
 
-            # Phân loại lỗi AI → thông báo bảo trì thân thiện với người dùng
-            error_type, friendly_msg = _classify_ai_error(e)
-            user_message = friendly_msg if friendly_msg else str(e)[:300]
-            event_data: dict = {"message": user_message}
-            if error_type:
-                event_data["error_type"] = error_type
+        _publish_progress(exam_id, "progress", {"percent": 10, "message": "Đang trích xuất nội dung..."})
 
-            _publish_progress(exam_id, "error_event", event_data)
+        # ── Phase 2: Extract content (no DB needed) ──
+        extracted = await file_handler.extract_text(file_path, use_vision=use_vision)
+        extracted_text = extracted.get("text", "")
+        images = extracted.get("images", [])
+        file_hash = extracted.get("file_hash", "")
 
-            # FIX: Neon closes idle connections; rollback on a dead connection throws
-            # InterfaceError. Always use a FRESH session to update exam status.
-            stored_msg = f"[{error_type}] {user_message}" if error_type else user_message
+        # Save file hash (short DB session)
+        if file_hash:
             try:
-                await db.rollback()
-            except Exception:
-                pass  # Connection may already be closed — that's fine
+                async with AsyncSessionLocal() as db:
+                    await db.execute(
+                        sa_text("UPDATE exam SET file_hash = :hash WHERE id = :eid"),
+                        {"hash": file_hash, "eid": exam_id}
+                    )
+                    await db.commit()
+            except Exception as e:
+                logger.debug(f"Exam {exam_id}: file_hash save failed: {e}")
 
+        # v2: Smart vision auto-detection for math PDFs
+        if not use_vision and extracted_text.strip():
+            analysis = file_handler.analyze_math_quality(extracted_text)
+            if analysis.get("should_use_vision"):
+                logger.info(
+                    f"Exam {exam_id}: Auto-switching to Vision mode "
+                    f"(score={analysis['score']}, reason={analysis['reason']})"
+                )
+                _publish_progress(exam_id, "progress", {
+                    "percent": 15,
+                    "message": f"Phát hiện công thức toán phức tạp — chuyển sang Vision mode..."
+                })
+                try:
+                    extracted = await file_handler.extract_text(file_path, use_vision=True)
+                    images = extracted.get("images", [])
+                    extracted_text = extracted.get("text", "")
+                    use_vision = True
+                except Exception as e:
+                    logger.warning(f"Exam {exam_id}: Auto-vision failed: {e}")
+
+        _publish_progress(exam_id, "progress", {"percent": 25, "message": "Trích xuất xong. Đang phân tích..."})
+
+        # ── Phase 3: Check cache (short DB session) ──
+        questions = None
+        if file_hash and ai_parser._client:
             try:
-                async with AsyncSessionLocal() as _fail_db:
-                    _r = await _fail_db.execute(select(Exam).filter(Exam.id == exam_id))
-                    _exam = _r.scalars().first()
-                    if _exam:
-                        _exam.status = "failed"
-                        _exam.error_message = stored_msg[:500]
+                async with AsyncSessionLocal() as db:
+                    cache_result = await db.execute(
+                        select(Exam.result_json).filter(
+                            Exam.file_hash == file_hash,
+                            Exam.status == "completed",
+                            Exam.result_json.isnot(None),
+                            Exam.id != exam_id,
+                        ).order_by(Exam.created_at.desc()).limit(1)
+                    )
+                    cached_json = cache_result.scalar()
+                    if cached_json:
                         try:
-                            if _exam.file_path and os.path.exists(_exam.file_path):
-                                os.remove(_exam.file_path)
-                                _exam.file_path = None
-                                logger.info(f"Exam {exam_id}: Cleaned up file after parse failure")
-                        except Exception:
-                            pass
-                        await _fail_db.commit()
-            except Exception as db_err:
-                logger.error(f"Failed to update exam {exam_id} status: {db_err}")
+                            cached_questions = json.loads(cached_json)
+                            if cached_questions and not _is_mock_result(cached_questions):
+                                questions = cached_questions
+                                logger.info(f"Exam {exam_id}: Cache HIT (hash={file_hash[:8]}), reusing {len(questions)} questions")
+                                _publish_progress(exam_id, "progress", {"percent": 70, "message": f"Cache hit! Tìm thấy {len(questions)} câu đã phân tích."})
+                            else:
+                                logger.info(f"Exam {exam_id}: Cache rejected (low quality mock data)")
+                        except json.JSONDecodeError:
+                            questions = None
+            except Exception as e:
+                logger.debug(f"Exam {exam_id}: cache check failed: {e}")
 
-    except Exception as outer_e:
-        # Outer except: catches DB connection failures or unhandled exceptions
-        # that escaped before the inner try block (e.g. AsyncSessionLocal() failed)
-        logger.error(f"process_file outer exception for exam {exam_id}: {outer_e}", exc_info=True)
-        _publish_progress(exam_id, "error_event", {
-            "message": "Lỗi hệ thống khi xử lý file. Vui lòng thử lại sau.",
+        # ── Phase 4: AI parsing (no DB needed — this takes 30s-3min) ──
+        if questions is None:
+            if not use_vision and (not extracted_text.strip() or _is_math_text_poor_quality(extracted_text)):
+                logger.info(f"Exam {exam_id}: Text quality poor, falling back to Vision mode")
+                _publish_progress(exam_id, "progress", {"percent": 30, "message": "Chuyển sang Vision mode..."})
+                try:
+                    extracted = await file_handler.extract_text(file_path, use_vision=True)
+                    images = extracted.get("images", [])
+                    extracted_text = extracted.get("text", "")
+                    use_vision = True
+                except Exception as e:
+                    logger.warning(f"Exam {exam_id}: Vision fallback failed: {e}")
+
+            _publish_progress(exam_id, "progress", {"percent": 40, "message": "AI đang phân tích câu hỏi..."})
+
+            def _chunk_progress(done: int, total: int):
+                pct = 40 + int((done / max(total, 1)) * 35)
+                _publish_progress(exam_id, "progress", {
+                    "percent": pct,
+                    "message": f"AI đang xử lý... ({done}/{total} phần)",
+                })
+
+            # This is the LONG operation — no DB session open here
+            if use_vision and images:
+                questions = await ai_parser.parse_images(images, progress_callback=_chunk_progress)
+            elif extracted_text.strip():
+                questions = await ai_parser.parse(extracted_text, progress_callback=_chunk_progress)
+            else:
+                raise ValueError("No content could be extracted from the file")
+
+            if not questions and not use_vision:
+                logger.info(f"Exam {exam_id}: Text parse returned empty — trying Vision fallback")
+                _publish_progress(exam_id, "progress", {
+                    "percent": 60, "message": "Thử lại với Vision mode..."
+                })
+                try:
+                    _vis = await file_handler.extract_text(file_path, use_vision=True)
+                    _vis_imgs = _vis.get("images", [])
+                    if _vis_imgs:
+                        questions = await ai_parser.parse_images(_vis_imgs, progress_callback=_chunk_progress)
+                        if questions:
+                            use_vision = True
+                            logger.info(f"Exam {exam_id}: Vision fallback found {len(questions)} questions")
+                except Exception as _ve:
+                    logger.warning(f"Exam {exam_id}: Vision fallback failed: {_ve}")
+
+            if not questions:
+                mode = "Vision" if use_vision else "Text"
+                raise ValueError(
+                    f"AI không tìm được câu hỏi nào ({mode} mode). "
+                    "Thử bật Vision mode hoặc kiểm tra file có chứa đề toán không."
+                )
+
+        _publish_progress(exam_id, "progress", {"percent": 80, "message": f"Đã tìm {len(questions)} câu. Đang lưu..."})
+
+        # ── Phase 5: Save results (FRESH DB session — connection guaranteed alive) ──
+        result_json = json.dumps(questions, ensure_ascii=False)
+        try:
+            async with AsyncSessionLocal() as db:
+                r = await db.execute(select(Exam).filter(Exam.id == exam_id))
+                exam = r.scalars().first()
+                if exam:
+                    exam.status = "completed"
+                    exam.result_json = result_json
+                    await db.commit()
+
+                    # Delete uploaded file after successful parse
+                    try:
+                        if exam.file_path and os.path.exists(exam.file_path):
+                            os.remove(exam.file_path)
+                            exam.file_path = None
+                            await db.commit()
+                            logger.info(f"Exam {exam_id}: Uploaded file deleted after successful parse")
+                    except Exception as del_err:
+                        logger.warning(f"Exam {exam_id}: Could not delete uploaded file: {del_err}")
+
+            logger.info(f"Exam {exam_id}: Saved {len(questions)} questions (result_json={len(result_json)} chars)")
+        except Exception as save_err:
+            # Retry once with a completely new session
+            logger.warning(f"Exam {exam_id}: First save attempt failed: {save_err}, retrying...")
+            try:
+                await asyncio.sleep(1)
+                async with AsyncSessionLocal() as db2:
+                    r2 = await db2.execute(select(Exam).filter(Exam.id == exam_id))
+                    exam2 = r2.scalars().first()
+                    if exam2:
+                        exam2.status = "completed"
+                        exam2.result_json = result_json
+                        await db2.commit()
+                        logger.info(f"Exam {exam_id}: Retry save succeeded")
+            except Exception as retry_err:
+                logger.error(f"Exam {exam_id}: Retry save also failed: {retry_err}")
+                raise
+
+        # ── Phase 6: Populate Question Bank (separate session) ──
+        try:
+            async with AsyncSessionLocal() as db:
+                r = await db.execute(select(Exam).filter(Exam.id == exam_id))
+                exam = r.scalars().first()
+                if exam:
+                    await _save_questions_to_bank(db, exam.id, exam.user_id, questions)
+        except Exception as save_err:
+            logger.error(f"Exam {exam_id}: Bank save failed (exam still complete): {save_err}")
+
+        _publish_progress(exam_id, "complete", {
+            "message": f"Hoàn tất! {len(questions)} câu hỏi.",
+            "result_json": result_json,
         })
+
+    except Exception as e:
+        logger.error(f"Error processing exam {exam_id}: {e}", exc_info=True)
+
+        error_type, friendly_msg = _classify_ai_error(e)
+        user_message = friendly_msg if friendly_msg else str(e)[:300]
+        event_data: dict = {"message": user_message}
+        if error_type:
+            event_data["error_type"] = error_type
+
+        _publish_progress(exam_id, "error_event", event_data)
+
+        # Always use a FRESH session to update exam status
+        stored_msg = f"[{error_type}] {user_message}" if error_type else user_message
+        try:
+            async with AsyncSessionLocal() as _fail_db:
+                _r = await _fail_db.execute(select(Exam).filter(Exam.id == exam_id))
+                _exam = _r.scalars().first()
+                if _exam:
+                    _exam.status = "failed"
+                    _exam.error_message = stored_msg[:500]
+                    try:
+                        if _exam.file_path and os.path.exists(_exam.file_path):
+                            os.remove(_exam.file_path)
+                            _exam.file_path = None
+                    except Exception:
+                        pass
+                    await _fail_db.commit()
+        except Exception as db_err:
+            logger.error(f"Failed to update exam {exam_id} status: {db_err}")
 
 
 # ==================== Endpoints ====================
@@ -873,4 +938,70 @@ async def get_similar_questions(
         "exam_id": exam_id,
         "total_questions_with_similar": len(similarities),
         "results": similarities,
+    }
+
+
+# ==================== Admin: Re-index embeddings ====================
+
+@router.post("/admin/reindex")
+async def reindex_embeddings(
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-generate embeddings for ALL questions in the bank.
+
+    Use after:
+    - Enabling pgvector on Neon
+    - First deployment with embedding support
+    - Fixing embedding API issues
+    """
+    # Get all question IDs for this user
+    result = await db.execute(
+        select(Question.id).where(Question.user_id == current_user.id)
+    )
+    all_ids = [row[0] for row in result.fetchall()]
+
+    if not all_ids:
+        return {"detail": "No questions to embed", "total": 0}
+
+    # Check existing embeddings
+    from sqlalchemy import text as sa_txt
+    try:
+        placeholders = ",".join(str(int(qid)) for qid in all_ids)
+        existing = await db.execute(sa_txt(
+            f"SELECT question_id FROM question_embedding WHERE question_id IN ({placeholders})"
+        ))
+        existing_ids = {row[0] for row in existing.fetchall()}
+        missing_ids = [qid for qid in all_ids if qid not in existing_ids]
+    except Exception:
+        missing_ids = all_ids
+        existing_ids = set()
+
+    if not missing_ids:
+        return {
+            "detail": "All questions already have embeddings",
+            "total": len(all_ids),
+            "already_embedded": len(existing_ids),
+        }
+
+    # Run embedding in background
+    async def _reindex_bg(ids):
+        from app.db.session import AsyncSessionLocal
+        try:
+            async with AsyncSessionLocal() as _db:
+                from app.services.vector_search import embed_questions
+                await embed_questions(_db, ids)
+                logger.info(f"Reindex: embedded {len(ids)} questions for user {current_user.id}")
+        except Exception as e:
+            logger.error(f"Reindex failed: {e}")
+
+    task = asyncio.create_task(_reindex_bg(missing_ids))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+    return {
+        "detail": f"Embedding started for {len(missing_ids)} questions (background)",
+        "total": len(all_ids),
+        "already_embedded": len(existing_ids),
+        "queued": len(missing_ids),
     }

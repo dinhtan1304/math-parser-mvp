@@ -1,13 +1,8 @@
 """
 similarity_detector.py — Phát hiện câu hỏi tương tự trong ngân hàng sau khi upload.
 
-Chạy background sau khi embed xong. Với mỗi câu mới trong đề vừa upload,
-tìm các câu tương tự đã có trong bank (từ các đề khác).
-
-Kết quả lưu vào bảng question_similarity:
-  (new_question_id, similar_question_id, similarity_score)
-
-FE gọi GET /parser/exams/{exam_id}/similar để lấy gợi ý.
+v3: Uses pgvector <=> operator on PostgreSQL for fast similarity matrix.
+    Falls back to numpy on SQLite.
 """
 
 import json
@@ -19,19 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, AsyncEngine
 
 logger = logging.getLogger(__name__)
 
-# Ngưỡng tương tự — trên 0.82 mới tính là "đáng chú ý"
 SIMILARITY_THRESHOLD = 0.82
-# Tối đa 3 câu tương tự cho mỗi câu mới
 MAX_SIMILAR_PER_QUESTION = 3
 
 
 async def ensure_similarity_table(engine: AsyncEngine) -> None:
-    """Tạo bảng lưu kết quả similarity — gọi lúc startup.
-
-    Tương thích cả SQLite (dev) và PostgreSQL (production):
-    - SQLite: INTEGER PRIMARY KEY AUTOINCREMENT, TEXT timestamp
-    - PostgreSQL: SERIAL PRIMARY KEY, TIMESTAMPTZ
-    """
+    """Tạo bảng lưu kết quả similarity — gọi lúc startup."""
     from app.core.config import settings as _settings
     _is_pg = (
         "postgresql" in _settings.DATABASE_URL
@@ -72,13 +60,92 @@ async def detect_similar_for_exam(
     exam_id: int,
     user_id: int,
 ) -> int:
+    """Tìm câu tương tự cho tất cả câu trong exam_id.
+
+    v3: Uses pgvector <=> operator on PostgreSQL — no need to load all
+    embeddings into memory. On SQLite, falls back to numpy.
     """
-    Với tất cả câu hỏi trong exam_id, tìm câu tương tự trong bank.
-    Lưu vào question_similarity. Trả về số cặp tìm được.
-    """
+    from app.core.config import settings as _settings
+    _is_pg = "postgresql" in _settings.DATABASE_URL or "postgres" in _settings.DATABASE_URL
+
+    if _is_pg:
+        return await _detect_pgvector(db, exam_id, user_id)
+    else:
+        return await _detect_numpy(db, exam_id, user_id)
+
+
+async def _detect_pgvector(
+    db: AsyncSession,
+    exam_id: int,
+    user_id: int,
+) -> int:
+    """pgvector: cross-join with <=> cosine distance, done entirely in SQL."""
+    # Find all similar pairs in one query using pgvector
+    result = await db.execute(text("""
+        SELECT
+            new_q.question_id AS new_id,
+            bank_q.question_id AS bank_id,
+            1 - (new_q.embedding <=> bank_q.embedding) AS score
+        FROM question_embedding new_q
+        JOIN question q_new ON q_new.id = new_q.question_id
+        CROSS JOIN LATERAL (
+            SELECT
+                bank.question_id,
+                bank.embedding
+            FROM question_embedding bank
+            JOIN question q_bank ON q_bank.id = bank.question_id
+            WHERE bank.user_id = :uid
+              AND q_bank.exam_id != :eid
+              AND q_bank.exam_id IS NOT NULL
+              AND (new_q.embedding <=> bank.embedding) <= :max_dist
+            ORDER BY new_q.embedding <=> bank.embedding
+            LIMIT :max_per
+        ) bank_q
+        WHERE q_new.exam_id = :eid
+    """), {
+        "uid": user_id,
+        "eid": exam_id,
+        "max_dist": 1.0 - SIMILARITY_THRESHOLD,
+        "max_per": MAX_SIMILAR_PER_QUESTION,
+    })
+    rows = result.fetchall()
+
+    if not rows:
+        logger.info(f"Exam {exam_id}: no similar questions (pgvector, threshold={SIMILARITY_THRESHOLD})")
+        return 0
+
+    # Upsert pairs
+    inserted = 0
+    for new_id, bank_id, score in rows:
+        try:
+            await db.execute(text("""
+                INSERT INTO question_similarity (question_id, similar_id, score)
+                VALUES (:qid, :sid, :score)
+                ON CONFLICT (question_id, similar_id) DO UPDATE SET score = EXCLUDED.score
+            """), {"qid": new_id, "sid": bank_id, "score": round(float(score), 4)})
+            inserted += 1
+        except Exception as e:
+            logger.debug(f"Similarity insert skipped: {e}")
+
+    try:
+        await db.commit()
+    except Exception as e:
+        logger.warning(f"Similarity commit failed: {e}")
+        await db.rollback()
+
+    logger.info(f"Exam {exam_id}: {inserted} similar pairs found (pgvector)")
+    return inserted
+
+
+async def _detect_numpy(
+    db: AsyncSession,
+    exam_id: int,
+    user_id: int,
+) -> int:
+    """SQLite fallback: load embeddings + numpy matrix multiplication."""
     import numpy as np
 
-    # ── Lấy embedding của các câu mới (thuộc exam này) ──
+    # Lấy embeddings của câu mới (trong exam này)
     new_rows = (await db.execute(text("""
         SELECT qe.question_id, qe.embedding
         FROM question_embedding qe
@@ -87,26 +154,23 @@ async def detect_similar_for_exam(
     """), {"eid": exam_id})).fetchall()
 
     if not new_rows:
-        logger.debug(f"Exam {exam_id}: no embeddings yet, skip similarity")
         return 0
 
-    new_ids = [r[0] for r in new_rows]
+    new_ids = []
     new_embs = []
-    valid_new_ids = []
     for qid, emb_json in new_rows:
         try:
             new_embs.append(json.loads(emb_json))
-            valid_new_ids.append(qid)
+            new_ids.append(qid)
         except Exception:
             continue
 
     if not new_embs:
         return 0
 
-    # ── Lấy embedding của toàn bộ bank (trừ câu trong exam này) ──
+    # Lấy embeddings của bank (trừ exam này)
     bank_rows = (await db.execute(text("""
-        SELECT qe.question_id, qe.embedding,
-               q.question_text, q.topic, q.difficulty, q.grade, q.exam_id
+        SELECT qe.question_id, qe.embedding
         FROM question_embedding qe
         JOIN question q ON q.id = qe.question_id
         WHERE qe.user_id = :uid
@@ -115,63 +179,46 @@ async def detect_similar_for_exam(
     """), {"uid": user_id, "eid": exam_id})).fetchall()
 
     if not bank_rows:
-        logger.debug(f"Exam {exam_id}: bank empty, skip similarity")
         return 0
 
     bank_ids = []
     bank_embs = []
-    bank_meta = []
     for row in bank_rows:
         try:
             bank_embs.append(json.loads(row[1]))
             bank_ids.append(row[0])
-            bank_meta.append({
-                "id": row[0],
-                "question_text": row[2],
-                "topic": row[3],
-                "difficulty": row[4],
-                "grade": row[5],
-                "exam_id": row[6],
-            })
         except Exception:
             continue
 
     if not bank_embs:
         return 0
 
-    # ── Vectorized cosine similarity: new (M×D) vs bank (N×D) ──
-    new_matrix  = np.array(new_embs,  dtype=np.float32)   # M × D
-    bank_matrix = np.array(bank_embs, dtype=np.float32)   # N × D
+    # Vectorized cosine similarity
+    new_matrix = np.array(new_embs, dtype=np.float32)
+    bank_matrix = np.array(bank_embs, dtype=np.float32)
 
-    # Normalize
-    new_norms  = np.linalg.norm(new_matrix,  axis=1, keepdims=True)
+    new_norms = np.linalg.norm(new_matrix, axis=1, keepdims=True)
     bank_norms = np.linalg.norm(bank_matrix, axis=1, keepdims=True)
-    new_norms  = np.where(new_norms  == 0, 1e-10, new_norms)
+    new_norms = np.where(new_norms == 0, 1e-10, new_norms)
     bank_norms = np.where(bank_norms == 0, 1e-10, bank_norms)
 
-    new_norm  = new_matrix  / new_norms   # M × D
-    bank_norm = bank_matrix / bank_norms  # N × D
+    sim_matrix = (new_matrix / new_norms) @ (bank_matrix / bank_norms).T
 
-    # M × N similarity matrix
-    sim_matrix = new_norm @ bank_norm.T
-
-    # ── Collect pairs above threshold ──
+    # Collect pairs above threshold
     pairs = []
-    for i, new_qid in enumerate(valid_new_ids):
-        row_scores = sim_matrix[i]  # N scores
+    for i, new_qid in enumerate(new_ids):
+        row_scores = sim_matrix[i]
         above = np.where(row_scores >= SIMILARITY_THRESHOLD)[0]
         if len(above) == 0:
             continue
-        # Sort by score descending, take top K
         top_k = above[np.argsort(row_scores[above])[::-1]][:MAX_SIMILAR_PER_QUESTION]
         for j in top_k:
             pairs.append((new_qid, bank_ids[j], float(row_scores[j])))
 
     if not pairs:
-        logger.info(f"Exam {exam_id}: no similar questions found (threshold={SIMILARITY_THRESHOLD})")
+        logger.info(f"Exam {exam_id}: no similar questions (numpy, threshold={SIMILARITY_THRESHOLD})")
         return 0
 
-    # ── Upsert pairs vào DB ──
     inserted = 0
     for new_qid, sim_qid, score in pairs:
         try:
@@ -190,10 +237,7 @@ async def detect_similar_for_exam(
         logger.warning(f"Similarity commit failed: {e}")
         await db.rollback()
 
-    logger.info(
-        f"Exam {exam_id}: {inserted} similar pairs found "
-        f"({len(valid_new_ids)} new vs {len(bank_ids)} bank questions)"
-    )
+    logger.info(f"Exam {exam_id}: {inserted} similar pairs (numpy)")
     return inserted
 
 
@@ -202,10 +246,7 @@ async def get_exam_similarities(
     exam_id: int,
     user_id: int,
 ) -> list[dict]:
-    """
-    Trả về danh sách gợi ý câu tương tự cho một đề.
-    Grouped theo câu mới — mỗi câu mới có list các câu bank tương tự.
-    """
+    """Trả về danh sách gợi ý câu tương tự cho một đề."""
     rows = (await db.execute(text("""
         SELECT
             qs.question_id   AS new_id,
@@ -231,7 +272,6 @@ async def get_exam_similarities(
     if not rows:
         return []
 
-    # Group by new question
     grouped: dict[int, dict] = {}
     for r in rows:
         new_id = r[0]

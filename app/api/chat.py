@@ -28,6 +28,7 @@ router = APIRouter()
 class ChatMessageRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     session_id: Optional[int] = Field(default=None, description="None = tạo session mới")
+    grade: Optional[int] = Field(default=None, ge=6, le=12, description="Lớp học sinh (6-12), auto-detect nếu không truyền")
 
 
 class ContextQuestion(BaseModel):
@@ -41,6 +42,7 @@ class ContextQuestion(BaseModel):
 class ChatMessageResponse(BaseModel):
     answer: str
     session_id: int
+    detected_grade: Optional[int] = None
     context_questions: list[ContextQuestion] = []
 
 
@@ -80,6 +82,7 @@ async def send_message(
             user_message=req.message,
             user_id=current_user.id,
             session_id=req.session_id,
+            grade=req.grade,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -90,6 +93,7 @@ async def send_message(
     return ChatMessageResponse(
         answer=result["answer"],
         session_id=result["session_id"],
+        detected_grade=result.get("detected_grade"),
         context_questions=[ContextQuestion(**q) for q in result["context_questions"]],
     )
 

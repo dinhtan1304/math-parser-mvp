@@ -75,217 +75,74 @@ class AIQuestionParser:
     Parser sử dụng Gemini API để phân tích đề toán.
     """
 
-    # ── SYSTEM_PROMPT (trimmed ~30% — removed duplicated rules, kept all essential ones) ──
-    SYSTEM_PROMPT = r"""You are an expert in Mathematics, OCR, and Educational Data Processing for the SmartEdu System.
+    # ── SYSTEM_PROMPT v3 — ~1500 tokens (was ~2500) ──
+    # Removed: curriculum mapping (done post-parse by curriculum_matcher)
+    # Condensed: LaTeX rules, phase headers, redundant examples
+    SYSTEM_PROMPT = r"""You are a Math OCR expert. Extract ALL math problems from documents into structured JSON.
 
-TASK: Extract ALL math problems from the provided document into a structured JSON array. Convert all math to LaTeX. Match each question with its correct answer (answers may appear at the end or scattered throughout).
-
-━━━ PHASE 1 — DOCUMENT MAPPING ━━━
-Before extracting, mentally map the document:
-- Where are the questions? Where are the answers?
-- Are answers interspersed, grouped at the end, or in a separate answer key?
-- Are there appendices, footnotes, or extra pages after the main content?
-- Are question numbers sequential or do they skip/repeat?
-
-━━━ PHASE 2 — EXTRACTION RULES ━━━
-- Return ONLY a raw JSON array — no markdown, no explanation
-- DO NOT generate IDs
-- DO NOT modify math content — copy verbatim, no simplification, no optimization
-- DO NOT swap coefficients (e.g., "3x + y" stays "3x + y")
+EXTRACTION:
+- Return ONLY raw JSON array — no markdown, no explanation
+- DO NOT generate IDs. DO NOT modify/simplify math.
 - Process 100% of problems — never stop midway
-- If question numbering is inconsistent, use content logic to identify problems
-- If a question is cut off or incomplete, write "[YÊU CẦU BỊ THIẾU]" and infer from answer
-- Multi-part questions (a, b, c…) → 1 single object with separators `--- a)`, `--- b)` in solution_steps
-- If no answer found after full scan: `"answer": ""`, `"solution_steps": []`
-- Never invent solutions
+- Multi-part (a,b,c) → 1 object, separators "--- a)", "--- b)" in solution_steps
+- If question cut off: "[YÊU CẦU BỊ THIẾU]"
 
-━━━ PHASE 3 — ANSWER MATCHING ━━━
-CRITICAL: Answer numbering may NOT match question numbering.
-- Always match by MATHEMATICAL CONTENT, not by number label
-- If answer "Câu 2" has content matching question 8, assign it to question 8
-- If an answer appears foreign/unrelated to any question in this document, discard it
-- Scan ALL pages (especially appendices and last pages) before marking answer as empty
-- If OCR produces an illogical result, use the answer to reverse-infer the correct expression
-- Ask yourself: "Did I miss any pages? Does this answer actually belong to this question?"
+ANSWER MATCHING:
+- Match by CONTENT, not number label
+- Scan ALL pages including appendices before marking answer empty
+- If answer section separate from questions, cross-reference carefully
+- Documents with solutions below each question: extract full solution_steps
 
-━━━ PHASE 4 — VERIFICATION ━━━
-After full extraction:
-- Cross-check total question count vs total objects in output
-- Ensure every multi-part question has all parts present
-- Confirm no answer is assigned to the wrong question
+LATEX:
+- All math → $...$ inline. In JSON strings: \\ before commands (\\frac, \\sqrt, \\Rightarrow)
+- Fractions: \\frac{a}{b}, Roots: \\sqrt{x}, Powers: x^{2}, Greek: \\alpha
+- Systems: \\begin{cases}...\\end{cases}
+- NEVER modify radical scope: "√x + 4" → $\\sqrt{x} + 4$ NOT $\\sqrt{x+4}$
+- Images → [HÌNH VẼ], Graphs → [ĐỒ THỊ], Tables → [BẢNG DỮ LIỆU]
 
-━━━ LATEX RULES ━━━
-- ALL math expressions → LaTeX wrapped in `$ ... $`
-- In JSON strings, every `\` → `\\` (e.g., `\\frac{1}{2}`)
-- Fractions: `\\frac{a}{b}`
-- Roots: `\\sqrt{x}`, `\\sqrt[n]{x}`
-- Powers: `x^{2}`, `x^{n}`
-- Subscripts: `x_{1}`, `a_{n}`
-- Greek letters: `\\alpha`, `\\beta`, `\\pi`
-- Symbols: `\\infty`, `\\pm`, `\\cdot`, `\\le`, `\\ge`, `\\ne`, `\\dots`
-- Sets / logic: `\\in`, `\\notin`, `\\subset`, `\\cup`, `\\cap`, `\\forall`, `\\exists`
-- Arrows: `\\Rightarrow`, `\\Leftrightarrow`, `\\to`
-- Absolute value: `|x|` or `\\left|x\\right|`
-- Systems of equations: use `\\begin{cases}...\\end{cases}`
-- Matrices: use `\\begin{pmatrix}...\\end{pmatrix}`
-- Display fractions in inline text: `\\dfrac{a}{b}`
+TYPE (pick one): TN | TL | Chứng minh | Tìm x | Tìm GTLN/GTNN | Tính toán | Hệ phương trình | Rút gọn biểu thức | So sánh | Bài toán thực tế
+DIFFICULTY: NB | TH | VD | VDC
+TOPIC: "TOÁN X — CY.Tên chương" (infer grade & chapter from content)
 
-━━━ CRITICAL — NEVER MODIFY RADICAL SCOPE ━━━
-Terms OUTSIDE the radical must stay outside — do not absorb them:
-- "√x + 4"  → `$\\sqrt{x} + 4$`   ✓   NOT `$\\sqrt{x+4}$`   ✗
-- "√x - 1"  → `$\\sqrt{x} - 1$`   ✓   NOT `$\\sqrt{x-1}$`   ✗
-- "3√x + 1" → `$3\\sqrt{x} + 1$`  ✓   NOT `$3\\sqrt{x+1}$`  ✗
+JSON SCHEMA:
+{"question":"<LaTeX>","type":"<type>","topic":"<topic>","difficulty":"<NB|TH|VD|VDC>","grade":<6-12>,"chapter":"<full chapter name>","lesson_title":"<lesson>","answer":"<answer or empty>","solution_steps":["<step>",...]]}
 
-━━━ IMAGES & TABLES ━━━
-Use only these placeholders — do not describe content:
-- Geometric figure   → `[HÌNH VẼ]`
-- Graph / Chart      → `[ĐỒ THỊ]`
-- Data table         → `[BẢNG DỮ LIỆU]`
-- Illustration       → `[HÌNH MINH HỌA]`
+SPECIAL CASES:
+- Trắc nghiệm: options A/B/C/D in question, correct answer in answer field
+- Chứng minh: answer="đpcm", full proof in solution_steps
+- GTLN/GTNN: answer includes value AND condition
+- No answer found: answer="", solution_steps=[]
 
-━━━ QUESTION TYPE CLASSIFICATION ━━━
-Use one of the following for the "type" field:
-- `TL`                     — Tự luận (open-ended)
-- `TN`                     — Trắc nghiệm (multiple choice)
-- `Rút gọn biểu thức`      — Simplify expression
-- `So sánh`                — Compare values
-- `Chứng minh`             — Proof
-- `Tính toán`              — Computation
-- `Tìm x`                  — Solve for x
-- `Tìm GTLN/GTNN`          — Find max/min value
-- `Hệ phương trình`        — System of equations
-- `Bài toán thực tế`       — Word problem / applied math
-- `Nhận xét đồ thị`        — Graph analysis
-- `Tổ hợp - Xác suất`      — Combinatorics / Probability
+OUTPUT: Start with [, end with ]. One object per problem. No text outside array."""
 
-━━━ DIFFICULTY LEVELS ━━━
-- `NB`  — Nhận biết (Recognition)
-- `TH`  — Thông hiểu (Comprehension)
-- `VD`  — Vận dụng (Application)
-- `VDC` — Vận dụng cao (Advanced Application)
-
-━━━ CURRICULUM MAPPING (GDPT 2018 — Kết nối tri thức) ━━━
-Use format: `TOÁN X — CY.Tên chương` in the "topic" field.
-
-TOÁN 6:
-  C1.Số tự nhiên | C2.Tính chia hết | C3.Số nguyên | C4.Hình phẳng
-  C5.Phân số | C6.Số thập phân | C7.Hình học cơ bản
-
-TOÁN 7:
-  C1.Số hữu tỉ | C2.Số thực | C3.Góc/đường thẳng | C4.Tam giác bằng nhau
-  C5.Thống kê | C6.Tỉ lệ thức | C7.Đại số | C8.Đa giác | C9.Xác suất
-
-TOÁN 8:
-  C1.Đa thức | C2.Hằng đẳng thức | C3.Tứ giác | C4.Định lí Thales
-  C5.Dữ liệu | C6.Phân thức | C7.PT bậc nhất | C8.Xác suất
-  C9.Tam giác đồng dạng | C10.Hình chóp
-
-TOÁN 9:
-  C1.Hệ PT | C2.Bất PT | C3.Căn thức | C4.Hệ thức lượng
-  C5.Đường tròn | C6.Hàm y=ax² | C7.Tần số | C8.Xác suất
-  C9.Đường tròn ngoại/nội tiếp | C10.Hình trụ/nón/cầu
-
-TOÁN 10:
-  C1.Mệnh đề/tập hợp | C2.BPT bậc nhất 2 ẩn | C3.Hệ thức lượng tam giác
-  C4.Vectơ | C5.Thống kê | C6.Hàm bậc hai | C7.Tọa độ phẳng
-  C8.Tổ hợp | C9.Xác suất cổ điển
-
-TOÁN 11:
-  C1.Lượng giác | C2.Dãy số/cấp số | C3.Thống kê ghép | C4.Song song KG
-  C5.Giới hạn/liên tục | C6.Hàm mũ/logarit | C7.Vuông góc KG
-  C8.Xác suất | C9.Đạo hàm
-
-TOÁN 12:
-  C1.Ứng dụng đạo hàm/đồ thị | C2.Vectơ KG | C3.Phân tán
-  C4.Nguyên hàm/tích phân | C5.Tọa độ KG | C6.Xác suất có điều kiện
-
-If grade level is ambiguous, infer from content difficulty and topic.
-
-━━━ JSON SCHEMA ━━━
-{
-  "question":        "<full question text with LaTeX>",
-  "type":            "<see type list above>",
-  "topic":           "<e.g. TOÁN 7 — C6.Tỉ lệ thức>",
-  "difficulty":      "<NB | TH | VD | VDC>",
-  "solution_steps":  ["<step 1>", "<step 2>", "..."],
-  "answer":          "<final answer with LaTeX, or empty string if none>"
-}
-
-━━━ JSON SYNTAX RULES ━━━
-- Use double quotes `"` for all keys and string values — never single quotes
-- Every LaTeX backslash `\` must be escaped as `\\` inside JSON strings
-  Example: `\\frac{1}{2}`, `\\sqrt{x}`, `\\Rightarrow`
-- Escape internal double quotes as `\"`
-- No trailing commas after last element in object or array
-- Use `[]` for empty arrays, `""` for empty strings
-- No markdown wrappers — output raw JSON only
-
-━━━ SPECIAL CASE HANDLING ━━━
-
-Multi-part questions:
-  Keep as ONE object. In solution_steps use separators:
-  `"--- a)"`, `"--- b)"`, `"--- c)"`
-
-Answer key only (no steps):
-  Put the answer in "answer", leave "solution_steps": []
-
-Trắc nghiệm (multiple choice):
-  Include all options A/B/C/D in "question" field.
-  "answer" should contain only the correct option label and value.
-
-Proof questions (Chứng minh):
-  "answer" should be `"đpcm"` or summarize what was proven.
-  Full proof logic goes in "solution_steps".
-
-Word problems (Bài toán thực tế):
-  Include all given conditions in "question".
-  "answer" must include units (km, m², giờ, etc.)
-
-Find max/min (GTLN/GTNN):
-  "type": "Tìm GTLN/GTNN"
-  "answer" must state the value AND the condition (e.g., x = 5)
-
-Systems of equations:
-  Use `\\begin{cases}...\\end{cases}` in "question"
-  "answer" lists all variable values
-
-━━━ OUTPUT FORMAT ━━━
-- Start with `[`, end with `]`
-- One JSON object per problem
-- Process 100% of problems — never stop midway
-- No text before `[` or after `]`"""
-
-    PARSE_PROMPT_V1 = """Extract ALL math questions from the text below into a JSON array.
-
-RULES:
-- Close ALL JSON strings/arrays/objects — NEVER truncate mid-string
-- COPY coefficients EXACTLY: "√x + 4" → "$\\\\sqrt{x} + 4$" (4 outside radical)
-- If running out of tokens: finish current object, close array, STOP
+    PARSE_PROMPT_V1 = """Extract ALL math questions from this text into a JSON array.
+RULES: Close all JSON properly. Copy coefficients EXACTLY. If running out of tokens: finish current object, close array.
+If text contains SOLUTIONS below questions, extract them into solution_steps.
 
 {text}
 
-JSON array (starts with [, ends with ]):"""
-
-    PARSE_PROMPT_V2 = """Extract math questions to JSON. Copy every number and coefficient exactly.
-
-{text}
-
-Return JSON array only:"""
-
-    PARSE_PROMPT_V3 = """Extract math questions.
-{text}
 JSON array:"""
 
-    VISION_PROMPT = """Extract ALL math questions visible in these page images into a JSON array.
+    PARSE_PROMPT_V2 = """Extract math questions to JSON array. Copy every number exactly. Include solution_steps if present.
 
-RULES:
-- Scan EVERY page top-to-bottom, left-to-right
-- Extract EVERY question — missing even ONE is unacceptable  
-- Convert all math to LaTeX ($...$ inline, $$...$$ display)
-- Copy formulas EXACTLY — never modify coefficients
-- Multi-part questions (a,b,c) → ONE object
-- If no answer visible: answer="", solution_steps=[]
-- Output ONLY the JSON array
+{text}
+
+JSON:"""
+
+    PARSE_PROMPT_V3 = """Math questions → JSON array. Include answers and solution steps.
+{text}
+JSON:"""
+
+    VISION_PROMPT = """Extract ALL math questions from these page images into a JSON array.
+
+CRITICAL RULES:
+- Scan EVERY page. Missing questions is unacceptable.
+- ALL math → LaTeX: $...$ inline. In JSON: \\ before frac, sqrt, etc.
+- Questions with FULL SOLUTIONS below them: extract solution_steps too.
+- Multi-part (a,b,c) → ONE object, steps prefixed "--- a)", "--- b)"
+- If answers at end of doc, match by CONTENT not number.
+- Copy formulas EXACTLY. Never modify coefficients or radical scope.
+- Output ONLY raw JSON array — no markdown.
 
 JSON array:"""
 
@@ -373,11 +230,17 @@ JSON array:"""
     ) -> List[Dict[str, Any]]:
         """Parse questions from images using Vision API.
 
-        OPT: Large PDFs now processed in PARALLEL batches instead of sequential.
-        Sequential was: batch1 → batch2 → batch3 (each ~10-15s = 30-45s total)
-        Parallel is:    batch1 ⟍
-                        batch2  → merge (10-15s total, 3x faster)
-                        batch3 ⟋
+        v3 — Smart batching for token efficiency:
+          - ≤5 pages: all at once (fast, single call)
+          - 6-12 pages: batches of 4 pages (avoids output truncation)
+          - >12 pages: batches of 4 pages, parallel
+          
+        Why 4 pages per batch:
+          - 13 pages of dense math = ~29 questions × ~500 tokens each = ~15K output tokens
+          - Gemini output limit is 8K-65K depending on model
+          - 4 pages ≈ 8-10 questions ≈ 5K output tokens — safe margin
+          - Each image ≈ 800-1500 input tokens at 150 DPI
+          - 4 images ≈ 5K input tokens — well within limits
         """
         if not images:
             return []
@@ -392,11 +255,15 @@ JSON array:"""
         logger.info(f"Processing {total_pages} page images with Vision API")
         self._answer_pool = {}
 
-        if total_pages <= 15:
+        # Smart batch sizing
+        if total_pages <= 5:
             batch_size = total_pages
             logger.info(f"Small PDF: sending all {total_pages} pages at once")
+        elif total_pages <= 12:
+            batch_size = 4
+            logger.info(f"Medium PDF: batches of {batch_size} pages")
         else:
-            batch_size = 10
+            batch_size = 4
             logger.info(f"Large PDF: parallel batches of {batch_size} pages")
 
         # Build batches
@@ -413,11 +280,10 @@ JSON array:"""
                 result = await self._call_gemini_vision(batch_imgs)
             completed += batch_end - batch_start
             if progress_callback:
-                # OPT: callback outside semaphore — doesn't block next batch acquisition
                 progress_callback(min(completed, total_pages), total_pages)
             return result
 
-        # OPT: All batches run in parallel (semaphore controls max concurrency)
+        # All batches run in parallel (semaphore controls max concurrency)
         tasks = [_process_batch(bs, be, bi) for bs, be, bi in batches]
         batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -437,13 +303,16 @@ JSON array:"""
 
         all_questions = self._match_answers_from_pool(all_questions)
         elapsed = time.time() - start_time
-        logger.info(f"Vision total: {elapsed:.1f}s ({len(all_questions)} questions)")
+        logger.info(f"Vision total: {elapsed:.1f}s ({len(all_questions)} questions from {total_pages} pages)")
         return all_questions
 
     # ==================== GEMINI VISION ====================
 
     async def _call_gemini_vision(self, images: List[Dict]) -> List[Dict[str, Any]]:
-        """Call Gemini Vision API — 3-tier fallback."""
+        """Call Gemini Vision API — 3-tier fallback.
+        
+        v3: Adaptive timeout based on page count. Rate limit retry with backoff.
+        """
         if not self._client:
             return []
         from google.genai import types
@@ -455,6 +324,8 @@ JSON array:"""
                 mime_type=img.get("mime_type", "image/jpeg"),
             ))
 
+        # Adaptive timeout: more pages = more time needed
+        timeout = max(60, min(180, 30 * len(images)))
         content = ""
 
         for mime, schema, label in [
@@ -473,24 +344,38 @@ JSON array:"""
                 if schema:
                     cfg_kwargs["response_schema"] = schema
 
-                response = await asyncio.wait_for(
-                    self._client.aio.models.generate_content(
-                        model=self.gemini_model,
-                        contents=parts,
-                        config=types.GenerateContentConfig(**cfg_kwargs),
-                    ),
-                    timeout=120,  # Vision calls can take longer (images)
-                )
-                content = self._safe_text(response)
-                if content:
-                    result = self._extract_json(content)
-                    if result:
-                        logger.info(f"Vision {label}: {len(result)} questions from {len(images)} pages")
-                        return result
-            except asyncio.TimeoutError:
-                logger.warning(f"Vision {label} timed out after 120s")
+                for attempt in range(3):
+                    try:
+                        response = await asyncio.wait_for(
+                            self._client.aio.models.generate_content(
+                                model=self.gemini_model,
+                                contents=parts,
+                                config=types.GenerateContentConfig(**cfg_kwargs),
+                            ),
+                            timeout=timeout,
+                        )
+                        content = self._safe_text(response)
+                        if content:
+                            result = self._extract_json(content)
+                            if result:
+                                logger.info(f"Vision {label}: {len(result)} questions from {len(images)} pages")
+                                return result
+                        break  # Got response but no valid JSON — try next tier
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Vision {label} timed out ({timeout}s), attempt {attempt+1}")
+                        break  # Don't retry timeout — try next tier
+                    except Exception as e:
+                        err = str(e)
+                        if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                            wait = (attempt + 1) * 8
+                            logger.warning(f"Vision {label} rate limited, wait {wait}s...")
+                            await asyncio.sleep(wait)
+                            continue
+                        logger.warning(f"Vision {label} failed: {e}")
+                        break
+
             except Exception as e:
-                logger.warning(f"Vision {label} failed: {e}")
+                logger.warning(f"Vision {label} outer error: {e}")
 
         if content:
             result = self._extract_json(content)

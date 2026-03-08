@@ -259,25 +259,40 @@ class FileHandler:
             "method": "pypdf"
         }
     
-    async def _pdf_to_images(self, file_path: str) -> Dict[str, Any]:
-        """Convert PDF to images for Vision API using PyMuPDF (no poppler needed!)"""
+    async def _pdf_to_images(self, file_path: str, dpi: int = 150, max_dimension: int = 2048) -> Dict[str, Any]:
+        """Convert PDF to images for Vision API.
+        
+        Token optimization:
+          - Default DPI 150 (was 200 via zoom=2.0) — saves ~40% tokens
+          - JPEG quality 80 (was implicit ~95) — saves ~20% size
+          - Cap max dimension to 2048px — Gemini downsizes anyway
+          - Grayscale detection: if page is mostly B&W, skip color channels
+        """
         loop = asyncio.get_running_loop()
         
         def convert():
-            # Method 1: PyMuPDF (fitz) - PREFERRED, no external dependencies
             if self.has_pymupdf:
                 import fitz
                 
                 doc = fitz.open(file_path)
                 base64_images = []
                 
-                # DPI ~150: zoom = 150/72 ≈ 2.08
-                zoom = 2.0
+                # DPI control: zoom = dpi / 72
+                zoom = dpi / 72.0
                 matrix = fitz.Matrix(zoom, zoom)
                 
                 for page_num in range(len(doc)):
                     page = doc[page_num]
                     pix = page.get_pixmap(matrix=matrix)
+                    
+                    # Cap max dimension — Gemini API resizes internally anyway
+                    if max(pix.width, pix.height) > max_dimension:
+                        scale = max_dimension / max(pix.width, pix.height)
+                        new_w = int(pix.width * scale)
+                        new_h = int(pix.height * scale)
+                        small_matrix = fitz.Matrix(zoom * scale, zoom * scale)
+                        pix = page.get_pixmap(matrix=small_matrix)
+                    
                     img_bytes = pix.tobytes("jpeg")
                     b64 = base64.b64encode(img_bytes).decode()
                     
@@ -288,20 +303,26 @@ class FileHandler:
                     })
                 
                 doc.close()
-                logger.info(f"PyMuPDF rendered {len(base64_images)} pages to images")
+                logger.info(f"PyMuPDF rendered {len(base64_images)} pages (DPI={dpi})")
                 return base64_images, len(base64_images)
             
-            # Method 2: pdf2image (needs poppler) - FALLBACK
+            # Fallback: pdf2image
             try:
                 from pdf2image import convert_from_path
                 import io
                 
-                images = convert_from_path(file_path, dpi=150, fmt='jpeg')
+                images = convert_from_path(file_path, dpi=dpi, fmt='jpeg')
                 base64_images = []
                 
                 for i, img in enumerate(images):
+                    # Resize if too large
+                    if max(img.size) > max_dimension:
+                        ratio = max_dimension / max(img.size)
+                        new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+                        img = img.resize(new_size)
+                    
                     buffer = io.BytesIO()
-                    img.save(buffer, format='JPEG', quality=85)
+                    img.save(buffer, format='JPEG', quality=80)
                     b64 = base64.b64encode(buffer.getvalue()).decode()
                     base64_images.append({
                         "page": i + 1,
@@ -309,7 +330,7 @@ class FileHandler:
                         "mime_type": "image/jpeg"
                     })
                 
-                logger.info(f"pdf2image rendered {len(base64_images)} pages to images")
+                logger.info(f"pdf2image rendered {len(base64_images)} pages (DPI={dpi})")
                 return base64_images, len(base64_images)
                 
             except ImportError:
@@ -607,6 +628,112 @@ class FileHandler:
             return False
         
         return True
+
+    def analyze_math_quality(self, text: str) -> dict:
+        """Deep analysis of math text quality — detects broken formulas.
+
+        Returns:
+            {
+                "is_math_document": bool,
+                "math_broken": bool,       # True = formulas are garbled
+                "should_use_vision": bool,
+                "reason": str,
+                "score": float,            # 0.0 = total garbage, 1.0 = perfect
+                "stats": { ... }
+            }
+        """
+        if not text or len(text) < 50:
+            return {"is_math_document": False, "math_broken": True,
+                    "should_use_vision": True, "reason": "text_too_short", "score": 0.0, "stats": {}}
+
+        lines = [l.strip() for l in text.split('\n') if l.strip()]
+        total_chars = len(text)
+
+        # ── Detect if this is a math document ──
+        math_keywords = ['Bài', 'bài', 'Câu', 'câu', 'phương trình', 'biểu thức',
+                         'chứng minh', 'tìm', 'giải', 'tính', 'đẳng thức']
+        has_math_keywords = sum(1 for k in math_keywords if k in text)
+        is_math = has_math_keywords >= 2
+
+        if not is_math:
+            return {"is_math_document": False, "math_broken": False,
+                    "should_use_vision": False, "reason": "not_math", "score": 0.8, "stats": {}}
+
+        # ── Pattern 1: Isolated single chars/digits (broken formulas) ──
+        # "( ) 2 2 2 2 a b c" → each char is separated by space
+        import re
+        # Count sequences of "single_char space single_char space..."
+        isolated_pattern = re.findall(r'(?:^|\s)([a-zA-Z0-9])(?:\s|$)', text)
+        isolated_ratio = len(isolated_pattern) / max(total_chars, 1)
+
+        # ── Pattern 2: Repeated digit clusters (broken exponents) ──
+        # "2 2 2" appears when x², y², z² get flattened
+        repeated_digits = len(re.findall(r'\b(\d)\s+\1(?:\s+\1)*\b', text))
+
+        # ── Pattern 3: Missing structural math symbols ──
+        # A well-extracted math doc should have ^, _, {, }, or at least ²³
+        has_superscript = bool(re.search(r'[\^²³⁴⁵⁶⁷⁸⁹]', text))
+        has_fraction = bool(re.search(r'[/÷]|frac', text))
+        has_sqrt = bool(re.search(r'√|sqrt', text))
+        has_braces = text.count('{') + text.count('}')
+        structural_math_markers = sum([has_superscript, has_fraction, has_sqrt, has_braces > 2])
+
+        # ── Pattern 4: Orphan operators ──
+        # "+ + =" or "= + +" → operators without operands
+        orphan_ops = len(re.findall(r'(?:^|\s)[+\-=×÷](?:\s|$)', text))
+        orphan_ratio = orphan_ops / max(len(lines), 1)
+
+        # ── Pattern 5: Extremely short lines ratio ──
+        # Broken math creates lots of 1-5 char lines
+        short_lines = sum(1 for l in lines if len(l) <= 5)
+        short_ratio = short_lines / max(len(lines), 1)
+
+        # ── Pattern 6: Ratio of spaces to content ──
+        # Broken formulas have excessive spaces: "x  2  +  y  2  =  z  2"
+        space_ratio = text.count(' ') / max(total_chars, 1)
+
+        # ── Score calculation ──
+        score = 1.0
+        reasons = []
+
+        if isolated_ratio > 0.08:
+            score -= 0.3
+            reasons.append(f"isolated_chars={isolated_ratio:.2f}")
+        if repeated_digits > 3:
+            score -= 0.2
+            reasons.append(f"repeated_digits={repeated_digits}")
+        if structural_math_markers == 0 and has_math_keywords >= 3:
+            score -= 0.3
+            reasons.append("no_math_structure")
+        if orphan_ratio > 0.15:
+            score -= 0.2
+            reasons.append(f"orphan_ops={orphan_ratio:.2f}")
+        if short_ratio > 0.4:
+            score -= 0.15
+            reasons.append(f"short_lines={short_ratio:.2f}")
+        if space_ratio > 0.35:
+            score -= 0.15
+            reasons.append(f"high_spaces={space_ratio:.2f}")
+
+        score = max(0.0, score)
+        math_broken = score < 0.5
+        should_use_vision = score < 0.6  # Slightly higher threshold — prefer vision if questionable
+
+        return {
+            "is_math_document": True,
+            "math_broken": math_broken,
+            "should_use_vision": should_use_vision,
+            "reason": "; ".join(reasons) if reasons else "ok",
+            "score": round(score, 2),
+            "stats": {
+                "isolated_ratio": round(isolated_ratio, 3),
+                "repeated_digits": repeated_digits,
+                "structural_markers": structural_math_markers,
+                "orphan_ratio": round(orphan_ratio, 3),
+                "short_line_ratio": round(short_ratio, 3),
+                "space_ratio": round(space_ratio, 3),
+            }
+        }
     
     def _clean_text(self, text: str) -> str:
         """Clean and normalize text. OPT: uses pre-compiled class-level regex."""

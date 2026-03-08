@@ -33,4 +33,5 @@ python-docx>=1.0.0               # DOCX text extraction + export
 lxml>=4.9.0                      # XML/OMML processing (LaTeX→DOCX math)
 
 # ==================== VECTOR SEARCH ====================
-numpy>=1.24.0                    # Vectorized cosine similarity (Sprint 3)
+numpy>=1.24.0                    # Vectorized cosine similarity (SQLite fallback)
+pgvector>=0.3.0                  # PostgreSQL vector similarity (pgvector extension)
