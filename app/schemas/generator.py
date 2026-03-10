@@ -61,6 +61,17 @@ class PromptGenerateRequest(BaseModel):
     count: Optional[int] = Field(default=None, ge=1, le=50)
 
 
+class SaveAsExamRequest(BaseModel):
+    """Save AI-generated questions as a named exam in the DB."""
+    title: str = Field(..., min_length=1, max_length=300)
+    questions: List[GeneratedQuestion]
+
+
+class SaveAsExamResponse(BaseModel):
+    exam_id: int
+    question_count: int
+
+
 class ParsedCriteria(BaseModel):
     """Kết quả parse từ prompt tự do — dùng nội bộ."""
     grade: Optional[int] = None

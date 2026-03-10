@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from typing import Any, Union
+from typing import Any, Optional, Union
 from jose import jwt
 from passlib.context import CryptContext
 from app.core.config import settings
@@ -20,6 +20,15 @@ def create_access_token(
     to_encode = {"exp": expire, "sub": str(subject)}
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+def decode_access_token(token: str) -> Optional[int]:
+    """Decode JWT and return user_id (sub), or None if invalid."""
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
+        sub = payload.get("sub")
+        return int(sub) if sub is not None else None
+    except Exception:
+        return None
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)

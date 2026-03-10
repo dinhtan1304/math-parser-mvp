@@ -14,11 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.db.session import get_db
+from app.db.models.exam import Exam
 from app.db.models.question import Question
 from app.db.models.user import User
 from app.schemas.generator import (
     GenerateRequest, GenerateResponse, GeneratedQuestion,
     ExamGenerateRequest, PromptGenerateRequest,
+    SaveAsExamRequest, SaveAsExamResponse,
 )
 from app.services.ai_generator import ai_generator
 
@@ -288,3 +290,38 @@ async def generate_from_prompt(
         sample_count=result["sample_count"],
         message=result["message"],
     )
+
+
+@router.post("/save-as-exam", response_model=SaveAsExamResponse)
+async def save_generated_as_exam(
+    req: SaveAsExamRequest,
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save AI-generated questions as an Exam in the DB so it can be assigned to a class."""
+    exam = Exam(
+        user_id=current_user.id,
+        filename=f"AI: {req.title}",
+        status="completed",
+    )
+    db.add(exam)
+    await db.flush()  # get exam.id
+
+    for i, q in enumerate(req.questions):
+        steps_json = json.dumps(q.solution_steps, ensure_ascii=False) if q.solution_steps else None
+        question = Question(
+            exam_id=exam.id,
+            user_id=current_user.id,
+            question_text=q.question,
+            question_type=q.type or "TN",
+            topic=q.topic or None,
+            difficulty=q.difficulty or None,
+            answer=q.answer or None,
+            solution_steps=steps_json,
+            question_order=i,
+        )
+        db.add(question)
+
+    await db.commit()
+    await db.refresh(exam)
+    return SaveAsExamResponse(exam_id=exam.id, question_count=len(req.questions))

@@ -12,6 +12,7 @@ class QuestionResponse(BaseModel):
     """Single question returned by API."""
     id: int
     exam_id: Optional[int] = None
+    user_id: int
     question_text: str
     question_type: Optional[str] = None
     topic: Optional[str] = None
@@ -25,6 +26,8 @@ class QuestionResponse(BaseModel):
     # Frontend always receives List[str] from both /questions and /generate.
     solution_steps: Optional[List[str]] = None
     question_order: int = 0
+    is_public: bool = True
+    author_email: Optional[str] = None  # populated by API join
     created_at: datetime
 
     @field_validator("solution_steps", mode="before")
@@ -58,6 +61,7 @@ class QuestionUpdate(BaseModel):
     lesson_title: Optional[str] = None
     answer: Optional[str] = None
     solution_steps: Optional[str] = None  # JSON string
+    is_public: Optional[bool] = None
 
 
 class QuestionBulkCreate(BaseModel):

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Index
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Index, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 import hashlib
@@ -43,6 +43,9 @@ class Question(Base):
     # Answer and solution
     answer = Column(Text, nullable=True)
     solution_steps = Column(Text, nullable=True)
+
+    # Visibility: True = public (visible to all users), False = private (owner only)
+    is_public = Column(Boolean, default=True, nullable=False, server_default='true')
 
     # Position in original exam
     question_order = Column(Integer, default=0)

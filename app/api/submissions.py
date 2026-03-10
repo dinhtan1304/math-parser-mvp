@@ -7,7 +7,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, case
 
 from app.api.deps import get_current_active_user
 from app.db.session import get_db
@@ -63,7 +63,7 @@ async def send_to_multiple_classes(
     if not exam:
         raise HTTPException(status_code=404, detail="Đề thi không tồn tại")
 
-    created = []
+    pairs: list[tuple[Assignment, str]] = []
     for class_id in payload.class_ids:
         cls = await _teacher_class_or_404(class_id, current_user.id, db)
         assignment = Assignment(
@@ -78,10 +78,12 @@ async def send_to_multiple_classes(
         )
         db.add(assignment)
         await db.flush()
-        created.append(await _enrich_assignment(assignment, cls.name, db))
+        pairs.append((assignment, cls.name))
 
     await db.commit()
-    return created
+    # New assignments have 0 submissions — no need to query
+    empty_counts: dict[int, tuple[int, int]] = {a.id: (0, 0) for a, _ in pairs}
+    return [_build_assignment_response(a, name, empty_counts) for a, name in pairs]
 
 
 @router.get("", response_model=List[AssignmentResponse])
@@ -98,11 +100,9 @@ async def list_assignments(
         q = q.where(Assignment.class_id == class_id)
     q = q.order_by(Assignment.created_at.desc())
 
-    result = await db.execute(q)
-    out = []
-    for assignment, cls in result.all():
-        out.append(await _enrich_assignment(assignment, cls.name, db))
-    return out
+    rows = (await db.execute(q)).all()
+    counts = await _batch_submission_counts([a.id for a, _ in rows], db)
+    return [_build_assignment_response(a, cls.name, counts) for a, cls in rows]
 
 
 @router.get("/for-student", response_model=List[AssignmentResponse])
@@ -111,7 +111,7 @@ async def assignments_for_student(
     current_user: User = Depends(get_current_active_user),
 ):
     """All active assignments in classes the current student belongs to."""
-    result = await db.execute(
+    rows = (await db.execute(
         select(Assignment, Class)
         .join(Class, Assignment.class_id == Class.id)
         .join(ClassMember, ClassMember.class_id == Class.id)
@@ -121,11 +121,9 @@ async def assignments_for_student(
             Assignment.is_active == True,
         )
         .order_by(Assignment.created_at.desc())
-    )
-    out = []
-    for assignment, cls in result.all():
-        out.append(await _enrich_assignment(assignment, cls.name, db))
-    return out
+    )).all()
+    counts = await _batch_submission_counts([a.id for a, _ in rows], db)
+    return [_build_assignment_response(a, cls.name, counts) for a, cls in rows]
 
 
 @router.get("/{assignment_id}", response_model=AssignmentResponse)
@@ -222,18 +220,33 @@ async def _get_assignment_accessible(
     raise HTTPException(status_code=403, detail="Bạn không có quyền xem bài tập này")
 
 
-async def _enrich_assignment(
-    assignment: Assignment, class_name: str, db: AsyncSession
-) -> AssignmentResponse:
-    sub_count = await db.scalar(
-        select(func.count()).where(Submission.assignment_id == assignment.id)
-    )
-    completed_count = await db.scalar(
-        select(func.count()).where(
-            Submission.assignment_id == assignment.id,
-            Submission.status == "completed",
+async def _batch_submission_counts(
+    assignment_ids: List[int], db: AsyncSession
+) -> dict[int, tuple[int, int]]:
+    """
+    Return {assignment_id: (total_count, completed_count)} in ONE query
+    instead of 2 queries per assignment (fixes N+1 problem).
+    """
+    if not assignment_ids:
+        return {}
+    rows = await db.execute(
+        select(
+            Submission.assignment_id,
+            func.count().label("total"),
+            func.sum(case((Submission.status == "completed", 1), else_=0)).label("completed"),
         )
+        .where(Submission.assignment_id.in_(assignment_ids))
+        .group_by(Submission.assignment_id)
     )
+    return {row.assignment_id: (row.total, row.completed) for row in rows.all()}
+
+
+def _build_assignment_response(
+    assignment: Assignment,
+    class_name: str,
+    counts: dict[int, tuple[int, int]],
+) -> AssignmentResponse:
+    total, completed = counts.get(assignment.id, (0, 0))
     return AssignmentResponse(
         id=assignment.id,
         class_id=assignment.class_id,
@@ -246,6 +259,14 @@ async def _enrich_assignment(
         show_answer=assignment.show_answer,
         is_active=assignment.is_active,
         created_at=assignment.created_at,
-        submission_count=sub_count or 0,
-        completed_count=completed_count or 0,
+        submission_count=total,
+        completed_count=completed,
     )
+
+
+async def _enrich_assignment(
+    assignment: Assignment, class_name: str, db: AsyncSession
+) -> AssignmentResponse:
+    """Single-assignment enrich (used for single-item endpoints)."""
+    counts = await _batch_submission_counts([assignment.id], db)
+    return _build_assignment_response(assignment, class_name, counts)

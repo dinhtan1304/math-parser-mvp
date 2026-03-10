@@ -14,7 +14,7 @@ from sqlalchemy import select, func
 from app.api.deps import get_current_active_user
 from app.db.session import get_db
 from app.db.models.user import User
-from app.db.models.classroom import Class, ClassMember
+from app.db.models.classroom import Class, ClassMember, Assignment
 from app.schemas.classroom import (
     ClassCreate, ClassUpdate, ClassResponse, JoinClassRequest, ClassMemberResponse,
 )
@@ -66,23 +66,30 @@ async def list_classes(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    result = await db.execute(
-        select(Class).where(Class.teacher_id == current_user.id).order_by(Class.created_at.desc())
+    # Subqueries for member and assignment counts — avoids N+1 queries
+    member_counts = (
+        select(ClassMember.class_id, func.count().label("cnt"))
+        .where(ClassMember.is_active == True)
+        .group_by(ClassMember.class_id)
+        .subquery()
     )
-    classes = result.scalars().all()
-
-    out = []
-    for cls in classes:
-        m_count = await db.scalar(
-            select(func.count()).where(ClassMember.class_id == cls.id, ClassMember.is_active == True)
+    assignment_counts = (
+        select(Assignment.class_id, func.count().label("cnt"))
+        .group_by(Assignment.class_id)
+        .subquery()
+    )
+    rows = await db.execute(
+        select(
+            Class,
+            func.coalesce(member_counts.c.cnt, 0).label("m_count"),
+            func.coalesce(assignment_counts.c.cnt, 0).label("a_count"),
         )
-        a_count = await db.scalar(
-            select(func.count())
-            .select_from(__import__("app.db.models.classroom", fromlist=["Assignment"]).Assignment)
-            .where(__import__("app.db.models.classroom", fromlist=["Assignment"]).Assignment.class_id == cls.id)
-        )
-        out.append(_enrich(cls, m_count or 0, a_count or 0))
-    return out
+        .outerjoin(member_counts, Class.id == member_counts.c.class_id)
+        .outerjoin(assignment_counts, Class.id == assignment_counts.c.class_id)
+        .where(Class.teacher_id == current_user.id)
+        .order_by(Class.created_at.desc())
+    )
+    return [_enrich(cls, int(m), int(a)) for cls, m, a in rows.all()]
 
 
 @router.get("/{class_id}", response_model=ClassResponse)

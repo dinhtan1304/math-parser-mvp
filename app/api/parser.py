@@ -613,6 +613,21 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
             "result_json": result_json,
         })
 
+        # Push notification to user's devices
+        if user_id:
+            try:
+                from app.services.push_notification import send_push_to_user
+                from app.db.session import AsyncSessionLocal
+                async with AsyncSessionLocal() as _pdb:
+                    await send_push_to_user(
+                        _pdb, user_id,
+                        title="Phân tích hoàn tất!",
+                        body=f"Đề thi đã được phân tích xong: {len(questions)} câu hỏi.",
+                        data={"exam_id": exam_id, "type": "parse_complete"},
+                    )
+            except Exception as _pe:
+                logger.debug(f"Push notification failed (non-critical): {_pe}")
+
     except Exception as e:
         logger.error(f"Error processing exam {exam_id}: {e}", exc_info=True)
 

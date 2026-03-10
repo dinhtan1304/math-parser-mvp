@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Integer, String
+from sqlalchemy import Boolean, Column, Integer, String, DateTime
 from app.db.base_class import Base
 
 
@@ -9,4 +9,6 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
     is_active = Column(Boolean, default=True)
     is_superuser = Column(Boolean, default=False)
-    role = Column(String, default="user")
+    role = Column(String, default="student")
+    reset_token = Column(String, nullable=True)
+    reset_token_expires = Column(DateTime(timezone=True), nullable=True)

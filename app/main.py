@@ -1,11 +1,15 @@
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from contextlib import asynccontextmanager
-import os
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+
+logger = logging.getLogger(__name__)
 
 from app.core.config import settings
-from app.api import auth, parser, questions, generator, dashboard, export, classes, assignments, submissions, game, analytics, curriculum, chat
+from app.api import auth, parser, questions, generator, dashboard, export, classes, assignments, submissions, game, analytics, curriculum, chat, notifications, live
 from app.db.session import engine
 from app.db.base import Base
 
@@ -30,6 +34,11 @@ async def lifespan(app: FastAPI):
         ("submission",  "game_mode",   "ALTER TABLE submission ADD COLUMN game_mode VARCHAR(50)"),
         ("submission",  "xp_earned",   "ALTER TABLE submission ADD COLUMN xp_earned INTEGER DEFAULT 0"),
         ("studentxp",   "level",       "ALTER TABLE studentxp ADD COLUMN level INTEGER DEFAULT 1"),
+        ("question",    "is_public",   "ALTER TABLE question ADD COLUMN is_public BOOLEAN DEFAULT TRUE"),
+        ("user",        "role",        "ALTER TABLE user ADD COLUMN role VARCHAR(20) DEFAULT 'student'"),
+        ("devicetoken", "platform",      "ALTER TABLE devicetoken ADD COLUMN platform VARCHAR(10)"),
+        ("user",        "reset_token",   "ALTER TABLE \"user\" ADD COLUMN reset_token VARCHAR(128)"),
+        ("user",        "reset_token_expires", "ALTER TABLE \"user\" ADD COLUMN reset_token_expires TIMESTAMPTZ"),
     ]
     # OPT: Index migrations (CREATE INDEX IF NOT EXISTS is idempotent)
     _index_migrations = [
@@ -50,6 +59,11 @@ async def lifespan(app: FastAPI):
                 await conn.execute(text(idx_sql))
             except Exception:
                 pass  # Index already exists
+        # Migrate old role="user" → "student"
+        try:
+            await conn.execute(text("UPDATE \"user\" SET role='student' WHERE role='user' OR role IS NULL"))
+        except Exception:
+            pass
 
     # Migrate old broken FTS5 table (had wrong content= definition) — drop and recreate
     try:
@@ -128,6 +142,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Security headers middleware
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
 # Rate limiting (Sprint 2, Task 13)
 from app.core.rate_limit import RateLimitMiddleware
 app.add_middleware(RateLimitMiddleware, enabled=(settings.ENV == "production"))
@@ -140,12 +166,17 @@ app.include_router(generator.router,   prefix=f"{settings.API_V1_STR}/generate",
 app.include_router(dashboard.router,   prefix=f"{settings.API_V1_STR}/dashboard",   tags=["dashboard"])
 app.include_router(export.router,      prefix=f"{settings.API_V1_STR}/export",      tags=["export"])
 app.include_router(classes.router,     prefix=f"{settings.API_V1_STR}/classes",     tags=["classroom"])
-app.include_router(assignments.router, prefix=f"{settings.API_V1_STR}/assignments", tags=["classroom"])
-app.include_router(submissions.router, prefix=f"{settings.API_V1_STR}/submissions", tags=["classroom"])
+# NOTE: file naming is swapped — submissions.py contains assignment CRUD code,
+#       assignments.py contains submission/XP/leaderboard code.
+#       Routers are mounted with correct semantic prefixes here.
+app.include_router(submissions.router, prefix=f"{settings.API_V1_STR}/assignments", tags=["classroom"])
+app.include_router(assignments.router, prefix=f"{settings.API_V1_STR}/submissions", tags=["classroom"])
 app.include_router(game.router,        prefix=f"{settings.API_V1_STR}/game",        tags=["game"])
 app.include_router(analytics.router,   prefix=f"{settings.API_V1_STR}/analytics",   tags=["analytics"])
 app.include_router(curriculum.router,  prefix=f"{settings.API_V1_STR}/curriculum",  tags=["curriculum"])
-app.include_router(chat.router,       prefix=f"{settings.API_V1_STR}/chat",         tags=["chat"])
+app.include_router(chat.router,          prefix=f"{settings.API_V1_STR}/chat",          tags=["chat"])
+app.include_router(notifications.router, prefix=f"{settings.API_V1_STR}/notifications", tags=["notifications"])
+app.include_router(live.router,          prefix=f"{settings.API_V1_STR}/live",          tags=["live"])
 
 # ── Health check (Sprint 1, Task 8) ──
 @app.get("/health", tags=["system"])

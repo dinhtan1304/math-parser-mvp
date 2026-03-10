@@ -22,6 +22,7 @@ from app.api import deps
 from app.db.session import get_db
 from app.db.models.question import Question
 from app.db.models.user import User
+from sqlalchemy import text as sa_text
 from app.schemas.question import (
     QuestionResponse, QuestionListResponse, QuestionFilters,
     QuestionUpdate, QuestionBulkCreate,
@@ -43,18 +44,27 @@ async def list_questions(
     chapter: Optional[str] = Query(None, description="Filter by chapter"),
     keyword: Optional[str] = Query(None, description="Search in question text"),
     exam_id: Optional[int] = Query(None, description="Filter by source exam"),
+    my_only: bool = Query(False, description="Show only current user's questions"),
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List questions for the current user with optional filters.
+    """List questions with optional filters.
 
-    BUG FIX: Original code listed ALL questions from ALL users (no user_id filter),
-    exposing other users' question data. Now filtered to current user's questions.
+    Shared bank: all users see public questions.
+    my_only=true: only current user's questions (public + private).
+    Others only see public questions from other users.
     """
-
-    # Shared bank: all users see all questions
-    # user_id filter only applied on write operations (delete/update)
     conditions = []
+
+    # Visibility: own questions always visible; others' only if public
+    if my_only:
+        conditions.append(Question.user_id == current_user.id)
+    else:
+        # public OR owned by current user
+        from sqlalchemy import or_
+        conditions.append(
+            or_(Question.is_public == True, Question.user_id == current_user.id)
+        )
 
     if question_type:
         conditions.append(Question.question_type == question_type)
@@ -76,34 +86,37 @@ async def list_questions(
             if fts_ids:
                 conditions.append(Question.id.in_(fts_ids))
             else:
-                # FTS returned nothing (empty index or no match) — fall back to LIKE
                 conditions.append(Question.question_text.ilike(f"%{keyword}%"))
         except Exception:
             conditions.append(Question.question_text.ilike(f"%{keyword}%"))
 
     # Count
-    count_q = select(func.count(Question.id))
-    if conditions:
-        count_q = count_q.where(*conditions)
+    count_q = select(func.count(Question.id)).where(*conditions)
     total = (await db.execute(count_q)).scalar() or 0
 
-    # Fetch page
+    # Fetch page with author email via join
     offset = (page - 1) * page_size
-    # OPT: Use covering index ix_question_user_created (user_id, created_at DESC)
-    # This avoids full table scan for paginated list queries
     data_q = (
-        select(Question)
+        select(Question, User.email.label("author_email"))
+        .join(User, Question.user_id == User.id, isouter=True)
+        .where(*conditions)
         .order_by(Question.created_at.desc())
         .offset(offset)
         .limit(page_size)
     )
-    if conditions:
-        data_q = data_q.where(*conditions)
     result = await db.execute(data_q)
-    questions = result.scalars().all()
+    rows = result.all()
+
+    items = []
+    for row in rows:
+        q = row[0]
+        author_email = row[1]
+        q_dict = QuestionResponse.model_validate(q).model_dump()
+        q_dict["author_email"] = author_email
+        items.append(QuestionResponse(**q_dict))
 
     return QuestionListResponse(
-        items=[QuestionResponse.model_validate(q) for q in questions],
+        items=items,
         total=total,
         page=page,
         page_size=page_size,

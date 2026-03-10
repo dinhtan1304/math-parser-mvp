@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     # ENVIRONMENT
     ENV: str = "production"  # "development" or "production"
 
+    # SECURITY — proxy trust
+    # Set TRUST_PROXY=true only when running behind a reverse proxy (nginx, Railway, etc.)
+    # that injects a trusted X-Forwarded-For header.
+    # When False (default for direct server), X-Forwarded-For is IGNORED to prevent IP spoofing.
+    TRUST_PROXY: bool = False
+
     @property
     def MAX_UPLOAD_BYTES(self) -> int:
         return self.MAX_UPLOAD_SIZE_MB * 1024 * 1024

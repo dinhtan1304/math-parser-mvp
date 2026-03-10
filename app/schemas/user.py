@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Literal
 import re
 from pydantic import BaseModel, EmailStr, field_validator
 
@@ -8,16 +8,16 @@ class UserBase(BaseModel):
     is_active: Optional[bool] = True
     is_superuser: bool = False
     full_name: Optional[str] = None
-    role: str = "user"
+    role: str = "student"
 
 # Properties to receive via API on creation
 class UserCreate(UserBase):
     email: EmailStr
     password: str
     full_name: str
-    # SECURITY: Explicitly exclude role from user-facing create schema.
-    # Role assignment is handled server-side (always "user" on registration).
-    role: str = "user"  # Ignored on server; always forced to "user" in auth.py
+    # Platform-based role: mobile sends "student", web sends "teacher"
+    # Admin cannot self-register
+    role: Literal["student", "teacher"] = "student"
 
     @field_validator("password")
     @classmethod

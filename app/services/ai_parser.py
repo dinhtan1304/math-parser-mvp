@@ -287,12 +287,25 @@ JSON array:"""
         tasks = [_process_batch(bs, be, bi) for bs, be, bi in batches]
         batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
+        # Retry failed batches once before giving up
+        for i, res in enumerate(batch_results):
+            if isinstance(res, Exception):
+                bs, be, bi = batches[i]
+                logger.warning(f"Vision batch {i} (pages {bs}-{be}) failed: {res} — retrying once")
+                try:
+                    batch_results[i] = await _process_batch(bs, be, bi)
+                except Exception as retry_err:
+                    logger.error(f"Vision batch {i} retry also failed: {retry_err}")
+
+        failed = sum(1 for r in batch_results if isinstance(r, Exception))
+        if failed:
+            logger.error(f"Vision parsing: {failed}/{len(batches)} batch(es) failed permanently")
+
         # Merge with deduplication
         all_questions: List[Dict] = []
         seen_hashes: set = set()
         for res in batch_results:
             if isinstance(res, Exception):
-                logger.error(f"Vision batch failed: {res}")
                 continue
             for q in res:
                 q_hash = self._hash_question(q.get("question", ""))
@@ -328,6 +341,12 @@ JSON array:"""
         timeout = max(60, min(180, 30 * len(images)))
         content = ""
 
+        # Disable thinking — not needed for structured extraction, saves 5-10x time
+        try:
+            _thinking_off = types.ThinkingConfig(thinking_budget=0)
+        except Exception:
+            _thinking_off = None  # Older SDK — graceful fallback
+
         for mime, schema, label in [
             ("application/json", PARSE_SCHEMA, "schema"),
             ("application/json", None,         "json"),
@@ -343,6 +362,8 @@ JSON array:"""
                     cfg_kwargs["response_mime_type"] = mime
                 if schema:
                     cfg_kwargs["response_schema"] = schema
+                if _thinking_off is not None:
+                    cfg_kwargs["thinking_config"] = _thinking_off
 
                 for attempt in range(3):
                     try:
@@ -444,10 +465,8 @@ JSON array:"""
                             return result, content
                     return None, content or ""
                 except asyncio.TimeoutError:
-                    logger.warning(f"{label} timed out after 90s (attempt {attempt + 1})")
-                    if attempt < 2:
-                        await asyncio.sleep(10)
-                        continue
+                    # Don't retry on timeout — move to next tier immediately
+                    logger.warning(f"{label} timed out after 90s, skipping to next tier")
                     return None, ""
                 except Exception as e:
                     err_str = str(e)
@@ -473,6 +492,12 @@ JSON array:"""
                     return None, ""
             return None, ""
 
+        # Disable thinking — not needed for structured extraction, saves 5-10x time
+        try:
+            _thinking_off = types.ThinkingConfig(thinking_budget=0)
+        except Exception:
+            _thinking_off = None  # Older SDK — graceful fallback
+
         content = ""
         for mime, schema, label in [
             ("application/json", PARSE_SCHEMA, "Schema mode"),
@@ -488,6 +513,8 @@ JSON array:"""
                 cfg_kwargs["response_mime_type"] = mime
             if schema:
                 cfg_kwargs["response_schema"] = schema
+            if _thinking_off is not None:
+                cfg_kwargs["thinking_config"] = _thinking_off
 
             result, content = await _try_with_retry(
                 types.GenerateContentConfig(**cfg_kwargs), label
