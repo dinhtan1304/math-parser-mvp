@@ -76,8 +76,6 @@ class AIQuestionParser:
     """
 
     # ── SYSTEM_PROMPT v3 — ~1500 tokens (was ~2500) ──
-    # Removed: curriculum mapping (done post-parse by curriculum_matcher)
-    # Condensed: LaTeX rules, phase headers, redundant examples
     SYSTEM_PROMPT = r"""You are a Math OCR expert. Extract ALL math problems from documents into structured JSON.
 
 EXTRACTION:
