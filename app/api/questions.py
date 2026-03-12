@@ -2,17 +2,20 @@
 Question Bank API — SHARED bank: all users see all questions.
 
 Endpoints:
-    GET    /questions          — List + filter (type, topic, difficulty, keyword)
-    GET    /questions/filters  — Lấy danh sách filter values
-    GET    /questions/{id}     — Chi tiết 1 câu
-    PUT    /questions/{id}     — Sửa 1 câu
-    DELETE /questions/{id}     — Xóa 1 câu
-    POST   /questions/bulk     — Lưu nhiều câu vào ngân hàng
+    GET    /questions              — List + filter (type, topic, difficulty, keyword)
+    GET    /questions/filters      — Lấy danh sách filter values
+    GET    /questions/{id}         — Chi tiết 1 câu
+    PUT    /questions/{id}         — Sửa 1 câu
+    DELETE /questions/{id}         — Xóa 1 câu
+    PATCH  /questions/bulk-visibility — Đổi public/private hàng loạt
+    POST   /questions/bulk         — Lưu nhiều câu vào ngân hàng
 """
 
 import json
 import logging
-from typing import Optional
+from typing import List, Optional
+
+from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, distinct
@@ -187,9 +190,12 @@ async def delete_question(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a single question from the shared bank."""
-    result = await db.execute(
-        select(Question).where(Question.id == question_id, Question.user_id == current_user.id)
-    )
+    if current_user.role == "admin":
+        stmt = select(Question).where(Question.id == question_id)
+    else:
+        stmt = select(Question).where(Question.id == question_id, Question.user_id == current_user.id)
+        
+    result = await db.execute(stmt)
     question = result.scalars().first()
 
     if not question:
@@ -224,9 +230,12 @@ async def update_question(
     db: AsyncSession = Depends(get_db),
 ):
     """Update a question. Only provided fields are changed."""
-    result = await db.execute(
-        select(Question).where(Question.id == question_id, Question.user_id == current_user.id)
-    )
+    if current_user.role == "admin":
+        stmt = select(Question).where(Question.id == question_id)
+    else:
+        stmt = select(Question).where(Question.id == question_id, Question.user_id == current_user.id)
+    
+    result = await db.execute(stmt)
     question = result.scalars().first()
 
     if not question:
@@ -265,6 +274,46 @@ async def update_question(
 
     logger.info(f"Question {question_id} updated: {list(update_data.keys())}")
     return question
+
+
+# ── Bulk update visibility ──
+
+class BulkVisibilityRequest(BaseModel):
+    """Request to change visibility of multiple questions."""
+    question_ids: List[int]
+    is_public: bool
+
+
+@router.patch("/bulk-visibility")
+async def bulk_update_visibility(
+    payload: BulkVisibilityRequest,
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set is_public for multiple questions owned by the current user."""
+    if not payload.question_ids:
+        raise HTTPException(status_code=400, detail="No question IDs provided")
+    if len(payload.question_ids) > 200:
+        raise HTTPException(status_code=400, detail="Maximum 200 questions per request")
+
+    from sqlalchemy import update as sa_update
+
+    stmt = sa_update(Question).where(Question.id.in_(payload.question_ids))
+    if current_user.role != "admin":
+        stmt = stmt.where(Question.user_id == current_user.id)
+    stmt = stmt.values(is_public=payload.is_public)
+    result = await db.execute(stmt)
+    await db.commit()
+
+    updated = result.rowcount
+    label = "công khai" if payload.is_public else "riêng tư"
+    logger.info(f"Bulk visibility: {updated}/{len(payload.question_ids)} → {label} by user {current_user.id}")
+
+    return {
+        "detail": f"Đã chuyển {updated} câu hỏi sang {label}",
+        "updated": updated,
+        "is_public": payload.is_public,
+    }
 
 
 # ── Bulk save generated questions to bank ──

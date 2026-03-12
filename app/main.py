@@ -178,6 +178,10 @@ app.include_router(chat.router,          prefix=f"{settings.API_V1_STR}/chat",  
 app.include_router(notifications.router, prefix=f"{settings.API_V1_STR}/notifications", tags=["notifications"])
 app.include_router(live.router,          prefix=f"{settings.API_V1_STR}/live",          tags=["live"])
 
+# Admin APIs
+from app.api import admin
+app.include_router(admin.router,         prefix=f"{settings.API_V1_STR}/admin",         tags=["admin"])
+
 # ── Health check (Sprint 1, Task 8) ──
 @app.get("/health", tags=["system"])
 async def health_check():
