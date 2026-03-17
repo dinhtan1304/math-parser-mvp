@@ -86,6 +86,7 @@ class ExamResponse(BaseModel):
     created_at: datetime
     result_json: Optional[str] = None
     error_message: Optional[str] = None
+    question_count: Optional[int] = None  # populated by history endpoint
 
     class Config:
         from_attributes = True
@@ -365,37 +366,43 @@ async def _save_questions_to_bank(
         # FIX: _save_questions_to_bank is called inside `async with AsyncSessionLocal() as db`
         # in process_file. The task outlives that context, so we open a NEW session.
         async def _index_in_background(ids):
+            # Each operation uses its own session — a failure in one (e.g. FTS on
+            # PostgreSQL) does NOT poison the transaction for subsequent operations.
             from app.db.session import AsyncSessionLocal
+
             try:
-              async with AsyncSessionLocal() as _db:
-                try:
+                async with AsyncSessionLocal() as _db:
                     from app.services.fts import sync_fts_questions
                     await sync_fts_questions(_db, ids)
                     logger.info(f"Exam {exam_id}: FTS indexed {len(ids)} questions")
-                except Exception as e:
-                    logger.warning(f"Exam {exam_id}: FTS sync failed: {e}")
-                try:
+            except Exception as e:
+                logger.warning(f"Exam {exam_id}: FTS sync failed: {e}")
+
+            try:
+                async with AsyncSessionLocal() as _db:
                     from app.services.vector_search import embed_questions
                     await embed_questions(_db, ids)
                     logger.info(f"Exam {exam_id}: Embedded {len(ids)} questions")
-                except Exception as e:
-                    logger.warning(f"Exam {exam_id}: Embedding failed: {e}")
-                try:
+            except Exception as e:
+                logger.warning(f"Exam {exam_id}: Embedding failed: {e}")
+
+            try:
+                async with AsyncSessionLocal() as _db:
                     from app.services.similarity_detector import detect_similar_for_exam
                     found = await detect_similar_for_exam(_db, exam_id, user_id)
                     if found:
                         logger.info(f"Exam {exam_id}: {found} similar question pairs detected")
-                except Exception as e:
-                    logger.warning(f"Exam {exam_id}: Similarity detection failed: {e}")
-                try:
+            except Exception as e:
+                logger.warning(f"Exam {exam_id}: Similarity detection failed: {e}")
+
+            try:
+                async with AsyncSessionLocal() as _db:
                     from app.services.difficulty_inferrer import infer_difficulty_for_exam
                     inferred = await infer_difficulty_for_exam(_db, exam_id, user_id)
                     if inferred:
                         logger.info(f"Exam {exam_id}: difficulty inferred for {inferred} questions")
-                except Exception as e:
-                    logger.warning(f"Exam {exam_id}: Difficulty inference failed: {e}")
-            except Exception as outer:
-                logger.error(f"Exam {exam_id}: Background indexing crashed: {outer}")
+            except Exception as e:
+                logger.warning(f"Exam {exam_id}: Difficulty inference failed: {e}")
 
         # Keep reference to prevent garbage collection (Python asyncio gotcha)
         task = asyncio.create_task(_index_in_background(saved_ids))
@@ -912,15 +919,20 @@ async def stream_progress(
 async def list_exams(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    search: Optional[str] = Query(None, description="Search by filename"),
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List parse history for the current user with pagination."""
+    """List parse history for the current user with pagination and optional search."""
     from sqlalchemy import func
+
+    base_filter = [Exam.user_id == current_user.id]
+    if search and search.strip():
+        base_filter.append(Exam.filename.ilike(f"%{search.strip()}%"))
 
     # Count total
     count_result = await db.execute(
-        select(func.count(Exam.id)).filter(Exam.user_id == current_user.id)
+        select(func.count(Exam.id)).where(*base_filter)
     )
     total = count_result.scalar() or 0
 
@@ -929,15 +941,33 @@ async def list_exams(
     # OPT: ORDER BY exam.created_at DESC — covered by ix_exam_user_created index
     result = await db.execute(
         select(Exam)
-        .filter(Exam.user_id == current_user.id)
+        .where(*base_filter)
         .order_by(Exam.created_at.desc())
         .offset(offset)
         .limit(page_size)
     )
     exams = result.scalars().all()
 
+    # Count questions per exam in one query
+    exam_ids = [e.id for e in exams]
+    counts: dict[int, int] = {}
+    if exam_ids:
+        from app.db.models.question import Question as _Q
+        count_rows = await db.execute(
+            select(_Q.exam_id, func.count(_Q.id).label("cnt"))
+            .where(_Q.exam_id.in_(exam_ids))
+            .group_by(_Q.exam_id)
+        )
+        counts = {row.exam_id: row.cnt for row in count_rows}
+
+    items = []
+    for e in exams:
+        item = ExamResponse.model_validate(e)
+        item.question_count = counts.get(e.id, 0)
+        items.append(item)
+
     return ExamListResponse(
-        items=[ExamResponse.model_validate(e) for e in exams],
+        items=items,
         total=total,
         page=page,
         page_size=page_size,
@@ -970,6 +1000,44 @@ async def delete_exam(
     await db.commit()
 
     return {"detail": "Deleted"}
+
+
+class ExamRenameRequest(BaseModel):
+    name: str
+
+
+@router.patch("/{job_id}", response_model=ExamResponse)
+async def rename_exam(
+    job_id: int,
+    body: ExamRenameRequest,
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rename an exam (update display filename)."""
+    result = await db.execute(
+        select(Exam).filter(Exam.id == job_id, Exam.user_id == current_user.id)
+    )
+    exam = result.scalars().first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Tên không được để trống")
+
+    exam.filename = name
+    await db.commit()
+    await db.refresh(exam)
+
+    # Count questions for response
+    from sqlalchemy import func as _func
+    cnt_result = await db.execute(
+        select(_func.count(Question.id)).where(Question.exam_id == exam.id)
+    )
+    item = ExamResponse.model_validate(exam)
+    item.question_count = cnt_result.scalar() or 0
+    return item
+
 
 @router.get("/{exam_id}/similar")
 async def get_similar_questions(

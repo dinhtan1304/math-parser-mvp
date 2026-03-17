@@ -49,6 +49,8 @@ async def list_questions(
     exam_id: Optional[int] = Query(None, description="Filter by source exam"),
     my_only: bool = Query(False, description="Show only current user's questions"),
     visibility: Optional[str] = Query(None, description="Filter by visibility: 'public' or 'private'"),
+    sort_by: Optional[str] = Query(None, description="Sort field: created_at, difficulty, question_type"),
+    sort_order: Optional[str] = Query(None, description="Sort direction: asc, desc"),
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -122,11 +124,30 @@ async def list_questions(
 
     # Fetch page with author email via join
     offset = (page - 1) * page_size
+    # Build ORDER BY
+    _DIFF_ORDER = {"NB": 1, "TH": 2, "VD": 3, "VDC": 4}
+    _asc = (sort_order or "desc").lower() == "asc"
+    if sort_by == "difficulty":
+        from sqlalchemy import case as _case
+        _order_col = _case(
+            (Question.difficulty == "NB", 1),
+            (Question.difficulty == "TH", 2),
+            (Question.difficulty == "VD", 3),
+            (Question.difficulty == "VDC", 4),
+            else_=5,
+        )
+        _order_expr = _order_col.asc() if _asc else _order_col.desc()
+    elif sort_by == "question_type":
+        _order_expr = Question.question_type.asc() if _asc else Question.question_type.desc()
+    else:
+        # Default: created_at desc
+        _order_expr = Question.created_at.asc() if _asc else Question.created_at.desc()
+
     data_q = (
         select(Question, User.email.label("author_email"))
         .join(User, Question.user_id == User.id, isouter=True)
         .where(*conditions)
-        .order_by(Question.created_at.desc())
+        .order_by(_order_expr)
         .offset(offset)
         .limit(page_size)
     )
@@ -184,6 +205,111 @@ async def get_filters(
         chapters=sorted(chapters_r.scalars().all()),
         total_questions=count_r.scalar() or 0,
     )
+
+
+@router.get("/duplicates")
+async def find_duplicates(
+    threshold: float = Query(0.92, ge=0.5, le=1.0, description="Cosine similarity threshold"),
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Find groups of duplicate/near-duplicate questions using pre-computed similarity scores.
+
+    Returns a list of groups. Each group contains 2+ question IDs with similarity >= threshold.
+    Uses the question_similarity table populated by background similarity detection.
+    """
+    from sqlalchemy import text as sa_text
+
+    # Query pairs from question_similarity table where score >= threshold
+    # Only include questions belonging to current user (private bank context)
+    pairs_result = await db.execute(sa_text("""
+        SELECT qs.question_id, qs.similar_id, qs.score
+        FROM question_similarity qs
+        JOIN question q1 ON q1.id = qs.question_id
+        JOIN question q2 ON q2.id = qs.similar_id
+        WHERE qs.score >= :threshold
+          AND q1.user_id = :user_id
+          AND q2.user_id = :user_id
+        ORDER BY qs.score DESC
+    """), {"threshold": threshold, "user_id": current_user.id})
+    pairs = pairs_result.fetchall()
+
+    if not pairs:
+        return {"groups": [], "total_groups": 0}
+
+    # Union-Find to cluster connected pairs
+    parent: dict[int, int] = {}
+
+    def find(x: int) -> int:
+        while parent.get(x, x) != x:
+            parent[x] = parent.get(parent.get(x, x), x)
+            x = parent.get(x, x)
+        return x
+
+    def union(a: int, b: int):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    pair_scores: dict[tuple, float] = {}
+    for row in pairs:
+        q1_id, q2_id, score = int(row[0]), int(row[1]), float(row[2])
+        union(q1_id, q2_id)
+        pair_scores[(min(q1_id, q2_id), max(q1_id, q2_id))] = score
+
+    # Group by root
+    clusters: dict[int, set] = {}
+    all_ids = set()
+    for row in pairs:
+        for qid in (int(row[0]), int(row[1])):
+            all_ids.add(qid)
+            root = find(qid)
+            clusters.setdefault(root, set()).add(qid)
+
+    # Fetch question details for all involved IDs
+    if not all_ids:
+        return {"groups": [], "total_groups": 0}
+
+    q_result = await db.execute(
+        select(Question).where(Question.id.in_(list(all_ids)))
+    )
+    q_map = {q.id: q for q in q_result.scalars().all()}
+
+    groups = []
+    for root, members in clusters.items():
+        if len(members) < 2:
+            continue
+        member_list = sorted(members)
+        # Find max score within group
+        max_score = max(
+            pair_scores.get((min(a, b), max(a, b)), 0.0)
+            for i, a in enumerate(member_list)
+            for b in member_list[i + 1:]
+        )
+        group_questions = []
+        for qid in member_list:
+            q = q_map.get(qid)
+            if q:
+                group_questions.append({
+                    "id": q.id,
+                    "question_text": q.question_text,
+                    "question_type": q.question_type,
+                    "difficulty": q.difficulty,
+                    "topic": q.topic,
+                    "chapter": q.chapter,
+                    "grade": q.grade,
+                    "answer": q.answer,
+                    "created_at": q.created_at.isoformat() if q.created_at else None,
+                })
+        if len(group_questions) >= 2:
+            groups.append({
+                "questions": group_questions,
+                "max_score": round(max_score, 4),
+            })
+
+    # Sort groups by score descending
+    groups.sort(key=lambda g: g["max_score"], reverse=True)
+    return {"groups": groups, "total_groups": len(groups)}
 
 
 @router.get("/{question_id}", response_model=QuestionResponse)
@@ -382,6 +508,71 @@ async def bulk_update_visibility(
     }
 
 
+# ── Bulk delete questions ──
+
+class BulkDeleteRequest(BaseModel):
+    question_ids: List[int]
+
+
+@router.post("/bulk-delete")
+async def bulk_delete_questions(
+    payload: BulkDeleteRequest,
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete multiple questions owned by the current user."""
+    if not payload.question_ids:
+        raise HTTPException(status_code=400, detail="No question IDs provided")
+    if len(payload.question_ids) > 200:
+        raise HTTPException(status_code=400, detail="Maximum 200 questions per request")
+
+    # Only delete questions owned by the current user (or admin can delete any)
+    if current_user.role == "admin":
+        stmt = select(Question).where(Question.id.in_(payload.question_ids))
+    else:
+        stmt = select(Question).where(
+            Question.id.in_(payload.question_ids),
+            Question.user_id == current_user.id,
+        )
+    result = await db.execute(stmt)
+    questions_to_delete = result.scalars().all()
+
+    if not questions_to_delete:
+        return {"detail": "Không có câu hỏi nào thuộc quyền sở hữu của bạn trong danh sách", "deleted": 0}
+
+    deleted_ids = [q.id for q in questions_to_delete]
+
+    # Single bulk DELETE instead of N individual deletes
+    from sqlalchemy import delete as sa_delete
+    await db.execute(sa_delete(Question).where(Question.id.in_(deleted_ids)))
+    await db.commit()
+
+    # Cleanup FTS + vector index in background
+    if deleted_ids:
+        import asyncio as _aio
+
+        async def _cleanup():
+            from app.db.session import AsyncSessionLocal
+            for qid in deleted_ids:
+                try:
+                    async with AsyncSessionLocal() as _db:
+                        from app.services.fts import delete_fts_question
+                        await delete_fts_question(_db, qid)
+                except Exception:
+                    pass
+                try:
+                    async with AsyncSessionLocal() as _db:
+                        from app.services.vector_search import delete_embedding
+                        await delete_embedding(_db, qid)
+                except Exception:
+                    pass
+
+        _aio.create_task(_cleanup())
+
+    logger.info(f"Bulk deleted {len(deleted_ids)} questions by user {current_user.id}")
+    return {"detail": f"Đã xóa {len(deleted_ids)} câu hỏi", "deleted": len(deleted_ids)}
+
+
 # ── Bulk save generated questions to bank ──
 
 @router.post("/bulk", response_model=dict)
@@ -466,17 +657,18 @@ async def bulk_create_questions(
 
         async def _index_bulk():
             from app.db.session import AsyncSessionLocal
-            async with AsyncSessionLocal() as _db:
-                try:
+            try:
+                async with AsyncSessionLocal() as _db:
                     from app.services.fts import sync_fts_questions
                     await sync_fts_questions(_db, _ids_snapshot)
-                except Exception as e:
-                    logger.debug(f"FTS sync after bulk create: {e}")
-                try:
+            except Exception as e:
+                logger.debug(f"FTS sync after bulk create: {e}")
+            try:
+                async with AsyncSessionLocal() as _db:
                     from app.services.vector_search import embed_questions
                     await embed_questions(_db, _ids_snapshot)
-                except Exception as e:
-                    logger.debug(f"Vector embed after bulk create: {e}")
+            except Exception as e:
+                logger.debug(f"Vector embed after bulk create: {e}")
 
         _aio.create_task(_index_bulk())
 
@@ -620,3 +812,119 @@ async def report_question(
 
     logger.info(f"Question {question_id} reported by user {current_user.id}: {payload.reason}")
     return {"detail": "Đã gửi báo cáo. Cảm ơn bạn đã phản hồi!"}
+
+
+# ── AI Solve a question ──
+
+SOLVE_PROMPT = """Bạn là giáo viên toán THPT Việt Nam. Hãy giải bài toán dưới đây theo đúng chuẩn của Bộ Giáo Dục và Đào Tạo Việt Nam.
+
+Câu hỏi:
+{question}
+{options_block}
+Yêu cầu:
+- Đưa ra ĐÁP ÁN ngắn gọn (chỉ đáp án cuối cùng, không giải thích thêm)
+- Đưa ra HƯỚNG DẪN GIẢI từng bước rõ ràng, lập luận chặt chẽ, dùng ký hiệu toán học chuẩn (LaTeX với $...$)
+- Mỗi bước trên 1 dòng, bắt đầu bằng "Bước N:"
+- Viết bằng tiếng Việt
+
+Trả lời theo định dạng JSON sau (không thêm gì ngoài JSON):
+{{
+  "answer": "<đáp án cuối cùng>",
+  "solution_steps": ["Bước 1: ...", "Bước 2: ...", ...]
+}}"""
+
+
+@router.post("/{question_id}/solve")
+async def ai_solve_question(
+    question_id: int,
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Use Gemini AI to solve a question and return answer + solution steps."""
+    q = (await db.execute(select(Question).where(Question.id == question_id))).scalars().first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Câu hỏi không tồn tại")
+
+    import os, json as _json, asyncio
+    from app.core.config import settings
+
+    api_key = settings.GOOGLE_API_KEY or os.getenv("GOOGLE_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="GOOGLE_API_KEY chưa được cấu hình")
+
+    try:
+        from google import genai
+        from google.genai import types as gtypes
+    except ImportError:
+        raise HTTPException(status_code=503, detail="google-genai chưa được cài đặt")
+
+    # Build options block if multiple choice
+    options_block = ""
+    if q.options:
+        try:
+            opts = _json.loads(q.options) if isinstance(q.options, str) else q.options
+            if opts:
+                labels = "ABCDE"
+                options_block = "Các đáp án:\n" + "\n".join(
+                    f"{labels[i]}. {opt}" for i, opt in enumerate(opts)
+                ) + "\n"
+        except Exception:
+            pass
+
+    prompt = SOLVE_PROMPT.format(
+        question=q.question_text or "",
+        options_block=options_block,
+    )
+
+    client = genai.Client(api_key=api_key)
+    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+    try:
+        response = await asyncio.wait_for(
+            client.aio.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=gtypes.GenerateContentConfig(
+                    temperature=0,
+                    max_output_tokens=2048,
+                    response_mime_type="application/json",
+                ),
+            ),
+            timeout=60,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="AI giải bài quá thời gian. Thử lại sau.")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Lỗi khi gọi AI: {str(e)[:200]}")
+
+    # Extract content
+    content = ""
+    try:
+        content = response.text or ""
+    except Exception:
+        for part in (response.candidates or [{}])[0].get("content", {}).get("parts", []):
+            if hasattr(part, "text"):
+                content += part.text
+
+    if not content.strip():
+        raise HTTPException(status_code=502, detail="AI không trả về kết quả. Thử lại sau.")
+
+    # Parse JSON
+    try:
+        # Strip markdown code fences if present
+        text = content.strip()
+        if text.startswith("```"):
+            text = "\n".join(text.split("\n")[1:])
+            text = text.rsplit("```", 1)[0]
+        result = _json.loads(text.strip())
+        answer = str(result.get("answer", "")).strip()
+        steps_raw = result.get("solution_steps", [])
+        solution_steps = [str(s).strip() for s in steps_raw if str(s).strip()]
+    except Exception:
+        raise HTTPException(status_code=502, detail="AI trả về kết quả không đúng định dạng. Thử lại sau.")
+
+    if not answer and not solution_steps:
+        raise HTTPException(status_code=502, detail="AI không giải được bài này. Thử lại sau.")
+
+    logger.info(f"Question {question_id} solved by AI: answer={answer[:50]!r}, steps={len(solution_steps)}")
+    return {"answer": answer, "solution_steps": solution_steps}

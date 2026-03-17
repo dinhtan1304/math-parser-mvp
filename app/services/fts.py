@@ -65,11 +65,24 @@ async def init_fts(engine: AsyncEngine):
 async def sync_fts_questions(db: AsyncSession, question_ids: list[int]):
     """Sync specific questions into FTS index after insert/update.
 
+    FTS5 is SQLite-only — silently skips on PostgreSQL.
     BUG FIX: FTS5 INSERT OR REPLACE does NOT deduplicate — each INSERT adds a new
     row because FTS5 virtual tables don't enforce unique constraints on user-inserted rows.
     Fix: DELETE existing rows first, then INSERT fresh data.
     """
     if not question_ids:
+        return
+
+    # FTS5 virtual tables are SQLite-only — skip on PostgreSQL
+    dialect = db.bind.dialect.name if db.bind else ""
+    if not dialect:
+        try:
+            conn = await db.connection()
+            dialect = conn.dialect.name
+        except Exception:
+            dialect = ""
+    if dialect and dialect != "sqlite":
+        logger.debug(f"FTS sync skipped (dialect={dialect}, FTS5 is SQLite-only)")
         return
 
     placeholders = ",".join(str(int(qid)) for qid in question_ids)
@@ -90,7 +103,12 @@ async def sync_fts_questions(db: AsyncSession, question_ids: list[int]):
         await db.commit()
         logger.debug(f"FTS synced {len(question_ids)} questions")
     except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         logger.warning(f"FTS sync failed: {e}")
+        raise
 
 
 async def search_fts(db: AsyncSession, keyword: str, user_id: int,
