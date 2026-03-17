@@ -42,7 +42,6 @@ PARSE_SCHEMA = {
         "properties": {
             "question":     {"type": "STRING"},
             "type":         {"type": "STRING"},
-            "topic":        {"type": "STRING"},
             "difficulty":   {"type": "STRING"},
             "grade":        {"type": "INTEGER"},
             "chapter":      {"type": "STRING"},
@@ -50,7 +49,7 @@ PARSE_SCHEMA = {
             "answer":       {"type": "STRING"},
             "solution_steps": {"type": "ARRAY", "items": {"type": "STRING"}},
         },
-        "required": ["question", "type", "topic", "difficulty",
+        "required": ["question", "type", "difficulty",
                      "grade", "chapter", "lesson_title", "answer", "solution_steps"],
     }
 }
@@ -100,10 +99,12 @@ LATEX:
 
 TYPE (pick one): TN | TL | Chứng minh | Tìm x | Tìm GTLN/GTNN | Tính toán | Hệ phương trình | Rút gọn biểu thức | So sánh | Bài toán thực tế
 DIFFICULTY: NB | TH | VD | VDC
-TOPIC: "TOÁN X — CY.Tên chương" (infer grade & chapter from content)
+GRADE: integer 6-12 (infer from document header or content)
+CHAPTER: chapter name as it appears in the document (e.g. "Chương 2. Hàm số bậc nhất")
+LESSON_TITLE: specific lesson name within the chapter
 
 JSON SCHEMA:
-{"question":"<LaTeX>","type":"<type>","topic":"<topic>","difficulty":"<NB|TH|VD|VDC>","grade":<6-12>,"chapter":"<full chapter name>","lesson_title":"<lesson>","answer":"<answer or empty>","solution_steps":["<step>",...]]}
+{"question":"<LaTeX>","type":"<type>","difficulty":"<NB|TH|VD|VDC>","grade":<6-12>,"chapter":"<chapter name>","lesson_title":"<lesson>","answer":"<answer or empty>","solution_steps":["<step>",...]}
 
 SPECIAL CASES:
 - Trắc nghiệm: options A/B/C/D in question, correct answer in answer field
@@ -339,12 +340,6 @@ JSON array:"""
         timeout = max(60, min(180, 30 * len(images)))
         content = ""
 
-        # Disable thinking — not needed for structured extraction, saves 5-10x time
-        try:
-            _thinking_off = types.ThinkingConfig(thinking_budget=0)
-        except Exception:
-            _thinking_off = None  # Older SDK — graceful fallback
-
         for mime, schema, label in [
             ("application/json", PARSE_SCHEMA, "schema"),
             ("application/json", None,         "json"),
@@ -360,8 +355,6 @@ JSON array:"""
                     cfg_kwargs["response_mime_type"] = mime
                 if schema:
                     cfg_kwargs["response_schema"] = schema
-                if _thinking_off is not None:
-                    cfg_kwargs["thinking_config"] = _thinking_off
 
                 for attempt in range(3):
                     try:
@@ -490,12 +483,6 @@ JSON array:"""
                     return None, ""
             return None, ""
 
-        # Disable thinking — not needed for structured extraction, saves 5-10x time
-        try:
-            _thinking_off = types.ThinkingConfig(thinking_budget=0)
-        except Exception:
-            _thinking_off = None  # Older SDK — graceful fallback
-
         content = ""
         for mime, schema, label in [
             ("application/json", PARSE_SCHEMA, "Schema mode"),
@@ -511,8 +498,6 @@ JSON array:"""
                 cfg_kwargs["response_mime_type"] = mime
             if schema:
                 cfg_kwargs["response_schema"] = schema
-            if _thinking_off is not None:
-                cfg_kwargs["thinking_config"] = _thinking_off
 
             result, content = await _try_with_retry(
                 types.GenerateContentConfig(**cfg_kwargs), label
@@ -805,7 +790,6 @@ JSON array:"""
                 obj = json.loads(obj_str)
                 if isinstance(obj, dict) and "question" in obj:
                     obj.setdefault("type", "TL")
-                    obj.setdefault("topic", "Toán học")
                     obj.setdefault("difficulty", "TH")
                     obj.setdefault("solution_steps", [])
                     obj.setdefault("answer", "")

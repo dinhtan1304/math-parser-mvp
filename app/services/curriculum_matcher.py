@@ -3,17 +3,19 @@ curriculum_matcher.py — Map câu hỏi AI vào đúng bài/chương trong bả
 
 Sau khi AI parse xong, mỗi câu hỏi có:
   - grade: int (6-12), có thể None
-  - chapter: str (AI tự sinh, format không chuẩn)
-  - topic: str (AI tự sinh, ví dụ "TOÁN 8 — C2.Hằng đẳng thức")
+  - chapter: str (AI tự sinh, format không chuẩn, ví dụ "C6.Hàm bậc hai")
+  - topic: str (AI tự sinh, ví dụ "TOÁN 10 — C6.Hàm bậc hai")
   - lesson_title: str (AI tự sinh)
 
 Bảng curriculum có dữ liệu chuẩn:
   - grade, chapter_no, chapter, lesson_no, lesson_title
 
 Chiến lược match (theo thứ tự ưu tiên):
-  1. Exact grade + chapter_no từ topic string ("C2." → chapter_no=2)
-  2. Grade + fuzzy match chapter text
-  3. Grade only → chapter_no = None (giữ nguyên grade, xóa chapter sai)
+  1. Grade + chapter_no từ topic/chapter (kết hợp kiểm tra text similarity)
+     → Nếu chapter_no khớp NHƯNG text không khớp (sách khác) → bỏ qua, sang bước 2
+  2. Grade + fuzzy text match (so sánh phần text đã strip prefix)
+     → Ngưỡng 0.5 để tránh gán sai
+  3. Grade only → xóa chapter/lesson để không gán sai
 """
 
 import re
@@ -25,8 +27,13 @@ logger = logging.getLogger(__name__)
 
 # Pre-compiled patterns
 _RE_GRADE_FROM_TOPIC = re.compile(r'[Tt][Oo][Áá][Nn]\s*(\d{1,2})', re.UNICODE)
-_RE_CHAPTER_NO = re.compile(r'\bC(\d{1,2})\b')
-_RE_CHAPTER_ROMAN = re.compile(r'\bChương\s+([IVX]+)\b', re.IGNORECASE)
+_RE_CHAPTER_NO_FROM_TOPIC = re.compile(r'—\s*C(\d{1,2})[.\s]')   # "— C6.Name" or "— C6 Name"
+_RE_CHAPTER_NO_ALT = re.compile(r'\bC(\d{1,2})\.')                 # "C6.Name" anywhere
+_RE_CHAPTER_TEXT_FROM_TOPIC = re.compile(r'C\d{1,2}\.(.+)')        # "C6.Hàm bậc hai" → "Hàm bậc hai"
+_RE_CHAPTER_ROMAN = re.compile(r'\bChương\s+([IVX]+)[.\s]', re.IGNORECASE)
+_RE_STRIP_CHAPTER_PREFIX = re.compile(
+    r'^Chương\s+(?:[IVX]+|\d+)[.\s]+', re.IGNORECASE | re.UNICODE
+)
 
 _ROMAN = {'I': 1, 'II': 2, 'III': 3, 'IV': 4, 'V': 5,
           'VI': 6, 'VII': 7, 'VIII': 8, 'IX': 9, 'X': 10,
@@ -49,33 +56,80 @@ def _extract_grade_from_topic(topic: str) -> Optional[int]:
     return None
 
 
-def _extract_chapter_no_from_topic(topic: str) -> Optional[int]:
-    """Trích số chương từ topic. VD: 'TOÁN 8 — C2.Hằng' → 2"""
-    if not topic:
-        return None
-    m = _RE_CHAPTER_NO.search(topic)
-    if m:
-        return int(m.group(1))
+def _extract_chapter_no(topic: str, chapter: str) -> Optional[int]:
+    """
+    Trích số chương từ topic hoặc chapter.
+    Ưu tiên "— C6." format trong topic (chắc chắn hơn).
+    """
+    # Try "— C6." in topic first (most reliable)
+    if topic:
+        m = _RE_CHAPTER_NO_FROM_TOPIC.search(topic)
+        if m:
+            return int(m.group(1))
+        # Try "C6." anywhere in topic
+        m = _RE_CHAPTER_NO_ALT.search(topic)
+        if m:
+            return int(m.group(1))
+
+    if chapter:
+        # Try "Chương 6" or "Chương VI"
+        m = re.search(r'[Cc]hương\s+(\d+)', chapter)
+        if m:
+            return int(m.group(1))
+        m = _RE_CHAPTER_ROMAN.search(chapter)
+        if m:
+            return _roman_to_int(m.group(1))
+        # Try "C6." prefix
+        m = _RE_CHAPTER_NO_ALT.match(chapter.strip())
+        if m:
+            return int(m.group(1))
+        # Try plain number at start
+        m = re.match(r'^(\d+)', chapter.strip())
+        if m:
+            n = int(m.group(1))
+            if 1 <= n <= 15:
+                return n
+
     return None
 
 
-def _extract_chapter_no_from_chapter(chapter: str) -> Optional[int]:
-    """Trích số chương từ field chapter. VD: 'Chương II. Hằng đẳng thức' → 2"""
+def _extract_chapter_text(topic: str, chapter: str) -> str:
+    """
+    Trích phần text có nghĩa từ chapter field của AI.
+    "C6.Hàm bậc hai"             → "Hàm bậc hai"
+    "TOÁN 10 — C7.Tọa độ phẳng" → "Tọa độ phẳng"  (từ topic)
+    "Chương VII. Biểu thức đại số" → "Biểu thức đại số"
+    "Đa thức"                    → "Đa thức"
+    """
+    # Try topic "C6.Text" first
+    if topic:
+        m = _RE_CHAPTER_TEXT_FROM_TOPIC.search(topic)
+        if m:
+            return m.group(1).strip()
+
     if not chapter:
-        return None
-    # Try Arabic: "Chương 2" or just "2"
-    m = re.search(r'[Cc]hương\s+(\d+)', chapter)
+        return ""
+
+    chapter = chapter.strip()
+
+    # "C6.Text" format
+    m = _RE_CHAPTER_NO_ALT.match(chapter)
     if m:
-        return int(m.group(1))
-    # Try Roman: "Chương II"
-    m = _RE_CHAPTER_ROMAN.search(chapter)
-    if m:
-        return _roman_to_int(m.group(1))
-    # Try plain number at start
-    m = re.match(r'^(\d+)', chapter.strip())
-    if m:
-        return int(m.group(1))
-    return None
+        return chapter[m.end():].strip()
+
+    # "Chương X. Text" format
+    stripped = _RE_STRIP_CHAPTER_PREFIX.sub('', chapter).strip()
+    if stripped != chapter:
+        return stripped
+
+    return chapter
+
+
+def _strip_db_chapter(name: str) -> str:
+    """Bỏ prefix 'Chương X.' khỏi tên chương DB để so sánh text thuần túy."""
+    if not name:
+        return ""
+    return _RE_STRIP_CHAPTER_PREFIX.sub('', name.strip()).strip()
 
 
 def _similarity(a: str, b: str) -> float:
@@ -89,19 +143,28 @@ def _similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
+def _best_chapter_score(chapter_hint: str, db_chapter: str, db_chapter_stripped: str) -> float:
+    """So sánh chapter hint với DB chapter theo cả dạng đầy đủ và stripped."""
+    if not chapter_hint:
+        return 0.0
+    return max(
+        _similarity(chapter_hint, db_chapter),
+        _similarity(chapter_hint, db_chapter_stripped),
+    )
+
+
 class CurriculumMatcher:
     """
-    Loads curriculum into memory once, then matches questions fast.
+    Loads curriculum into memory once per parse job, then matches questions fast.
     Call load() before using match_question().
     """
 
     def __init__(self):
-        # Dict: grade → list of curriculum rows
         self._by_grade: dict[int, list] = {}
         self._loaded = False
 
     async def load(self, db) -> None:
-        """Load all curriculum rows into memory (called once per parse job)."""
+        """Load all active curriculum rows into memory."""
         from sqlalchemy import select
         from app.db.models.curriculum import Curriculum
 
@@ -123,7 +186,6 @@ class CurriculumMatcher:
         """
         Given a parsed question dict, return updated dict with
         grade, chapter, lesson_title matched to curriculum DB.
-
         Does NOT mutate the original dict.
         """
         if not self._loaded or not self._by_grade:
@@ -133,21 +195,17 @@ class CurriculumMatcher:
 
         # ── Step 1: Resolve grade ──
         grade = q.get("grade")
-        topic = q.get("topic", "") or ""
+        chapter_raw = q.get("chapter", "") or ""
 
-        # AI sometimes puts grade in topic string instead of grade field
-        if not grade:
-            grade = _extract_grade_from_topic(topic)
         if isinstance(grade, str):
             try:
                 grade = int(grade)
             except ValueError:
                 grade = None
         if grade and grade not in self._by_grade:
-            grade = None  # Unknown grade
+            grade = None
 
         if not grade:
-            # Can't match without grade — clear possibly-hallucinated chapter
             q["chapter"] = None
             q["lesson_title"] = None
             return q
@@ -155,56 +213,80 @@ class CurriculumMatcher:
         q["grade"] = grade
         lessons = self._by_grade[grade]
 
-        # ── Step 2: Resolve chapter_no ──
-        chapter_no = _extract_chapter_no_from_topic(topic)
-        if not chapter_no:
-            chapter_no = _extract_chapter_no_from_chapter(q.get("chapter", "") or "")
+        # Pre-build unique chapters cache for this grade
+        chapters_cache: dict[int, tuple] = {}  # chapter_no → (full_name, stripped_name)
+        for l in lessons:
+            if l.chapter_no not in chapters_cache:
+                chapters_cache[l.chapter_no] = (l.chapter, _strip_db_chapter(l.chapter))
 
-        # ── Step 3: Find best matching lesson ──
-        if chapter_no:
-            # Filter to this chapter
-            chapter_lessons = [l for l in lessons if l.chapter_no == chapter_no]
-            if chapter_lessons:
+        # Trích chapter text và chapter_no từ AI output
+        chapter_text = _extract_chapter_text("", chapter_raw)  # phần text có nghĩa
+        chapter_no = _extract_chapter_no("", chapter_raw)
+
+        # ── Step 2: chapter_no match + xác nhận text ──
+        # Chỉ tin chapter_no nếu text của AI khớp với text DB (tránh sách khác có số chương khác)
+        if chapter_no and chapter_no in chapters_cache:
+            db_full, db_stripped = chapters_cache[chapter_no]
+            text_score = _best_chapter_score(chapter_text, db_full, db_stripped)
+
+            # Chấp nhận nếu:
+            #  - Không có chapter text để verify (chỉ có số chương) → trust chapter_no
+            #  - Hoặc text đủ giống (>= 0.35)
+            if not chapter_text or text_score >= 0.35:
+                chapter_lessons = [l for l in lessons if l.chapter_no == chapter_no]
                 best = self._best_lesson_match(chapter_lessons, q.get("lesson_title", "") or "")
                 q["chapter"] = best.chapter
                 q["lesson_title"] = best.lesson_title
+                logger.debug(f"Matched via chapter_no={chapter_no} (score={text_score:.2f}): {best.chapter}")
                 return q
+            else:
+                logger.debug(
+                    f"chapter_no={chapter_no} rejected: AI='{chapter_text}' DB='{db_stripped}' score={text_score:.2f}"
+                )
 
-        # ── Step 4: Fuzzy match chapter by text ──
-        chapter_text = q.get("chapter", "") or ""
+        # ── Step 3: Fuzzy text match ──
+        # Sử dụng phần text đã strip để so sánh hiệu quả hơn
         if chapter_text:
-            best_chapter_score = 0.0
-            best_chapter_no = None
-            # Get unique chapters for this grade
-            seen = {}
-            for l in lessons:
-                if l.chapter_no not in seen:
-                    seen[l.chapter_no] = l.chapter
-            for cno, cname in seen.items():
-                score = _similarity(chapter_text, cname)
-                if score > best_chapter_score:
-                    best_chapter_score = score
-                    best_chapter_no = cno
+            best_score = 0.0
+            best_no = None
 
-            if best_chapter_score >= 0.4 and best_chapter_no:
-                chapter_lessons = [l for l in lessons if l.chapter_no == best_chapter_no]
+            for cno, (cname, cname_stripped) in chapters_cache.items():
+                score = _best_chapter_score(chapter_text, cname, cname_stripped)
+                if score > best_score:
+                    best_score = score
+                    best_no = cno
+
+            # Ngưỡng 0.5: chỉ gán khi đủ tự tin, tránh gán sai tên chương
+            if best_score >= 0.5 and best_no is not None:
+                chapter_lessons = [l for l in lessons if l.chapter_no == best_no]
                 best = self._best_lesson_match(chapter_lessons, q.get("lesson_title", "") or "")
                 q["chapter"] = best.chapter
                 q["lesson_title"] = best.lesson_title
+                logger.debug(f"Matched via fuzzy text (score={best_score:.2f}): {best.chapter}")
                 return q
+            else:
+                logger.debug(
+                    f"No chapter match for grade={grade} text='{chapter_text}' (best={best_score:.2f})"
+                )
 
-        # ── Step 5: Grade only — set chapter to first chapter, clear lesson ──
-        # Better to have correct grade than hallucinated chapter
+        # ── Step 4: Grade only — không gán sai chương ──
         q["chapter"] = None
         q["lesson_title"] = None
         return q
 
     def _best_lesson_match(self, lessons: list, lesson_title_hint: str):
-        """Find best lesson within a chapter by lesson_title similarity."""
+        """
+        Tìm bài học tốt nhất trong chương dựa trên lesson_title similarity.
+        - Nếu chỉ có 1 bài → trả về ngay
+        - Nếu similarity tốt nhất >= 0.3 → trả bài đó
+        - Ngược lại → lesson_title=None (không gán sai bài)
+        """
         if len(lessons) == 1:
             return lessons[0]
+
         if not lesson_title_hint:
-            return lessons[0]  # Default to first lesson in chapter
+            # Không có gợi ý → không gán bài cụ thể
+            return _LessonPlaceholder(lessons[0].chapter)
 
         best = lessons[0]
         best_score = 0.0
@@ -213,7 +295,19 @@ class CurriculumMatcher:
             if score > best_score:
                 best_score = score
                 best = l
-        return best
+
+        if best_score >= 0.3:
+            return best
+        else:
+            # Similarity quá thấp → không gán sai bài
+            return _LessonPlaceholder(lessons[0].chapter)
+
+
+class _LessonPlaceholder:
+    """Giữ chapter nhưng để lesson_title là None khi không match được bài."""
+    def __init__(self, chapter: str):
+        self.chapter = chapter
+        self.lesson_title = None
 
 
 # ── Module-level singleton — reused per parse job ──

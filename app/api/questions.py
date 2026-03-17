@@ -9,6 +9,7 @@ Endpoints:
     DELETE /questions/{id}         — Xóa 1 câu
     PATCH  /questions/bulk-visibility — Đổi public/private hàng loạt
     POST   /questions/bulk         — Lưu nhiều câu vào ngân hàng
+    POST   /questions/{id}/report  — Report câu hỏi của người khác
 """
 
 import json
@@ -40,14 +41,14 @@ router = APIRouter()
 async def list_questions(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    question_type: Optional[str] = Query(None, alias="type", description="Filter by type: TN, TL, ..."),
-    topic: Optional[str] = Query(None, description="Filter by topic"),
-    difficulty: Optional[str] = Query(None, description="Filter by difficulty: NB, TH, VD, VDC"),
-    grade: Optional[int] = Query(None, description="Filter by grade: 6-12"),
-    chapter: Optional[str] = Query(None, description="Filter by chapter"),
+    question_type: Optional[str] = Query(None, alias="type", description="Filter by type: TN,TL,... (comma-separated for multi)"),
+    difficulty: Optional[str] = Query(None, description="Filter by difficulty: NB,TH,VD,VDC (comma-separated for multi)"),
+    grade: Optional[str] = Query(None, description="Filter by grade: 6-12 (comma-separated for multi)"),
+    chapter: Optional[str] = Query(None, description="Filter by chapter (comma-separated for multi)"),
     keyword: Optional[str] = Query(None, description="Search in question text"),
     exam_id: Optional[int] = Query(None, description="Filter by source exam"),
     my_only: bool = Query(False, description="Show only current user's questions"),
+    visibility: Optional[str] = Query(None, description="Filter by visibility: 'public' or 'private'"),
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -55,30 +56,52 @@ async def list_questions(
 
     Shared bank: all users see public questions.
     my_only=true: only current user's questions (public + private).
-    Others only see public questions from other users.
+    visibility=public: public questions only; visibility=private: own private questions only.
+    Supports comma-separated multi-values: type=TN,TL&grade=6,7
     """
     conditions = []
 
-    # Visibility: own questions always visible; others' only if public
-    if my_only:
+    from sqlalchemy import or_
+    # Base visibility
+    if visibility == 'private':
+        # Only current user's private questions
         conditions.append(Question.user_id == current_user.id)
+        conditions.append(Question.is_public == False)
     else:
-        # public OR owned by current user
-        from sqlalchemy import or_
-        conditions.append(
-            or_(Question.is_public == True, Question.user_id == current_user.id)
-        )
+        if my_only:
+            conditions.append(Question.user_id == current_user.id)
+        else:
+            conditions.append(or_(Question.is_public == True, Question.user_id == current_user.id))
+        if visibility == 'public':
+            conditions.append(Question.is_public == True)
 
     if question_type:
-        conditions.append(Question.question_type == question_type)
-    if topic:
-        conditions.append(Question.topic == topic)
+        types_list = [t.strip() for t in question_type.split(',') if t.strip()]
+        if len(types_list) == 1:
+            conditions.append(Question.question_type == types_list[0])
+        elif len(types_list) > 1:
+            conditions.append(Question.question_type.in_(types_list))
     if difficulty:
-        conditions.append(Question.difficulty == difficulty)
+        diffs_list = [d.strip() for d in difficulty.split(',') if d.strip()]
+        if len(diffs_list) == 1:
+            conditions.append(Question.difficulty == diffs_list[0])
+        elif len(diffs_list) > 1:
+            conditions.append(Question.difficulty.in_(diffs_list))
     if grade:
-        conditions.append(Question.grade == grade)
+        try:
+            grades_list = [int(g.strip()) for g in grade.split(',') if g.strip()]
+        except ValueError:
+            grades_list = []
+        if len(grades_list) == 1:
+            conditions.append(Question.grade == grades_list[0])
+        elif len(grades_list) > 1:
+            conditions.append(Question.grade.in_(grades_list))
     if chapter:
-        conditions.append(Question.chapter == chapter)
+        chapters_list = [c.strip() for c in chapter.split(',') if c.strip()]
+        if len(chapters_list) == 1:
+            conditions.append(Question.chapter == chapters_list[0])
+        elif len(chapters_list) > 1:
+            conditions.append(Question.chapter.in_(chapters_list))
     if exam_id:
         conditions.append(Question.exam_id == exam_id)
     if keyword:
@@ -140,12 +163,10 @@ async def get_filters(
     # OPT: Run all 6 queries in parallel instead of sequential await
     import asyncio as _aio
     (
-        types_r, topics_r, diffs_r, grades_r, chapters_r, count_r
+        types_r, diffs_r, grades_r, chapters_r, count_r
     ) = await _aio.gather(
         db.execute(select(distinct(Question.question_type)).where(
             Question.question_type.isnot(None))),
-        db.execute(select(distinct(Question.topic)).where(
-            Question.topic.isnot(None))),
         db.execute(select(distinct(Question.difficulty)).where(
             Question.difficulty.isnot(None))),
         db.execute(select(distinct(Question.grade)).where(
@@ -157,7 +178,7 @@ async def get_filters(
 
     return QuestionFilters(
         types=sorted(types_r.scalars().all()),
-        topics=sorted(topics_r.scalars().all()),
+        topics=[],
         difficulties=sorted(diffs_r.scalars().all()),
         grades=sorted(grades_r.scalars().all()),
         chapters=sorted(chapters_r.scalars().all()),
@@ -246,6 +267,16 @@ async def update_question(
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
+    # Validate: public questions must have an answer
+    making_public = update_data.get('is_public', None) is True
+    if making_public:
+        new_answer = update_data.get('answer', question.answer)
+        if not new_answer or not str(new_answer).strip():
+            raise HTTPException(
+                status_code=422,
+                detail="Câu hỏi công khai phải có đáp án. Vui lòng nhập đáp án trước khi đặt công khai."
+            )
+
     for field, value in update_data.items():
         setattr(question, field, value)
 
@@ -298,7 +329,38 @@ async def bulk_update_visibility(
 
     from sqlalchemy import update as sa_update
 
-    stmt = sa_update(Question).where(Question.id.in_(payload.question_ids))
+    skipped_no_answer = 0
+    target_ids = payload.question_ids
+
+    # When making public, skip questions without an answer
+    if payload.is_public:
+        rows = await db.execute(
+            select(Question.id).where(
+                Question.id.in_(target_ids),
+                Question.user_id == current_user.id if current_user.role != "admin" else True,
+            )
+        )
+        all_owned = [r[0] for r in rows.fetchall()]
+
+        rows_with_answer = await db.execute(
+            select(Question.id).where(
+                Question.id.in_(all_owned),
+                Question.answer.isnot(None),
+                Question.answer != '',
+            )
+        )
+        valid_ids = [r[0] for r in rows_with_answer.fetchall()]
+        skipped_no_answer = len(all_owned) - len(valid_ids)
+        target_ids = valid_ids
+
+    if not target_ids:
+        label = "công khai" if payload.is_public else "riêng tư"
+        msg = f"Không có câu hỏi nào được chuyển sang {label}"
+        if skipped_no_answer:
+            msg += f" ({skipped_no_answer} câu thiếu đáp án)"
+        return {"detail": msg, "updated": 0, "skipped_no_answer": skipped_no_answer, "is_public": payload.is_public}
+
+    stmt = sa_update(Question).where(Question.id.in_(target_ids))
     if current_user.role != "admin":
         stmt = stmt.where(Question.user_id == current_user.id)
     stmt = stmt.values(is_public=payload.is_public)
@@ -307,11 +369,15 @@ async def bulk_update_visibility(
 
     updated = result.rowcount
     label = "công khai" if payload.is_public else "riêng tư"
-    logger.info(f"Bulk visibility: {updated}/{len(payload.question_ids)} → {label} by user {current_user.id}")
+    msg = f"Đã chuyển {updated} câu hỏi sang {label}"
+    if skipped_no_answer:
+        msg += f" (bỏ qua {skipped_no_answer} câu thiếu đáp án)"
+    logger.info(f"Bulk visibility: {updated}/{len(payload.question_ids)} → {label} by user {current_user.id}, skipped_no_answer={skipped_no_answer}")
 
     return {
-        "detail": f"Đã chuyển {updated} câu hỏi sang {label}",
+        "detail": msg,
         "updated": updated,
+        "skipped_no_answer": skipped_no_answer,
         "is_public": payload.is_public,
     }
 
@@ -379,6 +445,7 @@ async def bulk_create_questions(
             answer=item.answer,
             solution_steps=item.solution_steps,
             question_order=0,
+            is_public=False,
         )
         db.add(q)
         existing_hashes.add(c_hash)  # Prevent intra-batch duplicates
@@ -425,3 +492,131 @@ async def bulk_create_questions(
         "skipped": skipped,
         "ids": created_ids,
     }
+
+
+# ── Generate similar questions ──
+
+class GenerateSimilarRequest(BaseModel):
+    question_ids: List[int]
+    count: int = 5  # 1-20
+
+
+@router.post("/generate-similar")
+async def generate_similar_questions(
+    req: GenerateSimilarRequest,
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Sinh câu hỏi tương tự từ danh sách question_ids đã chọn.
+    Trả về list câu hỏi MỚI chưa lưu — client tự chọn và gọi /bulk để lưu.
+    """
+    from sqlalchemy import or_
+
+    if not req.question_ids:
+        raise HTTPException(status_code=400, detail="Chưa chọn câu hỏi mẫu")
+    if len(req.question_ids) > 20:
+        raise HTTPException(status_code=400, detail="Chọn tối đa 20 câu mẫu")
+    if not (1 <= req.count <= 20):
+        raise HTTPException(status_code=400, detail="Số câu sinh phải từ 1 đến 20")
+
+    # Load source questions (user can see own + public)
+    result = await db.execute(
+        select(Question).where(
+            Question.id.in_(req.question_ids),
+            or_(Question.is_public == True, Question.user_id == current_user.id),
+        )
+    )
+    source_questions = result.scalars().all()
+    if not source_questions:
+        raise HTTPException(status_code=404, detail="Không tìm thấy câu hỏi nào")
+
+    source_dicts = [
+        {
+            "question_text": q.question_text,
+            "question_type": q.question_type,
+            "difficulty": q.difficulty,
+            "grade": q.grade,
+            "chapter": q.chapter,
+            "lesson_title": q.lesson_title,
+            "answer": q.answer or "",
+        }
+        for q in source_questions
+    ]
+
+    import os
+    from app.core.config import settings
+    from app.services.question_generator import generate_similar_questions as _gen
+
+    generated = await _gen(
+        source_questions=source_dicts,
+        count=req.count,
+        gemini_api_key=settings.GOOGLE_API_KEY or os.getenv("GOOGLE_API_KEY", ""),
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+    )
+
+    if not generated:
+        raise HTTPException(status_code=500, detail="AI không tạo được câu hỏi. Vui lòng thử lại.")
+
+    # Curriculum matching — map AI chapter to exact DB values
+    try:
+        from app.services.curriculum_matcher import match_questions_to_curriculum
+        # Adapt key names: generator uses "question", matcher uses "chapter"/"grade"
+        for q in generated:
+            q["topic"] = q.get("topic") or ""  # ensure str for export
+        generated = await match_questions_to_curriculum(db, generated)
+    except Exception as e:
+        logger.warning(f"Curriculum matching skipped for generated questions: {e}")
+
+    # Return as plain dicts (not saved yet)
+    return generated
+
+
+# ── Report a question ──
+
+class ReportRequest(BaseModel):
+    reason: str  # wrong_answer | duplicate | inappropriate | poor_quality | other
+    detail: Optional[str] = None
+
+
+VALID_REASONS = {"wrong_answer", "duplicate", "inappropriate", "poor_quality", "other"}
+
+
+@router.post("/{question_id}/report", status_code=201)
+async def report_question(
+    question_id: int,
+    payload: ReportRequest,
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Report a question from another user. One report per user per question."""
+    if payload.reason not in VALID_REASONS:
+        raise HTTPException(status_code=400, detail=f"Lý do không hợp lệ. Chọn một trong: {', '.join(VALID_REASONS)}")
+
+    from app.db.models.question_report import QuestionReport
+    from sqlalchemy.exc import IntegrityError
+
+    # Check question exists
+    q = (await db.execute(select(Question).where(Question.id == question_id))).scalars().first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Câu hỏi không tồn tại")
+
+    # Can't report own question
+    if q.user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Không thể báo cáo câu hỏi của chính mình")
+
+    report = QuestionReport(
+        question_id=question_id,
+        reporter_id=current_user.id,
+        reason=payload.reason,
+        detail=payload.detail,
+    )
+    db.add(report)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Bạn đã báo cáo câu hỏi này rồi")
+
+    logger.info(f"Question {question_id} reported by user {current_user.id}: {payload.reason}")
+    return {"detail": "Đã gửi báo cáo. Cảm ơn bạn đã phản hồi!"}

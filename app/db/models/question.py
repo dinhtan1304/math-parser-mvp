@@ -45,7 +45,7 @@ class Question(Base):
     solution_steps = Column(Text, nullable=True)
 
     # Visibility: True = public (visible to all users), False = private (owner only)
-    is_public = Column(Boolean, default=True, nullable=False, server_default='true')
+    is_public = Column(Boolean, default=False, nullable=False, server_default='false')
 
     # Position in original exam
     question_order = Column(Integer, default=0)

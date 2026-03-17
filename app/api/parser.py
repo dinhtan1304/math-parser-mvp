@@ -334,7 +334,7 @@ async def _save_questions_to_bank(
                 question_text=q.get("question", ""),
                 content_hash=c_hash,
                 question_type=q.get("type"),
-                topic=q.get("topic"),
+                topic=None,
                 difficulty=q.get("difficulty"),
                 grade=q.get("grade"),
                 chapter=q.get("chapter"),
@@ -342,6 +342,7 @@ async def _save_questions_to_bank(
                 answer=q.get("answer"),
                 solution_steps=json.dumps(q.get("solution_steps", []), ensure_ascii=False),
                 question_order=i + 1,
+                is_public=False,
             )
             db.add(question)
             existing_hashes.add(c_hash)  # Prevent intra-batch duplicates
@@ -617,7 +618,6 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
         if user_id:
             try:
                 from app.services.push_notification import send_push_to_user
-                from app.db.session import AsyncSessionLocal
                 async with AsyncSessionLocal() as _pdb:
                     await send_push_to_user(
                         _pdb, user_id,
