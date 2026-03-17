@@ -527,13 +527,53 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
                     "message": f"AI đang xử lý... ({done}/{total} phần)",
                 })
 
-            # This is the LONG operation — no DB session open here
-            if use_vision and images:
-                questions = await ai_parser.parse_images(images, progress_callback=_chunk_progress)
-            elif extracted_text.strip():
-                questions = await ai_parser.parse(extracted_text, progress_callback=_chunk_progress)
-            else:
-                raise ValueError("No content could be extracted from the file")
+            # Heartbeat task — sends SSE every 30s to keep connection alive
+            # and show the user parsing is still in progress.
+            _heartbeat_active = True
+            _heartbeat_elapsed = [0]
+
+            async def _heartbeat():
+                while _heartbeat_active:
+                    await asyncio.sleep(30)
+                    if not _heartbeat_active:
+                        break
+                    _heartbeat_elapsed[0] += 30
+                    _publish_progress(exam_id, "progress", {
+                        "percent": 50,
+                        "message": f"AI đang phân tích... ({_heartbeat_elapsed[0]}s)",
+                    })
+
+            heartbeat_task = asyncio.create_task(_heartbeat())
+
+            # This is the LONG operation — no DB session open here.
+            # Global 7-minute timeout prevents indefinite hanging when Gemini
+            # keeps timing out across all tiers.
+            MAX_PARSE_SECONDS = 420  # 7 minutes
+            try:
+                if use_vision and images:
+                    questions = await asyncio.wait_for(
+                        ai_parser.parse_images(images, progress_callback=_chunk_progress),
+                        timeout=MAX_PARSE_SECONDS,
+                    )
+                elif extracted_text.strip():
+                    questions = await asyncio.wait_for(
+                        ai_parser.parse(extracted_text, progress_callback=_chunk_progress),
+                        timeout=MAX_PARSE_SECONDS,
+                    )
+                else:
+                    raise ValueError("No content could be extracted from the file")
+            except asyncio.TimeoutError:
+                raise ValueError(
+                    "AI phân tích quá thời gian (>7 phút). API Gemini có thể đang quá tải. "
+                    "Vui lòng thử lại sau vài phút."
+                )
+            finally:
+                _heartbeat_active = False
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
 
             if not questions and not use_vision:
                 logger.info(f"Exam {exam_id}: Text parse returned empty — trying Vision fallback")
@@ -544,7 +584,13 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
                     _vis = await file_handler.extract_text(file_path, use_vision=True)
                     _vis_imgs = _vis.get("images", [])
                     if _vis_imgs:
-                        questions = await ai_parser.parse_images(_vis_imgs, progress_callback=_chunk_progress)
+                        try:
+                            questions = await asyncio.wait_for(
+                                ai_parser.parse_images(_vis_imgs, progress_callback=_chunk_progress),
+                                timeout=300,  # 5 min for vision fallback
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(f"Exam {exam_id}: Vision fallback timed out")
                         if questions:
                             use_vision = True
                             logger.info(f"Exam {exam_id}: Vision fallback found {len(questions)} questions")
