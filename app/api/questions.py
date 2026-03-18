@@ -107,6 +107,8 @@ async def list_questions(
     if exam_id:
         conditions.append(Question.exam_id == exam_id)
     if keyword:
+        # Limit keyword length to prevent abuse
+        keyword = keyword[:200]
         # FIX #5: Use FTS5 for keyword search (ranked, indexed) with LIKE fallback
         try:
             from app.services.fts import search_fts

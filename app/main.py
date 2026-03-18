@@ -150,9 +150,29 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        # HSTS — instruct browsers to always use HTTPS
+        if settings.ENV == "production":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        # CSP — restrict resource loading
+        csp_parts = [
+            "default-src 'self'",
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob:",
+            "connect-src 'self' " + " ".join(settings.BACKEND_CORS_ORIGINS) if settings.BACKEND_CORS_ORIGINS else "connect-src 'self'",
+            "font-src 'self' data:",
+            "frame-ancestors 'none'",
+        ]
+        response.headers["Content-Security-Policy"] = "; ".join(csp_parts)
+        # Permissions-Policy — disable unused browser features
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         return response
 
 app.add_middleware(SecurityHeadersMiddleware)
+
+# Request ID middleware — generates unique ID per request
+from app.middleware.request_id import RequestIDMiddleware
+app.add_middleware(RequestIDMiddleware)
 
 # Rate limiting (Sprint 2, Task 13)
 from app.core.rate_limit import RateLimitMiddleware
@@ -190,7 +210,7 @@ async def health_check():
 
     checks = {"status": "ok", "timestamp": time.time()}
 
-    # DB connectivity
+    # DB connectivity — do NOT expose error details to public endpoint
     try:
         from app.db.session import AsyncSessionLocal
         async with AsyncSessionLocal() as session:
@@ -198,7 +218,8 @@ async def health_check():
             result.scalar()
         checks["database"] = "connected"
     except Exception as e:
-        checks["database"] = f"error: {str(e)[:100]}"
+        logger.warning(f"Health check DB error: {e}")
+        checks["database"] = "disconnected"
         checks["status"] = "degraded"
 
     # Gemini API key configured

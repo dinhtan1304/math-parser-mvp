@@ -1,3 +1,5 @@
+import time
+import threading
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
@@ -15,10 +17,52 @@ reusable_oauth2 = OAuth2PasswordBearer(
     tokenUrl=f"{settings.API_V1_STR}/auth/login"
 )
 
+# ── Token blacklist (in-memory with TTL cleanup) ──
+# Stores {token_jti_or_hash: expiry_timestamp}
+_token_blacklist: dict[str, float] = {}
+_blacklist_lock = threading.Lock()
+
+
+def blacklist_token(token: str, ttl_seconds: int | None = None) -> None:
+    """Add a token to the blacklist. Tokens auto-expire after TTL."""
+    import hashlib
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    expiry = time.time() + (ttl_seconds or settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60)
+    with _blacklist_lock:
+        _token_blacklist[token_hash] = expiry
+        # Cleanup expired entries periodically (every 100 additions)
+        if len(_token_blacklist) % 100 == 0:
+            now = time.time()
+            expired = [k for k, v in _token_blacklist.items() if v < now]
+            for k in expired:
+                del _token_blacklist[k]
+
+
+def is_token_blacklisted(token: str) -> bool:
+    """Check if a token has been blacklisted."""
+    import hashlib
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    with _blacklist_lock:
+        expiry = _token_blacklist.get(token_hash)
+        if expiry is None:
+            return False
+        if expiry < time.time():
+            del _token_blacklist[token_hash]
+            return False
+        return True
+
+
 async def get_current_user(
     db: AsyncSession = Depends(get_db),
     token: str = Depends(reusable_oauth2)
 ) -> User:
+    # Check token blacklist (logout)
+    if is_token_blacklisted(token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked",
+        )
+
     try:
         payload = jwt.decode(
             token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
@@ -40,7 +84,7 @@ async def get_current_user(
     # Async query
     result = await db.execute(select(User).filter(User.id == int(token_data.sub)))
     user = result.scalars().first()
-    
+
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if not user.is_active:

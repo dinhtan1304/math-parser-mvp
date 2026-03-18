@@ -78,6 +78,15 @@ class FileHandler:
             logger.info("docx2txt available (for .doc files)")
         except ImportError:
             pass
+
+        self.has_pix2text = False
+        self._p2t = None  # lazy-loaded Pix2Text instance
+        try:
+            import pix2text
+            self.has_pix2text = True
+            logger.info("pix2text available (OCR + math formula recognition)")
+        except ImportError:
+            logger.info("pix2text not installed. Run: pip install pix2text[multilingual]")
     
     async def extract_text(self, file_path: str, use_vision: bool = False) -> Dict[str, Any]:
         """
@@ -117,6 +126,13 @@ class FileHandler:
         elif ext in {'.txt', '.md'}:
             result = await self._extract_text_file(file_path)
         elif ext in {'.png', '.jpg', '.jpeg', '.gif', '.webp'}:
+            # Try Pix2Text first for actual text extraction from images
+            if self.has_pix2text and not use_vision:
+                p2t_result = await self._extract_image_pix2text(file_path)
+                if p2t_result and p2t_result.get("text"):
+                    result = p2t_result
+                    result["file_hash"] = file_hash
+                    return result
             result = await self._extract_image(file_path)
         else:
             raise ValueError(f"Unsupported file type: {ext}")
@@ -127,14 +143,32 @@ class FileHandler:
     # ==================== PDF EXTRACTION ====================
     
     async def _extract_pdf(self, file_path: str) -> Dict[str, Any]:
-        """Extract text from PDF - tries multiple methods"""
-        
+        """Extract text from PDF - tries multiple methods.
+
+        Fallback chain:
+        1. PyMuPDF → 2. pdfplumber → 3. pypdf → 4. Pix2Text (OCR+math)
+
+        If text extraction succeeds but math formulas are broken,
+        Pix2Text is used to re-extract with proper LaTeX notation.
+        """
+        best_text_result = None  # keep best text result in case pix2text also fails
+
         # Method 1: PyMuPDF (best)
         if self.has_pymupdf:
             result = await self._extract_pdf_pymupdf(file_path)
             if self._is_quality_good(result.get("text", "")):
-                return result
-            logger.warning("PyMuPDF quality poor, trying pdfplumber...")
+                # Check math quality — if math is broken, try pix2text instead
+                if self.has_pix2text:
+                    mq = self.analyze_math_quality(result["text"])
+                    if mq.get("should_use_vision"):
+                        logger.info(f"PyMuPDF text OK but math broken (score={mq['score']}), trying pix2text...")
+                        best_text_result = result  # save as fallback
+                    else:
+                        return result
+                else:
+                    return result
+            else:
+                logger.warning("PyMuPDF quality poor, trying pdfplumber...")
         
         # Method 2: pdfplumber
         if self.has_pdfplumber:
@@ -146,8 +180,21 @@ class FileHandler:
         # Method 3: pypdf (fallback)
         if self.has_pypdf:
             result = await self._extract_pdf_pypdf(file_path)
-            return result
-        
+            if self._is_quality_good(result.get("text", "")):
+                return result
+            logger.warning("pypdf quality poor, trying pix2text...")
+
+        # Method 4: Pix2Text (local OCR + math formula recognition)
+        if self.has_pix2text:
+            result = await self._extract_pdf_pix2text(file_path)
+            if result.get("text"):
+                return result
+
+        # If we had a text result with broken math but pix2text failed, return it anyway
+        if best_text_result:
+            logger.warning("Pix2Text failed/unavailable, returning best text extraction result")
+            return best_text_result
+
         return {"text": "", "error": "No PDF library available", "file_type": "pdf", "page_count": 0}
     
     async def _extract_pdf_pymupdf(self, file_path: str) -> Dict[str, Any]:
@@ -570,6 +617,87 @@ class FileHandler:
             "method": method
         }
     
+    # ==================== PIX2TEXT (OCR + MATH) ====================
+
+    def _get_p2t(self):
+        """Lazy-load Pix2Text instance (models download on first call)."""
+        if self._p2t is None:
+            from pix2text import Pix2Text
+            self._p2t = Pix2Text.from_config(
+                enable_formula=True,
+                enable_table=True,
+            )
+            logger.info("Pix2Text model loaded")
+        return self._p2t
+
+    async def _extract_pdf_pix2text(self, file_path: str) -> Dict[str, Any]:
+        """Extract text from PDF using Pix2Text (local OCR + formula recognition).
+        Returns markdown with LaTeX math notation.
+        """
+        loop = asyncio.get_running_loop()
+
+        def extract():
+            import tempfile
+            p2t = self._get_p2t()
+            doc = p2t.recognize_pdf(file_path)
+
+            # Export to markdown string
+            with tempfile.TemporaryDirectory() as tmpdir:
+                doc.to_markdown(tmpdir)
+                md_files = list(Path(tmpdir).glob("*.md"))
+                if md_files:
+                    text = md_files[0].read_text(encoding="utf-8")
+                else:
+                    text = ""
+
+            # Count pages via pymupdf if available, otherwise estimate
+            page_count = 0
+            if self.has_pymupdf:
+                import fitz
+                with fitz.open(file_path) as f:
+                    page_count = len(f)
+            else:
+                page_count = max(1, text.count("[Page") + text.count("---"))
+
+            return text, page_count
+
+        try:
+            text, page_count = await loop.run_in_executor(self.executor, extract)
+            text = self._clean_text(text)
+            return {
+                "text": text,
+                "page_count": page_count,
+                "file_type": "pdf",
+                "method": "pix2text"
+            }
+        except Exception as e:
+            logger.warning(f"Pix2Text PDF extraction failed: {e}")
+            return {"text": "", "page_count": 0, "file_type": "pdf", "method": "pix2text-error"}
+
+    async def _extract_image_pix2text(self, file_path: str) -> Dict[str, Any]:
+        """Extract text from image using Pix2Text (OCR + formula recognition).
+        Returns markdown with LaTeX math notation.
+        """
+        loop = asyncio.get_running_loop()
+
+        def extract():
+            p2t = self._get_p2t()
+            return p2t.recognize_text_formula(file_path)
+
+        try:
+            text = await loop.run_in_executor(self.executor, extract)
+            text = self._clean_text(text) if text else ""
+            return {
+                "text": text,
+                "images": [],
+                "page_count": 1,
+                "file_type": "image",
+                "method": "pix2text"
+            }
+        except Exception as e:
+            logger.warning(f"Pix2Text image extraction failed: {e}")
+            return None  # caller falls back to base64 vision
+
     # ==================== OTHER FORMATS ====================
     
     async def _extract_text_file(self, file_path: str) -> Dict[str, Any]:

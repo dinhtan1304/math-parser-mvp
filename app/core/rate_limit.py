@@ -36,11 +36,12 @@ logger = logging.getLogger(__name__)
 
 # ── Rate limit rules: (path_prefix, max_requests, window_seconds) ──
 RATE_RULES: List[Tuple[str, int, int]] = [
-    ("/api/v1/auth/login",    5,  60),    # 5 req/min  — brute-force protection
-    ("/api/v1/auth/register", 1,  60),    # 1 req/min  — spam protection
-    ("/api/v1/parser/parse",  10, 60),    # 10 req/min — Gemini cost
-    ("/api/v1/generate",      10, 60),    # 10 req/min — Gemini cost
-    ("/api/v1/chat",          20, 60),    # 20 req/min — Gemini cost
+    ("/api/v1/auth/login",           5,  60),    # 5 req/min  — brute-force protection
+    ("/api/v1/auth/register",        1,  60),    # 1 req/min  — spam protection
+    ("/api/v1/auth/forgot-password", 3,  60),    # 3 req/min  — abuse prevention
+    ("/api/v1/parser/parse",         10, 60),    # 10 req/min — Gemini cost
+    ("/api/v1/generate",             10, 60),    # 10 req/min — Gemini cost
+    ("/api/v1/chat",                 20, 60),    # 20 req/min — Gemini cost
 ]
 
 DEFAULT_LIMIT  = 60   # 60 req/min for all other API endpoints

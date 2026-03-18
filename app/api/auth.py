@@ -1,8 +1,9 @@
+import hashlib
 import secrets
 import logging
 from datetime import timedelta, datetime, timezone
 from typing import Any, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,26 +16,38 @@ from app.db.models.user import User
 from app.schemas.user import Token, UserCreate, User as UserSchema
 from app.api import deps
 
+
+def _hash_token(token: str) -> str:
+    """Hash a token with SHA256 for secure storage."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 @router.post("/login", response_model=Token)
 async def login_access_token(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     form_data: OAuth2PasswordRequestForm = Depends()
 ) -> Any:
+    from app.core.audit import audit_log
+    client_ip = request.client.host if request.client else "unknown"
+
     # Check user
     result = await db.execute(select(User).filter(User.email == form_data.username))
     user = result.scalars().first()
-    
+
     if not user or not security.verify_password(form_data.password, user.hashed_password):
+        audit_log("login_failed", ip=client_ip, details={"email": form_data.username})
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Email hoặc mật khẩu không chính xác")
 
     if not user.is_active:
+        audit_log("login_inactive", user_id=user.id, ip=client_ip)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Tài khoản đã bị vô hiệu hóa")
-        
+
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    audit_log("login_success", user_id=user.id, ip=client_ip)
     return {
         "access_token": security.create_access_token(
             user.id, expires_delta=access_token_expires
@@ -45,9 +58,13 @@ async def login_access_token(
 @router.post("/register", response_model=UserSchema)
 async def register_user(
     *,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     user_in: UserCreate,
 ) -> Any:
+    from app.core.audit import audit_log
+    client_ip = request.client.host if request.client else "unknown"
+
     result = await db.execute(select(User).filter(User.email == user_in.email))
     user = result.scalars().first()
     if user:
@@ -55,7 +72,7 @@ async def register_user(
             status_code=400,
             detail="Email này đã được đăng ký.",
         )
-    
+
     # Role is platform-based: mobile sends "student", web sends "teacher"
     # Only "student" and "teacher" allowed (enforced by schema Literal)
     user = User(
@@ -67,6 +84,7 @@ async def register_user(
     db.add(user)
     await db.commit()
     await db.refresh(user)
+    audit_log("register", user_id=user.id, ip=client_ip, details={"role": user_in.role})
     return user
 
 @router.get("/me", response_model=UserSchema)
@@ -104,14 +122,15 @@ async def forgot_password(
         return {"detail": "Nếu email tồn tại, link đặt lại mật khẩu đã được gửi."}
 
     token = secrets.token_urlsafe(32)
-    user.reset_token = token
+    # Store hashed token — never store plaintext reset tokens in DB
+    user.reset_token = _hash_token(token)
     user.reset_token_expires = datetime.now(timezone.utc) + timedelta(hours=RESET_TOKEN_EXPIRE_HOURS)
     await db.commit()
 
     # TODO: tích hợp email service (SendGrid / Resend / SMTP) để gửi link
     # reset_url = f"{settings.FRONTEND_URL}/reset-password?token={token}"
     # await send_reset_email(user.email, reset_url)
-    logger.info(f"Password reset requested for user {user.id} (token generated, email not yet sent)")
+    logger.info(f"Password reset requested for user {user.id}")
 
     return {"detail": "Nếu email tồn tại, link đặt lại mật khẩu đã được gửi."}
 
@@ -122,8 +141,10 @@ async def reset_password(
     db: AsyncSession = Depends(get_db),
 ) -> Any:
     """Đặt lại mật khẩu bằng token hợp lệ."""
+    # Hash the incoming token to match against stored hash
+    token_hash = _hash_token(payload.token)
     result = await db.execute(
-        select(User).filter(User.reset_token == payload.token)
+        select(User).filter(User.reset_token == token_hash)
     )
     user = result.scalars().first()
 
@@ -153,3 +174,21 @@ async def reset_password(
 
     logger.info(f"Password reset completed for user {user.id}")
     return {"detail": "Mật khẩu đã được đặt lại thành công"}
+
+
+# ── Logout endpoint ──────────────────────────────────────────
+
+@router.post("/logout", status_code=200)
+async def logout(
+    request: Request,
+    current_user: User = Depends(deps.get_current_user),
+    token: str = Depends(deps.reusable_oauth2),
+) -> Any:
+    """Revoke the current access token."""
+    from app.api.deps import blacklist_token
+    from app.core.audit import audit_log
+
+    blacklist_token(token)
+    client_ip = request.client.host if request.client else "unknown"
+    audit_log("logout", user_id=current_user.id, ip=client_ip)
+    return {"detail": "Đã đăng xuất thành công"}

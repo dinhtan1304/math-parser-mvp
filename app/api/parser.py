@@ -37,6 +37,13 @@ _progress_queues: Dict[int, List[asyncio.Queue]] = {}
 # FIX #11: Lock to prevent concurrent subscribe/unsubscribe corruption
 _queues_lock = asyncio.Lock()
 
+# ── SSE one-time tokens (replaces JWT in URL) ──
+import time as _time
+import secrets as _secrets
+# {token_str: (user_id, job_id, created_at)}
+_sse_tokens: Dict[str, tuple] = {}
+_SSE_TOKEN_TTL = 300  # 5 minutes
+
 
 def _publish_progress(exam_id: int, event: str, data: dict):
     """Publish a progress event to all connected SSE clients.
@@ -613,8 +620,24 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
 
         _publish_progress(exam_id, "progress", {"percent": 80, "message": f"Đã tìm {len(questions)} câu. Đang lưu..."})
 
-        # ── Phase 5: Save results (FRESH DB session — connection guaranteed alive) ──
+        # ── Phase 5: Save questions to bank FIRST, then mark exam completed ──
+        # FIX: Previously, exam.status was set to "completed" BEFORE bank save.
+        # This caused a race condition: polling detected "completed" and called
+        # loadQuestions while _save_questions_to_bank was still running → 0 results.
+        # Now: bank save → status update → SSE complete (in that order).
         result_json = json.dumps(questions, ensure_ascii=False)
+
+        # Phase 5a: Populate Question Bank
+        try:
+            async with AsyncSessionLocal() as db:
+                r = await db.execute(select(Exam).filter(Exam.id == exam_id))
+                exam = r.scalars().first()
+                if exam:
+                    await _save_questions_to_bank(db, exam.id, exam.user_id, questions)
+        except Exception as save_err:
+            logger.error(f"Exam {exam_id}: Bank save failed (will still mark complete): {save_err}")
+
+        # Phase 5b: Mark exam as completed (AFTER bank save)
         try:
             async with AsyncSessionLocal() as db:
                 r = await db.execute(select(Exam).filter(Exam.id == exam_id))
@@ -651,16 +674,6 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
             except Exception as retry_err:
                 logger.error(f"Exam {exam_id}: Retry save also failed: {retry_err}")
                 raise
-
-        # ── Phase 6: Populate Question Bank (separate session) ──
-        try:
-            async with AsyncSessionLocal() as db:
-                r = await db.execute(select(Exam).filter(Exam.id == exam_id))
-                exam = r.scalars().first()
-                if exam:
-                    await _save_questions_to_bank(db, exam.id, exam.user_id, questions)
-        except Exception as save_err:
-            logger.error(f"Exam {exam_id}: Bank save failed (exam still complete): {save_err}")
 
         _publish_progress(exam_id, "complete", {
             "message": f"Hoàn tất! {len(questions)} câu hỏi.",
@@ -746,11 +759,36 @@ async def parse_file_endpoint(
             detail=f"File quá lớn ({size_mb:.1f}MB). Tối đa {settings.MAX_UPLOAD_SIZE_MB}MB.",
         )
 
+    # ── Validate file magic bytes ──
+    _MAGIC_BYTES = {
+        '.pdf':  [b'%PDF'],
+        '.docx': [b'PK\x03\x04'],
+        '.doc':  [b'\xd0\xcf\x11\xe0'],  # OLE2 compound document
+        '.png':  [b'\x89PNG'],
+        '.jpg':  [b'\xff\xd8\xff'],
+        '.jpeg': [b'\xff\xd8\xff'],
+    }
+    expected_magics = _MAGIC_BYTES.get(file_ext)
+    if expected_magics:
+        if not any(content[:len(m)] == m for m in expected_magics):
+            raise HTTPException(
+                status_code=400,
+                detail=f"File content does not match '{file_ext}' format. The file may be corrupted or renamed.",
+            )
+
+    # ── Sanitize filename ──
+    import re as _re
+    raw_name = file.filename or "unnamed"
+    if len(raw_name) > 255:
+        raw_name = raw_name[:255]
+    # Only allow safe characters in filename
+    sanitized_name = _re.sub(r'[^a-zA-Z0-9_\-. ]', '_', os.path.basename(raw_name))
+    if not sanitized_name or sanitized_name.startswith('.'):
+        sanitized_name = "unnamed"
+
     # ── Save file ──
     file_id = str(uuid.uuid4())[:16]  # FIX #8: 16 hex chars = 2^64 space, avoids filename collision
-    # FIX: strip path separators from user-supplied filename to prevent directory traversal
-    safe_name = os.path.basename(file.filename or "unnamed")
-    safe_filename = f"{file_id}_{safe_name}"
+    safe_filename = f"{file_id}_{sanitized_name}"
     file_path = os.path.join(UPLOAD_DIR, safe_filename)
 
     # FIX: wrap file write so we can clean up on DB failure (prevents orphaned files)
@@ -758,7 +796,8 @@ async def parse_file_endpoint(
         with open(file_path, "wb") as f:
             f.write(content)
     except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Không thể lưu file: {e}")
+        logger.error(f"File write failed for exam upload: {e}")
+        raise HTTPException(status_code=500, detail="Không thể lưu file. Vui lòng thử lại.")
 
     # Create DB record — clean up file if commit fails to avoid orphans
     exam = Exam(
@@ -803,30 +842,71 @@ async def get_status(
     return exam
 
 
+# ── SSE one-time token endpoint ──
+
+@router.post("/stream-token/{job_id}")
+async def create_stream_token(
+    job_id: int,
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate a one-time token for SSE streaming (avoids JWT in URL)."""
+    # Verify user owns this job
+    result = await db.execute(
+        select(Exam).filter(Exam.id == job_id, Exam.user_id == current_user.id)
+    )
+    exam = result.scalars().first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Cleanup expired tokens
+    now = _time.time()
+    expired = [k for k, v in _sse_tokens.items() if now - v[2] > _SSE_TOKEN_TTL]
+    for k in expired:
+        del _sse_tokens[k]
+
+    # Generate one-time token
+    sse_token = _secrets.token_urlsafe(32)
+    _sse_tokens[sse_token] = (current_user.id, job_id, now)
+    return {"token": sse_token}
+
+
 # ── SSE Streaming endpoint (Sprint 3, Task 18) ──
 
 @router.get("/stream/{job_id}")
 async def stream_progress(
     job_id: int,
-    token: str = Query(..., description="JWT token (EventSource can't use headers)"),
+    token: str = Query(..., description="One-time SSE token or JWT (backward compatible)"),
 ):
     """Stream real-time progress events via Server-Sent Events.
 
-    EventSource doesn't support custom headers, so token is passed as query param.
+    Accepts one-time tokens (from POST /stream-token) or JWT (backward compatible).
     Events: progress (percent + message), complete (result_json), error_event.
     Falls back gracefully — client also has polling fallback.
     """
     from jose import jwt, JWTError
     from app.core.config import settings
 
-    # Verify token manually (EventSource can't use Authorization header)
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        user_id = payload.get("sub")
-        if not user_id:
+    user_id = None
+
+    # Try one-time SSE token first
+    sse_data = _sse_tokens.pop(token, None)
+    if sse_data:
+        uid, expected_job_id, created_at = sse_data
+        if _time.time() - created_at > _SSE_TOKEN_TTL:
+            raise HTTPException(status_code=401, detail="SSE token expired")
+        if expected_job_id != job_id:
+            raise HTTPException(status_code=403, detail="Token does not match job")
+        user_id = uid
+    else:
+        # Fallback: verify JWT (backward compatible)
+        try:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            user_id = payload.get("sub")
+            if not user_id:
+                raise HTTPException(status_code=401, detail="Invalid token")
+        except JWTError:
             raise HTTPException(status_code=401, detail="Invalid token")
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
 
     # Short-lived DB session — release immediately after auth check
     async with AsyncSessionLocal() as db:
