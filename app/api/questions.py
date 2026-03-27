@@ -45,6 +45,7 @@ async def list_questions(
     difficulty: Optional[str] = Query(None, description="Filter by difficulty: NB,TH,VD,VDC (comma-separated for multi)"),
     grade: Optional[str] = Query(None, description="Filter by grade: 6-12 (comma-separated for multi)"),
     chapter: Optional[str] = Query(None, description="Filter by chapter (comma-separated for multi)"),
+    subject: Optional[str] = Query(None, description="Filter by subject: toan,vat-li,... (comma-separated)"),
     keyword: Optional[str] = Query(None, description="Search in question text"),
     exam_id: Optional[int] = Query(None, description="Filter by source exam"),
     my_only: bool = Query(False, description="Show only current user's questions"),
@@ -104,6 +105,12 @@ async def list_questions(
             conditions.append(Question.chapter == chapters_list[0])
         elif len(chapters_list) > 1:
             conditions.append(Question.chapter.in_(chapters_list))
+    if subject:
+        subj_list = [s.strip() for s in subject.split(',') if s.strip()]
+        if len(subj_list) == 1:
+            conditions.append(Question.subject_code == subj_list[0])
+        elif len(subj_list) > 1:
+            conditions.append(Question.subject_code.in_(subj_list))
     if exam_id:
         conditions.append(Question.exam_id == exam_id)
     if keyword:
@@ -186,8 +193,10 @@ async def get_filters(
     # OPT: Run all 6 queries in parallel instead of sequential await
     import asyncio as _aio
     (
-        types_r, diffs_r, grades_r, chapters_r, count_r
+        subj_r, types_r, diffs_r, grades_r, chapters_r, count_r
     ) = await _aio.gather(
+        db.execute(select(distinct(Question.subject_code)).where(
+            Question.subject_code.isnot(None))),
         db.execute(select(distinct(Question.question_type)).where(
             Question.question_type.isnot(None))),
         db.execute(select(distinct(Question.difficulty)).where(
@@ -200,6 +209,7 @@ async def get_filters(
     )
 
     return QuestionFilters(
+        subjects=sorted(subj_r.scalars().all()),
         types=sorted(types_r.scalars().all()),
         topics=[],
         difficulties=sorted(diffs_r.scalars().all()),
@@ -211,35 +221,133 @@ async def get_filters(
 
 @router.get("/duplicates")
 async def find_duplicates(
-    threshold: float = Query(0.92, ge=0.5, le=1.0, description="Cosine similarity threshold"),
+    threshold: float = Query(0.85, ge=0.5, le=1.0, description="Cosine similarity threshold"),
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Find groups of duplicate/near-duplicate questions using pre-computed similarity scores.
+    """Find groups of duplicate/near-duplicate questions.
 
-    Returns a list of groups. Each group contains 2+ question IDs with similarity >= threshold.
-    Uses the question_similarity table populated by background similarity detection.
+    Combines two methods:
+    1. Exact match via content_hash (score = 1.0)
+    2. Semantic match via embeddings (score >= threshold)
+    Results are merged using Union-Find to avoid overlapping groups.
     """
-    from sqlalchemy import text as sa_text
+    from app.services.similarity_detector import find_user_duplicates
 
-    # Query pairs from question_similarity table where score >= threshold
-    # Only include questions belonging to current user (private bank context)
-    pairs_result = await db.execute(sa_text("""
-        SELECT qs.question_id, qs.similar_id, qs.score
-        FROM question_similarity qs
-        JOIN question q1 ON q1.id = qs.question_id
-        JOIN question q2 ON q2.id = qs.similar_id
-        WHERE qs.score >= :threshold
-          AND q1.user_id = :user_id
-          AND q2.user_id = :user_id
-        ORDER BY qs.score DESC
-    """), {"threshold": threshold, "user_id": current_user.id})
-    pairs = pairs_result.fetchall()
+    q_count_result = await db.execute(
+        select(func.count(Question.id)).where(Question.user_id == current_user.id)
+    )
+    q_count = q_count_result.scalar() or 0
 
-    if not pairs:
-        return {"groups": [], "total_groups": 0}
+    # ── Step 1: Exact duplicates via content_hash ──
+    # Find hashes that appear 2+ times for this user
+    dup_hash_q = (
+        select(Question.content_hash)
+        .where(
+            Question.user_id == current_user.id,
+            Question.content_hash.isnot(None),
+            Question.content_hash != '',
+        )
+        .group_by(Question.content_hash)
+        .having(func.count(Question.id) >= 2)
+    )
+    dup_hash_result = await db.execute(dup_hash_q)
+    dup_hashes = [row[0] for row in dup_hash_result.fetchall()]
 
-    # Union-Find to cluster connected pairs
+    # For each duplicate hash, fetch question IDs
+    hash_paired_ids: set[tuple[int, int]] = set()
+    hash_pairs: list[tuple[int, int, float]] = []
+    if dup_hashes:
+        hash_ids_result = await db.execute(
+            select(Question.id, Question.content_hash)
+            .where(
+                Question.user_id == current_user.id,
+                Question.content_hash.in_(dup_hashes),
+            )
+            .order_by(Question.content_hash, Question.id)
+        )
+        # Group IDs by hash
+        from collections import defaultdict
+        hash_to_ids: dict[str, list[int]] = defaultdict(list)
+        for qid, chash in hash_ids_result.fetchall():
+            hash_to_ids[chash].append(qid)
+
+        for _hash, ids in hash_to_ids.items():
+            for i in range(len(ids)):
+                for j in range(i + 1, len(ids)):
+                    pair_key = (min(ids[i], ids[j]), max(ids[i], ids[j]))
+                    hash_paired_ids.add(pair_key)
+                    hash_pairs.append((ids[i], ids[j], 1.0))
+
+    # ── Step 2: Semantic duplicates via embeddings ──
+    emb_count_result = await db.execute(sa_text(
+        "SELECT COUNT(*) FROM question_embedding WHERE user_id = :uid"
+    ), {"uid": current_user.id})
+    emb_count = emb_count_result.scalar() or 0
+
+    embedding_pairs: list[tuple[int, int, float]] = []
+    if emb_count == 0 and q_count > 0 and not hash_pairs:
+        # No embeddings and no hash matches — trigger background embedding generation
+        import asyncio as _aio
+        all_q_result = await db.execute(
+            select(Question.id).where(Question.user_id == current_user.id)
+        )
+        all_q_ids = [row[0] for row in all_q_result.fetchall()]
+
+        async def _embed_bg():
+            from app.db.session import AsyncSessionLocal
+            try:
+                async with AsyncSessionLocal() as _db:
+                    from app.services.vector_search import embed_questions
+                    await embed_questions(_db, all_q_ids)
+                    logger.info(f"Auto-embed: {len(all_q_ids)} questions for user {current_user.id}")
+            except Exception as e:
+                logger.error(f"Auto-embed failed: {e}")
+
+        _aio.create_task(_embed_bg())
+
+        return {
+            "groups": [], "total_groups": 0,
+            "message": f"Đang tạo embeddings cho {q_count} câu hỏi. Vui lòng thử lại sau 30 giây.",
+            "embedding_status": {"total_questions": q_count, "embedded": 0},
+        }
+
+    if emb_count > 0:
+        raw_emb_pairs = await find_user_duplicates(db, current_user.id, threshold=threshold)
+        # Filter out pairs already found by hash (avoid double-counting)
+        for q1, q2, score in raw_emb_pairs:
+            pair_key = (min(q1, q2), max(q1, q2))
+            if pair_key not in hash_paired_ids:
+                embedding_pairs.append((q1, q2, score))
+    elif emb_count == 0 and q_count > 0:
+        # Trigger background embedding for next time
+        import asyncio as _aio
+        all_q_result = await db.execute(
+            select(Question.id).where(Question.user_id == current_user.id)
+        )
+        all_q_ids = [row[0] for row in all_q_result.fetchall()]
+
+        async def _embed_bg2():
+            from app.db.session import AsyncSessionLocal
+            try:
+                async with AsyncSessionLocal() as _db:
+                    from app.services.vector_search import embed_questions
+                    await embed_questions(_db, all_q_ids)
+                    logger.info(f"Auto-embed: {len(all_q_ids)} questions for user {current_user.id}")
+            except Exception as e:
+                logger.error(f"Auto-embed failed: {e}")
+
+        _aio.create_task(_embed_bg2())
+
+    # ── Step 3: Merge all pairs with Union-Find ──
+    all_pairs = hash_pairs + embedding_pairs
+
+    if not all_pairs:
+        return {
+            "groups": [], "total_groups": 0,
+            "embedding_status": {"total_questions": q_count, "embedded": emb_count},
+        }
+
     parent: dict[int, int] = {}
 
     def find(x: int) -> int:
@@ -254,21 +362,22 @@ async def find_duplicates(
             parent[rb] = ra
 
     pair_scores: dict[tuple, float] = {}
-    for row in pairs:
-        q1_id, q2_id, score = int(row[0]), int(row[1]), float(row[2])
+    for q1_id, q2_id, score in all_pairs:
         union(q1_id, q2_id)
-        pair_scores[(min(q1_id, q2_id), max(q1_id, q2_id))] = score
+        key = (min(q1_id, q2_id), max(q1_id, q2_id))
+        # Keep the higher score if both hash and embedding matched
+        pair_scores[key] = max(pair_scores.get(key, 0.0), score)
 
     # Group by root
     clusters: dict[int, set] = {}
     all_ids = set()
-    for row in pairs:
-        for qid in (int(row[0]), int(row[1])):
+    for q1_id, q2_id, _score in all_pairs:
+        for qid in (q1_id, q2_id):
             all_ids.add(qid)
             root = find(qid)
             clusters.setdefault(root, set()).add(qid)
 
-    # Fetch question details for all involved IDs
+    # Fetch question details
     if not all_ids:
         return {"groups": [], "total_groups": 0}
 
@@ -282,7 +391,6 @@ async def find_duplicates(
         if len(members) < 2:
             continue
         member_list = sorted(members)
-        # Find max score within group
         max_score = max(
             pair_scores.get((min(a, b), max(a, b)), 0.0)
             for i, a in enumerate(member_list)
@@ -301,17 +409,22 @@ async def find_duplicates(
                     "chapter": q.chapter,
                     "grade": q.grade,
                     "answer": q.answer,
+                    "exam_id": q.exam_id,
                     "created_at": q.created_at.isoformat() if q.created_at else None,
                 })
         if len(group_questions) >= 2:
             groups.append({
                 "questions": group_questions,
                 "max_score": round(max_score, 4),
+                "is_exact": max_score >= 1.0,
             })
 
-    # Sort groups by score descending
     groups.sort(key=lambda g: g["max_score"], reverse=True)
-    return {"groups": groups, "total_groups": len(groups)}
+    return {
+        "groups": groups,
+        "total_groups": len(groups),
+        "embedding_status": {"total_questions": q_count, "embedded": emb_count},
+    }
 
 
 @router.get("/{question_id}", response_model=QuestionResponse)
@@ -629,6 +742,7 @@ async def bulk_create_questions(
             exam_id=None,
             question_text=item.question_text,
             content_hash=c_hash,
+            subject_code=item.subject_code or "toan",
             question_type=item.question_type,
             topic=item.topic,
             difficulty=item.difficulty,
@@ -818,21 +932,28 @@ async def report_question(
 
 # ── AI Solve a question ──
 
-SOLVE_PROMPT = """Bạn là giáo viên toán THPT Việt Nam. Hãy giải bài toán dưới đây theo đúng chuẩn của Bộ Giáo Dục và Đào Tạo Việt Nam.
+SOLVE_PROMPT = """Bạn là giáo viên toán THPT Việt Nam. Hãy giải bài toán dưới đây.
 
 Câu hỏi:
 {question}
 {options_block}
-Yêu cầu:
-- Đưa ra ĐÁP ÁN ngắn gọn (chỉ đáp án cuối cùng, không giải thích thêm)
-- Đưa ra HƯỚNG DẪN GIẢI từng bước rõ ràng, lập luận chặt chẽ, dùng ký hiệu toán học chuẩn (LaTeX với $...$)
-- Mỗi bước trên 1 dòng, bắt đầu bằng "Bước N:"
-- Viết bằng tiếng Việt
+QUY TẮC QUAN TRỌNG cho "answer":
+- Trắc nghiệm: chỉ ghi đáp án đúng, ví dụ "A" hoặc "B"
+- Phương trình/bất phương trình: ghi nghiệm CỤ THỂ, ví dụ "$x = 4$", "$x = -1$ hoặc $x = 3$", "$x \\in (-2; 5)$"
+- Tính giá trị: ghi KẾT QUẢ SỐ, ví dụ "$S = 12$", "$\\dfrac{{7}}{{3}}$", "$2\\sqrt{{3}}$"
+- Hình học: ghi giá trị cụ thể, ví dụ "$S = 16\\pi$", "$d = 5$"
+- TUYỆT ĐỐI KHÔNG ghi chung chung như "có 2 nghiệm", "vô nghiệm", "phương trình có nghiệm". Phải ghi GIÁ TRỊ CỤ THỂ.
+- Dùng LaTeX ($...$) cho ký hiệu toán
 
-Trả lời theo định dạng JSON sau (không thêm gì ngoài JSON):
+QUY TẮC cho "solution_steps":
+- Giải chi tiết từng bước, lập luận chặt chẽ
+- Dùng LaTeX ($...$) cho công thức
+- Viết tiếng Việt
+
+Trả lời JSON:
 {{
-  "answer": "<đáp án cuối cùng>",
-  "solution_steps": ["Bước 1: ...", "Bước 2: ...", ...]
+  "answer": "<giá trị cụ thể>",
+  "solution_steps": ["...", "...", ...]
 }}"""
 
 
@@ -847,83 +968,151 @@ async def ai_solve_question(
     if not q:
         raise HTTPException(status_code=404, detail="Câu hỏi không tồn tại")
 
-    import os, json as _json, asyncio
-    from app.core.config import settings
+    import json as _json, asyncio
 
-    api_key = settings.GOOGLE_API_KEY or os.getenv("GOOGLE_API_KEY", "")
-    if not api_key:
-        raise HTTPException(status_code=503, detail="GOOGLE_API_KEY chưa được cấu hình")
+    # Reuse the shared ai_generator client (already initialized at startup)
+    from app.services.ai_generator import ai_generator
+    if not ai_generator._client:
+        ai_generator._init_client()
+    if not ai_generator._client:
+        raise HTTPException(status_code=503, detail="GOOGLE_API_KEY chưa được cấu hình hoặc google-genai chưa cài đặt")
 
     try:
-        from google import genai
         from google.genai import types as gtypes
     except ImportError:
         raise HTTPException(status_code=503, detail="google-genai chưa được cài đặt")
 
-    # Build options block if multiple choice
-    options_block = ""
-    if q.options:
-        try:
-            opts = _json.loads(q.options) if isinstance(q.options, str) else q.options
-            if opts:
-                labels = "ABCDE"
-                options_block = "Các đáp án:\n" + "\n".join(
-                    f"{labels[i]}. {opt}" for i, opt in enumerate(opts)
-                ) + "\n"
-        except Exception:
-            pass
-
     prompt = SOLVE_PROMPT.format(
         question=q.question_text or "",
-        options_block=options_block,
+        options_block="",
     )
 
-    client = genai.Client(api_key=api_key)
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    # Use flash model for solve — disable thinking for speed
+    import os
+    solve_model = os.getenv("GEMINI_SOLVE_MODEL", "gemini-2.5-flash")
 
-    try:
-        response = await asyncio.wait_for(
-            client.aio.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=gtypes.GenerateContentConfig(
-                    temperature=0,
-                    max_output_tokens=2048,
-                    response_mime_type="application/json",
+    # Structured output schema — force AI to return exact format
+    SOLVE_SCHEMA = {
+        "type": "OBJECT",
+        "properties": {
+            "answer":         {"type": "STRING"},
+            "solution_steps": {"type": "ARRAY", "items": {"type": "STRING"}},
+        },
+        "required": ["answer", "solution_steps"],
+    }
+
+    # Retry with back-off for transient errors (429, 5xx)
+    last_error = None
+    for attempt in range(3):
+        try:
+            response = await asyncio.wait_for(
+                ai_generator._client.aio.models.generate_content(
+                    model=solve_model,
+                    contents=prompt,
+                    config=gtypes.GenerateContentConfig(
+                        temperature=0,
+                        max_output_tokens=8192,
+                        response_mime_type="application/json",
+                        response_schema=SOLVE_SCHEMA,
+                        thinking_config=gtypes.ThinkingConfig(thinking_budget=0),
+                    ),
                 ),
-            ),
-            timeout=60,
-        )
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="AI giải bài quá thời gian. Thử lại sau.")
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Lỗi khi gọi AI: {str(e)[:200]}")
+                timeout=90,
+            )
+            break
+        except asyncio.TimeoutError:
+            if attempt < 2:
+                last_error = "timeout"
+                await asyncio.sleep(5)
+                continue
+            raise HTTPException(status_code=504, detail="AI giải bài quá thời gian. Thử lại sau.")
+        except Exception as e:
+            last_error = str(e)
+            err_str = str(e)
+            # Retry on rate limit or server errors
+            if ("429" in err_str or "500" in err_str or "502" in err_str
+                    or "503" in err_str or "overloaded" in err_str.lower()):
+                wait = (attempt + 1) * 10
+                logger.warning(f"Solve attempt {attempt + 1} failed ({err_str[:100]}), retrying in {wait}s")
+                await asyncio.sleep(wait)
+                continue
+            raise HTTPException(status_code=502, detail=f"Lỗi khi gọi AI: {err_str[:200]}")
+    else:
+        raise HTTPException(status_code=502, detail=f"AI lỗi sau 3 lần thử: {(last_error or '')[:200]}")
 
-    # Extract content
+    # Extract content — handle safety blocks and various response formats
     content = ""
+    block_reason = None
     try:
         content = response.text or ""
-    except Exception:
-        for part in (response.candidates or [{}])[0].get("content", {}).get("parts", []):
-            if hasattr(part, "text"):
-                content += part.text
+    except Exception as text_err:
+        logger.warning(f"Solve: response.text failed: {text_err}")
+        # Try extracting from candidates
+        try:
+            candidates = response.candidates or []
+            if candidates:
+                cand = candidates[0]
+                # Check finish reason / block
+                finish_reason = getattr(cand, "finish_reason", None)
+                if finish_reason and str(finish_reason) not in ("STOP", "1", "FinishReason.STOP"):
+                    block_reason = f"finish_reason={finish_reason}"
+                # Extract parts
+                cand_content = getattr(cand, "content", None)
+                if cand_content:
+                    parts = getattr(cand_content, "parts", []) or []
+                    for part in parts:
+                        if hasattr(part, "text") and part.text:
+                            content += part.text
+            else:
+                # No candidates — check prompt feedback
+                pf = getattr(response, "prompt_feedback", None)
+                if pf:
+                    block_reason = f"prompt_feedback={pf}"
+        except Exception as e2:
+            logger.warning(f"Solve: fallback extraction failed: {e2}")
 
     if not content.strip():
-        raise HTTPException(status_code=502, detail="AI không trả về kết quả. Thử lại sau.")
+        detail = "AI không trả về kết quả."
+        if block_reason:
+            detail += f" Lý do: {str(block_reason)[:150]}"
+        detail += " Thử lại sau."
+        logger.warning(f"Solve empty for Q#{question_id}: {block_reason}")
+        raise HTTPException(status_code=502, detail=detail)
 
-    # Parse JSON
+    # Parse JSON — handle thinking model output (may include non-JSON text)
+    logger.debug(f"Solve raw content for Q#{question_id}: {content[:500]!r}")
+    result = None
+    parse_error = None
     try:
-        # Strip markdown code fences if present
         text = content.strip()
+        # Strip markdown code fences
         if text.startswith("```"):
             text = "\n".join(text.split("\n")[1:])
-            text = text.rsplit("```", 1)[0]
-        result = _json.loads(text.strip())
-        answer = str(result.get("answer", "")).strip()
-        steps_raw = result.get("solution_steps", [])
-        solution_steps = [str(s).strip() for s in steps_raw if str(s).strip()]
-    except Exception:
-        raise HTTPException(status_code=502, detail="AI trả về kết quả không đúng định dạng. Thử lại sau.")
+            text = text.rsplit("```", 1)[0].strip()
+        result = _json.loads(text)
+    except Exception as e1:
+        parse_error = str(e1)
+        # Fallback: find JSON object in the response (thinking models may prefix with text)
+        import re
+        json_match = re.search(r'\{[^{}]*"answer"[^{}]*"solution_steps"[^{}]*\[.*?\]\s*\}', content, re.DOTALL)
+        if not json_match:
+            # Try simpler: find any {...} block
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+        if json_match:
+            try:
+                result = _json.loads(json_match.group())
+            except Exception:
+                pass
+
+    if result is None:
+        logger.warning(f"Solve JSON parse failed for Q#{question_id}: {parse_error}. Raw: {content[:300]!r}")
+        raise HTTPException(status_code=502, detail=f"AI trả về kết quả không đúng định dạng. Thử lại sau.")
+
+    answer = str(result.get("answer", "")).strip()
+    steps_raw = result.get("solution_steps", [])
+    if isinstance(steps_raw, str):
+        steps_raw = [s.strip() for s in steps_raw.split("\n") if s.strip()]
+    solution_steps = [str(s).strip() for s in steps_raw if str(s).strip()]
 
     if not answer and not solution_steps:
         raise HTTPException(status_code=502, detail="AI không giải được bài này. Thử lại sau.")

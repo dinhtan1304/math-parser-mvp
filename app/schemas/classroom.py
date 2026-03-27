@@ -11,14 +11,16 @@ from pydantic import BaseModel, Field
 
 class ClassCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
-    subject: Optional[str] = None
+    subject: Optional[str] = None        # legacy freeform
+    subject_code: Optional[str] = None   # normalized (preferred)
     grade: Optional[int] = Field(None, ge=1, le=12)
     description: Optional[str] = None
 
 
 class ClassUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=200)
-    subject: Optional[str] = None
+    subject: Optional[str] = None        # legacy freeform
+    subject_code: Optional[str] = None   # normalized (preferred)
     grade: Optional[int] = Field(None, ge=1, le=12)
     description: Optional[str] = None
     is_active: Optional[bool] = None
@@ -27,9 +29,10 @@ class ClassUpdate(BaseModel):
 class ClassResponse(BaseModel):
     id: int
     name: str
-    subject: Optional[str]
-    grade: Optional[int]
-    description: Optional[str]
+    subject: Optional[str] = None
+    subject_code: Optional[str] = None
+    grade: Optional[int] = None
+    description: Optional[str] = None
     code: str
     is_active: bool
     created_at: datetime

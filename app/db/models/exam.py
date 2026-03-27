@@ -11,6 +11,7 @@ class Exam(Base):
     file_path = Column(String, nullable=True)
     file_hash = Column(String(32), nullable=True, index=True)  # MD5 hash for cache (Task 19)
     result_json = Column(Text, nullable=True)
+    subject_code = Column(String(30), ForeignKey("subject.subject_code"), nullable=True, default="toan")
     status = Column(String, default="pending")  # pending, processing, completed, failed
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     error_message = Column(Text, nullable=True)

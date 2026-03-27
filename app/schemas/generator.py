@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 class GenerateRequest(BaseModel):
     """Request for generating questions of ONE type/difficulty."""
+    subject_code: Optional[str] = Field(default="toan", description="Mon hoc: toan, vat-li, hoa-hoc, ...")
     question_type: Optional[str] = Field(default=None, description="TN, TL, ... (None = any)")
     topic: Optional[str] = Field(default=None, description="Dai so, Hinh hoc, ... (None = any)")
     difficulty: Optional[str] = Field(default=None, description="NB, TH, VD, VDC (None = any)")
@@ -35,6 +36,7 @@ class GeneratedQuestion(BaseModel):
     """A single generated question."""
     question: str
     type: str = "TN"
+    subject_code: str = "toan"
     topic: str = ""
     difficulty: str = "TH"
     grade: Optional[int] = None
@@ -57,7 +59,8 @@ class PromptGenerateRequest(BaseModel):
         min_length=5,
     )
     # Optional overrides — nếu user muốn ép cứng
-    grade: Optional[int] = Field(default=None, ge=6, le=12)
+    subject_code: Optional[str] = Field(default=None, description="Mon hoc override")
+    grade: Optional[int] = Field(default=None, ge=1, le=12)
     count: Optional[int] = Field(default=None, ge=1, le=50)
 
 
@@ -74,6 +77,7 @@ class SaveAsExamResponse(BaseModel):
 
 class ParsedCriteria(BaseModel):
     """Kết quả parse từ prompt tự do — dùng nội bộ."""
+    subject_code: str = "toan"
     grade: Optional[int] = None
     chapters: List[str] = []          # ["C2.Hằng đẳng thức", "C6.Phân thức"]
     difficulty_mix: dict = {}         # {"NB": 2, "TH": 4, "VD": 3, "VDC": 1}

@@ -241,6 +241,174 @@ async def _detect_numpy(
     return inserted
 
 
+async def find_user_duplicates(
+    db: AsyncSession,
+    user_id: int,
+    threshold: float = 0.85,
+    max_per_question: int = 10,
+) -> list[tuple[int, int, float]]:
+    """Find all duplicate pairs across ALL of a user's questions using embeddings.
+
+    Returns list of (question_id, similar_id, score) tuples.
+    This computes on-the-fly — no dependency on question_similarity table.
+    """
+    from app.core.config import settings as _settings
+    _is_pg = "postgresql" in _settings.DATABASE_URL or "postgres" in _settings.DATABASE_URL
+
+    if _is_pg:
+        return await _find_duplicates_pgvector(db, user_id, threshold, max_per_question)
+    else:
+        return await _find_duplicates_numpy(db, user_id, threshold, max_per_question)
+
+
+async def _find_duplicates_pgvector(
+    db: AsyncSession,
+    user_id: int,
+    threshold: float,
+    max_per: int,
+) -> list[tuple[int, int, float]]:
+    """pgvector: self-join on all user embeddings to find duplicate pairs."""
+    max_dist = 1.0 - threshold
+    result = await db.execute(text("""
+        SELECT
+            a.question_id AS q1_id,
+            b_q.question_id AS q2_id,
+            1 - (a.embedding <=> b_q.embedding) AS score
+        FROM question_embedding a
+        CROSS JOIN LATERAL (
+            SELECT b.question_id, b.embedding
+            FROM question_embedding b
+            WHERE b.user_id = :uid
+              AND b.question_id > a.question_id
+              AND (a.embedding <=> b.embedding) <= :max_dist
+            ORDER BY a.embedding <=> b.embedding
+            LIMIT :max_per
+        ) b_q
+        WHERE a.user_id = :uid
+        ORDER BY score DESC
+    """), {"uid": user_id, "max_dist": max_dist, "max_per": max_per})
+    return [(int(r[0]), int(r[1]), float(r[2])) for r in result.fetchall()]
+
+
+async def _find_duplicates_numpy(
+    db: AsyncSession,
+    user_id: int,
+    threshold: float,
+    max_per: int,
+) -> list[tuple[int, int, float]]:
+    """SQLite fallback: load all user embeddings and compute cosine similarity."""
+    import numpy as np
+
+    rows = (await db.execute(text("""
+        SELECT question_id, embedding
+        FROM question_embedding
+        WHERE user_id = :uid
+    """), {"uid": user_id})).fetchall()
+
+    if len(rows) < 2:
+        return []
+
+    ids = []
+    embs = []
+    for qid, emb_json in rows:
+        try:
+            embs.append(json.loads(emb_json))
+            ids.append(qid)
+        except Exception:
+            continue
+
+    if len(embs) < 2:
+        return []
+
+    matrix = np.array(embs, dtype=np.float32)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1e-10, norms)
+    normed = matrix / norms
+    sim_matrix = normed @ normed.T
+
+    # Zero out diagonal and lower triangle (avoid self-matches and duplicates)
+    np.fill_diagonal(sim_matrix, 0)
+    sim_matrix = np.triu(sim_matrix)
+
+    pairs = []
+    for i in range(len(ids)):
+        row = sim_matrix[i]
+        above = np.where(row >= threshold)[0]
+        if len(above) == 0:
+            continue
+        top_k = above[np.argsort(row[above])[::-1]][:max_per]
+        for j in top_k:
+            pairs.append((ids[i], ids[j], float(row[j])))
+
+    pairs.sort(key=lambda x: x[2], reverse=True)
+    return pairs
+
+
+async def find_all_duplicates(
+    db: AsyncSession,
+    threshold: float = 0.85,
+    max_per_question: int = 10,
+) -> list[tuple[int, int, float]]:
+    """Find duplicate pairs across ALL users (admin). Same logic, no user_id filter."""
+    from app.core.config import settings as _settings
+    _is_pg = "postgresql" in _settings.DATABASE_URL or "postgres" in _settings.DATABASE_URL
+
+    if _is_pg:
+        max_dist = 1.0 - threshold
+        result = await db.execute(text("""
+            SELECT
+                a.question_id AS q1_id,
+                b_q.question_id AS q2_id,
+                1 - (a.embedding <=> b_q.embedding) AS score
+            FROM question_embedding a
+            CROSS JOIN LATERAL (
+                SELECT b.question_id, b.embedding
+                FROM question_embedding b
+                WHERE b.question_id > a.question_id
+                  AND (a.embedding <=> b.embedding) <= :max_dist
+                ORDER BY a.embedding <=> b.embedding
+                LIMIT :max_per
+            ) b_q
+            ORDER BY score DESC
+        """), {"max_dist": max_dist, "max_per": max_per_question})
+        return [(int(r[0]), int(r[1]), float(r[2])) for r in result.fetchall()]
+    else:
+        # SQLite fallback: load all embeddings
+        import numpy as np
+        rows = (await db.execute(text(
+            "SELECT question_id, embedding FROM question_embedding"
+        ))).fetchall()
+        if len(rows) < 2:
+            return []
+        ids, embs = [], []
+        for qid, emb_json in rows:
+            try:
+                embs.append(json.loads(emb_json))
+                ids.append(qid)
+            except Exception:
+                continue
+        if len(embs) < 2:
+            return []
+        matrix = np.array(embs, dtype=np.float32)
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1e-10, norms)
+        normed = matrix / norms
+        sim_matrix = normed @ normed.T
+        np.fill_diagonal(sim_matrix, 0)
+        sim_matrix = np.triu(sim_matrix)
+        pairs = []
+        for i in range(len(ids)):
+            row = sim_matrix[i]
+            above = np.where(row >= threshold)[0]
+            if len(above) == 0:
+                continue
+            top_k = above[np.argsort(row[above])[::-1]][:max_per_question]
+            for j in top_k:
+                pairs.append((ids[i], ids[j], float(row[j])))
+        pairs.sort(key=lambda x: x[2], reverse=True)
+        return pairs
+
+
 async def get_exam_similarities(
     db: AsyncSession,
     exam_id: int,

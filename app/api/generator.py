@@ -299,9 +299,14 @@ async def save_generated_as_exam(
     db: AsyncSession = Depends(get_db),
 ):
     """Save AI-generated questions as an Exam in the DB so it can be assigned to a class."""
+    # Detect dominant subject from questions
+    subj = "toan"
+    if req.questions:
+        subj = req.questions[0].subject_code or "toan"
     exam = Exam(
         user_id=current_user.id,
         filename=f"AI: {req.title}",
+        subject_code=subj,
         status="completed",
     )
     db.add(exam)
@@ -313,6 +318,7 @@ async def save_generated_as_exam(
             exam_id=exam.id,
             user_id=current_user.id,
             question_text=q.question,
+            subject_code=q.subject_code or "toan",
             question_type=q.type or "TN",
             topic=q.topic or None,
             difficulty=q.difficulty or None,
@@ -322,6 +328,31 @@ async def save_generated_as_exam(
         )
         db.add(question)
 
+    await db.flush()
+    # Collect IDs before commit
+    q_result = await db.execute(
+        select(Question.id).where(Question.exam_id == exam.id)
+    )
+    created_ids = [row[0] for row in q_result.fetchall()]
+
     await db.commit()
     await db.refresh(exam)
+
+    # Background: generate embeddings for duplicate detection
+    if created_ids:
+        import asyncio as _aio
+
+        _ids_snapshot = list(created_ids)
+
+        async def _embed_saved():
+            from app.db.session import AsyncSessionLocal
+            try:
+                async with AsyncSessionLocal() as _db:
+                    from app.services.vector_search import embed_questions
+                    await embed_questions(_db, _ids_snapshot)
+            except Exception as e:
+                logger.debug(f"Embed after save-as-exam: {e}")
+
+        _aio.create_task(_embed_saved())
+
     return SaveAsExamResponse(exam_id=exam.id, question_count=len(req.questions))

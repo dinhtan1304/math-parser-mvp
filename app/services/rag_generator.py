@@ -45,10 +45,10 @@ async def _build_curriculum_summary(db: AsyncSession) -> str:
     try:
         from app.db.models.curriculum import Curriculum
         rows = (await db.execute(
-            select(Curriculum.grade, Curriculum.chapter_no, Curriculum.chapter)
+            select(Curriculum.subject_code, Curriculum.grade, Curriculum.chapter_no, Curriculum.chapter)
             .where(Curriculum.is_active == True)
             .distinct()
-            .order_by(Curriculum.grade, Curriculum.chapter_no)
+            .order_by(Curriculum.subject_code, Curriculum.grade, Curriculum.chapter_no)
         )).fetchall()
 
         if not rows:
@@ -56,27 +56,33 @@ async def _build_curriculum_summary(db: AsyncSession) -> str:
             _curriculum_summary_cache = "(Chưa có dữ liệu chương trình)"
             return _curriculum_summary_cache
 
-        # Group by grade
-        by_grade: dict[int, list[str]] = {}
-        seen: set[tuple[int, int]] = set()
-        for grade, chapter_no, chapter_name in rows:
-            key = (grade, chapter_no)
+        # Group by (subject, grade)
+        by_subj_grade: dict[tuple[str, int], list[str]] = {}
+        seen: set[tuple[str, int, int]] = set()
+        for subject_code, grade, chapter_no, chapter_name in rows:
+            subj = subject_code or "toan"
+            key = (subj, grade, chapter_no)
             if key in seen:
                 continue
             seen.add(key)
-            # Extract short name: "Chương I. Tập hợp các số tự nhiên" → "Tập hợp các số tự nhiên"
             short = chapter_name
             if "." in short:
                 short = short.split(".", 1)[1].strip()
-            by_grade.setdefault(grade, []).append(f"C{chapter_no}.{short}")
+            by_subj_grade.setdefault((subj, grade), []).append(f"C{chapter_no}.{short}")
+
+        # Subject code → display name mapping
+        _SUBJ_NAMES = {"toan": "TOÁN", "vat-li": "VẬT LÍ", "hoa-hoc": "HÓA HỌC", "sinh-hoc": "SINH HỌC",
+                        "ngu-van": "NGỮ VĂN", "tieng-anh": "TIẾNG ANH", "khtn": "KHTN",
+                        "lich-su": "LỊCH SỬ", "dia-li": "ĐỊA LÍ", "tin-hoc": "TIN HỌC"}
 
         lines = []
-        for grade in sorted(by_grade.keys()):
-            chapters = "|".join(by_grade[grade])
-            lines.append(f"TOÁN {grade}: {chapters}")
+        for (subj, grade) in sorted(by_subj_grade.keys()):
+            chapters = "|".join(by_subj_grade[(subj, grade)])
+            subj_name = _SUBJ_NAMES.get(subj, subj.upper())
+            lines.append(f"{subj_name} {grade}: {chapters}")
 
         _curriculum_summary_cache = "\n".join(lines)
-        logger.info(f"Curriculum summary built: {len(seen)} chapters across {len(by_grade)} grades")
+        logger.info(f"Curriculum summary built: {len(seen)} chapters across {len(by_subj_grade)} subject-grades")
         return _curriculum_summary_cache
 
     except Exception as e:

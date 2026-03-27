@@ -1,32 +1,36 @@
 """
-Curriculum model — chương trình Toán GDPT 2018 (lớp 6-12).
-Bộ sách Kết nối tri thức với cuộc sống (lớp 6-9) + GDPT 2018 (lớp 10-12).
-Pre-seeded on first startup.
+Curriculum model — chương trình GDPT 2018 (lớp 1-12, đa môn).
+Mỗi row = 1 bài (lesson) thuộc một chương (chapter) của một môn + lớp.
+Pre-seeded on first startup (hiện tại: Toán lớp 6-12).
 """
 
-from sqlalchemy import Column, Integer, String, Text, Boolean, Index, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Index, UniqueConstraint
 from app.db.base_class import Base
 
 
 class Curriculum(Base):
     """
     Một bài/mục trong chương trình học.
-    Mỗi row = 1 bài (lesson) thuộc một chương (chapter) của một lớp (grade).
+    Mỗi row = 1 bài (lesson) thuộc một chương (chapter) của một môn (subject) + lớp (grade).
     """
     __tablename__ = "curriculum"
 
     id           = Column(Integer, primary_key=True, index=True)
-    grade        = Column(Integer, nullable=False)          # 6-12
-    chapter_no   = Column(Integer, nullable=False)          # 1, 2, 3...
-    chapter      = Column(String(300), nullable=False)      # "Chương I. Hàm số bậc hai..."
-    lesson_no    = Column(Integer, nullable=False, default=0)   # thứ tự bài trong chương
-    lesson_title = Column(String(300), nullable=False)      # "§1. Hàm số bậc hai"
+    subject_code = Column(String(30), ForeignKey("subject.subject_code"), nullable=False, default="toan")
+    grade        = Column(Integer, nullable=False)            # 1-12
+    section_code = Column(String(30), nullable=False, default="")  # Cho KHTN: "vat-li", "hoa-hoc", "sinh-hoc"
+    chapter_no   = Column(Integer, nullable=False)            # 1, 2, 3...
+    chapter      = Column(String(300), nullable=False)        # "Chương I. Hàm số bậc hai..."
+    lesson_no    = Column(Integer, nullable=False, default=0) # thứ tự bài trong chương
+    lesson_title = Column(String(300), nullable=False)        # "§1. Hàm số bậc hai"
     is_active    = Column(Boolean, default=True)
 
     __table_args__ = (
-        UniqueConstraint("grade", "chapter_no", "lesson_no", name="uq_curriculum"),
+        UniqueConstraint("subject_code", "grade", "section_code", "chapter_no", "lesson_no",
+                         name="uq_curriculum_subject"),
         Index("ix_curriculum_grade", "grade"),
         Index("ix_curriculum_grade_chapter", "grade", "chapter_no"),
+        Index("ix_curriculum_subject_grade", "subject_code", "grade"),
     )
 
 

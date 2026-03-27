@@ -31,12 +31,13 @@ class Question(Base):
     content_hash = Column(String(32), nullable=True, index=True)
 
     # Classification
+    subject_code = Column(String(30), ForeignKey("subject.subject_code"), nullable=True, default="toan")
     question_type = Column(String(50), nullable=True)
     topic = Column(String(100), nullable=True)
     difficulty = Column(String(20), nullable=True)
 
     # Curriculum classification (GDPT 2018)
-    grade = Column(Integer, nullable=True)            # 6-12
+    grade = Column(Integer, nullable=True)            # 1-12
     chapter = Column(String(200), nullable=True)       # e.g. "Chương I. Ứng dụng đạo hàm..."
     lesson_title = Column(String(200), nullable=True)  # e.g. "Tính đơn điệu và cực trị..."
 
@@ -46,6 +47,9 @@ class Question(Base):
 
     # Visibility: True = public (visible to all users), False = private (owner only)
     is_public = Column(Boolean, default=False, nullable=False, server_default='false')
+
+    # Cross-exam duplicate flag: True if content_hash already existed in user's bank
+    is_bank_duplicate = Column(Boolean, default=False, nullable=False, server_default='false')
 
     # Position in original exam
     question_order = Column(Integer, default=0)
@@ -65,6 +69,9 @@ class Question(Base):
         Index("ix_question_user_type_topic_diff", "user_id", "question_type", "topic", "difficulty"),
         # Content hash index for duplicate detection
         Index("ix_question_user_hash", "user_id", "content_hash"),
+        # Subject indexes
+        Index("ix_question_user_subject", "user_id", "subject_code"),
+        Index("ix_question_user_subject_grade", "user_id", "subject_code", "grade"),
         # Curriculum indexes
         Index("ix_question_user_grade", "user_id", "grade"),
         Index("ix_question_user_grade_chapter", "user_id", "grade", "chapter"),

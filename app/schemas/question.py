@@ -14,6 +14,7 @@ class QuestionResponse(BaseModel):
     exam_id: Optional[int] = None
     user_id: int
     question_text: str
+    subject_code: Optional[str] = "toan"
     question_type: Optional[str] = None
     topic: Optional[str] = None
     difficulty: Optional[str] = None
@@ -53,6 +54,7 @@ class QuestionResponse(BaseModel):
 class QuestionUpdate(BaseModel):
     """Update fields for a question. All fields optional — only send what changed."""
     question_text: Optional[str] = None
+    subject_code: Optional[str] = None
     question_type: Optional[str] = None
     topic: Optional[str] = None
     difficulty: Optional[str] = None
@@ -72,6 +74,7 @@ class QuestionBulkCreate(BaseModel):
 class QuestionCreateItem(BaseModel):
     """Single question to create."""
     question_text: str
+    subject_code: Optional[str] = "toan"
     question_type: Optional[str] = "TN"
     topic: Optional[str] = ""
     difficulty: Optional[str] = "TH"
@@ -103,6 +106,7 @@ class QuestionListResponse(BaseModel):
 
 class QuestionFilters(BaseModel):
     """Available filter values for the current user's question bank."""
+    subjects: List[str] = []
     types: List[str]
     topics: List[str]
     difficulties: List[str]

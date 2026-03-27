@@ -777,15 +777,17 @@ class FileHandler:
         lines = [l.strip() for l in text.split('\n') if l.strip()]
         total_chars = len(text)
 
-        # ── Detect if this is a math document ──
+        # ── Detect if this is a STEM document with formulas ──
         math_keywords = ['Bài', 'bài', 'Câu', 'câu', 'phương trình', 'biểu thức',
-                         'chứng minh', 'tìm', 'giải', 'tính', 'đẳng thức']
+                         'chứng minh', 'tìm', 'giải', 'tính', 'đẳng thức',
+                         'mol', 'nguyên tử', 'phân tử', 'phản ứng', 'dung dịch',
+                         'Fe', 'NaOH', 'HCl', 'H₂SO₄', 'CO₂']
         has_math_keywords = sum(1 for k in math_keywords if k in text)
         is_math = has_math_keywords >= 2
 
         if not is_math:
             return {"is_math_document": False, "math_broken": False,
-                    "should_use_vision": False, "reason": "not_math", "score": 0.8, "stats": {}}
+                    "should_use_vision": False, "reason": "not_stem", "score": 0.8, "stats": {}}
 
         # ── Pattern 1: Isolated single chars/digits (broken formulas) ──
         # "( ) 2 2 2 2 a b c" → each char is separated by space

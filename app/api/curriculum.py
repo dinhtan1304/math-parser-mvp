@@ -1,10 +1,12 @@
 """
-curriculum.py — API endpoint cho chương trình học KNTT + GDPT 2018.
-GET /api/v1/curriculum/tree  — Trả về cây chương/bài theo từng lớp,
+curriculum.py — API endpoint cho chương trình học GDPT 2018 (đa môn).
+GET /api/v1/curriculum/tree  — Trả về cây chương/bài theo môn + lớp,
                                kèm số câu hỏi trong ngân hàng (nếu có).
 """
 
-from fastapi import APIRouter, Depends
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
@@ -18,6 +20,7 @@ router = APIRouter()
 
 @router.get("/tree")
 async def get_curriculum_tree(
+    subject_code: str = Query("toan", description="Ma mon hoc: toan, vat-li, khtn, ..."),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -42,14 +45,14 @@ async def get_curriculum_tree(
       ]
     }
     """
-    # Lấy toàn bộ curriculum rows, sắp xếp
+    # Lấy curriculum rows theo môn, sắp xếp
     cur_rows = (await db.execute(
         select(Curriculum)
-        .where(Curriculum.is_active == True)
+        .where(Curriculum.is_active == True, Curriculum.subject_code == subject_code)
         .order_by(Curriculum.grade, Curriculum.chapter_no, Curriculum.lesson_no)
     )).scalars().all()
 
-    # Đếm câu hỏi trong ngân hàng của user hiện tại, nhóm theo (grade, chapter, lesson_title)
+    # Đếm câu hỏi trong ngân hàng của user hiện tại cho môn này
     q_counts = (await db.execute(
         select(
             Question.grade,
@@ -58,6 +61,7 @@ async def get_curriculum_tree(
             func.count(Question.id).label("cnt"),
         )
         .where(Question.user_id == current_user.id)
+        .where(Question.subject_code == subject_code)
         .group_by(Question.grade, Question.chapter, Question.lesson_title)
     )).all()
 

@@ -44,14 +44,22 @@ def _roman_to_int(s: str) -> Optional[int]:
     return _ROMAN.get(s.upper())
 
 
+_RE_GRADE_GENERIC = re.compile(r'(?:lớp|grade|L)\s*(\d{1,2})', re.IGNORECASE | re.UNICODE)
+
 def _extract_grade_from_topic(topic: str) -> Optional[int]:
-    """Trích lớp từ topic string AI sinh ra. VD: 'TOÁN 8 — C2.Hằng' → 8"""
+    """Trích lớp từ topic string AI sinh ra. VD: 'TOÁN 8 — C2.Hằng' → 8, 'VẬT LÍ 10' → 10"""
     if not topic:
         return None
     m = _RE_GRADE_FROM_TOPIC.search(topic)
     if m:
         g = int(m.group(1))
-        if 6 <= g <= 12:
+        if 1 <= g <= 12:
+            return g
+    # Fallback: try generic "lớp X" pattern
+    m = _RE_GRADE_GENERIC.search(topic)
+    if m:
+        g = int(m.group(1))
+        if 1 <= g <= 12:
             return g
     return None
 
@@ -157,9 +165,12 @@ class CurriculumMatcher:
     """
     Loads curriculum into memory once per parse job, then matches questions fast.
     Call load() before using match_question().
+    Subject-aware: groups by (subject_code, grade).
     """
 
     def __init__(self):
+        self._by_subject_grade: dict[tuple[str, int], list] = {}
+        # Legacy fallback: by grade only (for backward compat)
         self._by_grade: dict[int, list] = {}
         self._loaded = False
 
@@ -174,12 +185,17 @@ class CurriculumMatcher:
             .order_by(Curriculum.grade, Curriculum.chapter_no, Curriculum.lesson_no)
         )).scalars().all()
 
+        self._by_subject_grade = {}
         self._by_grade = {}
         for row in rows:
+            subj = getattr(row, 'subject_code', 'toan') or 'toan'
+            key = (subj, row.grade)
+            self._by_subject_grade.setdefault(key, []).append(row)
             self._by_grade.setdefault(row.grade, []).append(row)
 
-        total = sum(len(v) for v in self._by_grade.values())
-        logger.info(f"CurriculumMatcher loaded {total} lessons across grades {sorted(self._by_grade.keys())}")
+        total = sum(len(v) for v in self._by_subject_grade.values())
+        subjects = set(k[0] for k in self._by_subject_grade.keys())
+        logger.info(f"CurriculumMatcher loaded {total} lessons, subjects={subjects}")
         self._loaded = True
 
     def match_question(self, q: dict) -> dict:
@@ -188,12 +204,13 @@ class CurriculumMatcher:
         grade, chapter, lesson_title matched to curriculum DB.
         Does NOT mutate the original dict.
         """
-        if not self._loaded or not self._by_grade:
+        if not self._loaded:
             return q
 
         q = dict(q)  # shallow copy
 
-        # ── Step 1: Resolve grade ──
+        # ── Step 1: Resolve subject + grade ──
+        subject = q.get("subject", "toan") or "toan"
         grade = q.get("grade")
         chapter_raw = q.get("chapter", "") or ""
 
@@ -202,8 +219,13 @@ class CurriculumMatcher:
                 grade = int(grade)
             except ValueError:
                 grade = None
-        if grade and grade not in self._by_grade:
-            grade = None
+
+        # Try subject-specific lookup first, then fallback to grade-only
+        key = (subject, grade) if grade else None
+        if key and key not in self._by_subject_grade:
+            # Subject has no curriculum data for this grade — try grade-only fallback
+            if grade not in self._by_grade:
+                grade = None
 
         if not grade:
             q["chapter"] = None
@@ -211,7 +233,8 @@ class CurriculumMatcher:
             return q
 
         q["grade"] = grade
-        lessons = self._by_grade[grade]
+        # Prefer subject-specific lessons, fallback to all lessons for this grade
+        lessons = self._by_subject_grade.get((subject, grade)) or self._by_grade.get(grade, [])
 
         # Pre-build unique chapters cache for this grade
         chapters_cache: dict[int, tuple] = {}  # chapter_no → (full_name, stripped_name)

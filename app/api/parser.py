@@ -2,6 +2,7 @@ import os
 import uuid
 import json
 import asyncio
+import hashlib
 import logging
 from datetime import datetime
 from typing import List, Optional, Dict
@@ -14,6 +15,7 @@ from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services import file_handler, ai_parser_service as ai_parser
+from app.services.subject_prompts import VALID_SUBJECT_CODES
 from app.api import deps
 from app.db.session import AsyncSessionLocal, get_db
 from app.db.models.exam import Exam
@@ -244,23 +246,32 @@ def _is_mock_result(questions: list) -> bool:
     return mock_signs > len(sample) * 2
 
 
-def _is_math_text_poor_quality(text: str) -> bool:
-    """Heuristic: check if extracted text is garbage or has broken math.
+def _is_text_poor_quality(text: str) -> bool:
+    """Heuristic: check if extracted text is garbage or has broken formulas.
 
-    v2: Uses deep math structure analysis from file_handler.
-    Detects broken formulas like "2 2 2 a b c" that old check missed.
+    v3: Multi-subject — detects K12 documents broadly (not just math).
     """
     if not text or len(text) < 50:
         return True
 
-    # Quick check: basic math markers
-    math_markers = [
+    # Quick check: K12 document markers (multi-subject)
+    doc_markers = [
+        # Structure markers
+        'Câu', 'Bài', 'câu', 'bài', 'Question', 'Đề',
+        # Math/science
         '=', '+', '-', '/', '^', '²', '³',
-        'x', 'y', 'sin', 'cos', 'tan', 'log', 'ln',
-        'lim', 'sqrt', 'frac', 'pi',
-        'Câu', 'Bài', 'câu', 'bài',
+        'sin', 'cos', 'sqrt', 'frac',
+        # Chemistry
+        'mol', 'pH', 'Fe', 'Cu', 'NaOH', 'HCl', 'H₂', 'O₂',
+        'phản ứng', 'dung dịch', 'nguyên tử', 'phân tử',
+        # Literature / general
+        'đọc', 'viết', 'nghị luận', 'đoạn văn', 'tác phẩm',
+        # English
+        'Read', 'Choose', 'answer', 'passage',
+        # Science
+        'thí nghiệm', 'hiện tượng', 'năng lượng',
     ]
-    marker_count = sum(1 for m in math_markers if m in text)
+    marker_count = sum(1 for m in doc_markers if m in text)
     if marker_count < 3:
         return True
 
@@ -269,17 +280,17 @@ def _is_math_text_poor_quality(text: str) -> bool:
     if len(text) > 0 and garbled / len(text) > 0.1:
         return True
 
-    # v2: Deep math structure analysis
+    # Deep structure analysis (math-specific — only triggers for math docs)
     try:
         analysis = file_handler.analyze_math_quality(text)
         if analysis.get("should_use_vision"):
             logger.info(
-                f"Math quality analysis: score={analysis['score']}, "
+                f"Text quality analysis: score={analysis['score']}, "
                 f"reason={analysis['reason']}"
             )
             return True
     except Exception as e:
-        logger.debug(f"Math quality analysis failed: {e}")
+        logger.debug(f"Text quality analysis failed: {e}")
 
     return False
 
@@ -322,25 +333,43 @@ async def _save_questions_to_bank(
             c_hash = _question_hash(q_text)
             new_questions.append((i, q, c_hash))
 
-        # FIX: intra-batch dedup only.
-        # Cross-exam dedup removed: the same question can legitimately appear in
-        # multiple exams (re-upload, different class). Similarity detection
-        # (background step 3) surfaces near-duplicates without data loss.
-        existing_hashes: set = set()
+        # ── B1: Cross-exam duplicate detection ──
+        # Query existing content_hashes in user's bank (excluding this exam)
+        new_hashes = [c_hash for _, _, c_hash in new_questions]
+        existing_db_hashes: set = set()
+        if new_hashes:
+            try:
+                existing_result = await db.execute(
+                    select(Question.content_hash).filter(
+                        Question.user_id == user_id,
+                        Question.content_hash.in_(new_hashes),
+                        Question.exam_id != exam_id,
+                    )
+                )
+                existing_db_hashes = set(row[0] for row in existing_result.fetchall())
+            except Exception as e:
+                logger.debug(f"Exam {exam_id}: cross-exam hash check failed: {e}")
 
-        # Insert, skipping duplicates
+        # Intra-batch dedup set
+        seen_hashes: set = set()
+
+        # Insert, skipping intra-batch duplicates, flagging cross-exam duplicates
         saved = 0
         skipped = 0
+        dup_count = 0
         for i, q, c_hash in new_questions:
-            if c_hash in existing_hashes:
+            if c_hash in seen_hashes:
                 skipped += 1
                 continue
+
+            is_dup = c_hash in existing_db_hashes
 
             question = Question(
                 exam_id=exam_id,
                 user_id=user_id,
                 question_text=q.get("question", ""),
                 content_hash=c_hash,
+                subject_code=q.get("subject", "toan"),
                 question_type=q.get("type"),
                 topic=None,
                 difficulty=q.get("difficulty"),
@@ -351,15 +380,18 @@ async def _save_questions_to_bank(
                 solution_steps=json.dumps(q.get("solution_steps", []), ensure_ascii=False),
                 question_order=i + 1,
                 is_public=False,
+                is_bank_duplicate=is_dup,
             )
             db.add(question)
-            existing_hashes.add(c_hash)  # Prevent intra-batch duplicates
+            seen_hashes.add(c_hash)  # Prevent intra-batch duplicates
             saved += 1
+            if is_dup:
+                dup_count += 1
 
         await db.commit()
 
-        if skipped:
-            logger.info(f"Exam {exam_id}: Saved {saved}, skipped {skipped} duplicates")
+        if skipped or dup_count:
+            logger.info(f"Exam {exam_id}: Saved {saved}, skipped {skipped} intra-batch dupes, {dup_count} cross-exam dupes")
         else:
             logger.info(f"Exam {exam_id}: Saved {saved} questions to bank")
 
@@ -416,15 +448,18 @@ async def _save_questions_to_bank(
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
 
+        return saved, skipped, dup_count
+
     except Exception as e:
         logger.error(f"Exam {exam_id}: Failed to save questions to bank: {e}")
         try:
             await db.rollback()
         except Exception:
             pass
+        return 0, 0, 0
 
 
-async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool = False):
+async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool = False, subject_hint: Optional[str] = None):
     """Background task: extract text from file and parse with AI.
 
     v3: Short-lived DB sessions to survive Neon idle timeout.
@@ -469,17 +504,44 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
             except Exception as e:
                 logger.debug(f"Exam {exam_id}: file_hash save failed: {e}")
 
-        # v2: Smart vision auto-detection for math PDFs
+        # Log extracted text info for debugging
+        logger.info(
+            f"Exam {exam_id}: Extracted {len(extracted_text)} chars, "
+            f"{len(images)} images, subject={subject_hint}, use_vision={use_vision}"
+        )
+        if extracted_text:
+            logger.info(f"Exam {exam_id}: Text preview: {extracted_text[:300]!r}")
+
+        # v4: Smart vision auto-detection — STEM subjects with formulas often need vision
+        _STEM_VISION_SUBJECTS = {"hoa-hoc", "vat-li", "khtn", "sinh-hoc", "toan"}
         if not use_vision and extracted_text.strip():
             analysis = file_handler.analyze_math_quality(extracted_text)
-            if analysis.get("should_use_vision"):
+            should_auto_vision = analysis.get("should_use_vision", False)
+
+            if not should_auto_vision and subject_hint in _STEM_VISION_SUBJECTS:
+                txt = extracted_text.strip()
+                # Short text → likely scanned/image PDF
+                if len(txt) < 200:
+                    should_auto_vision = True
+                    logger.info(f"Exam {exam_id}: STEM + short text ({len(txt)} chars) → Vision")
+                # Chemistry/science: check if formulas are garbled (lots of isolated chars)
+                elif subject_hint in {"hoa-hoc", "khtn"}:
+                    import re
+                    # Garbled chemical formulas produce many isolated single chars
+                    isolated = len(re.findall(r'(?:^|\s)([A-Za-z0-9])(?:\s|$)', txt))
+                    ratio = isolated / max(len(txt), 1)
+                    if ratio > 0.06:
+                        should_auto_vision = True
+                        logger.info(f"Exam {exam_id}: Chemistry text looks garbled (isolated_ratio={ratio:.3f}) → Vision")
+
+            if should_auto_vision:
                 logger.info(
                     f"Exam {exam_id}: Auto-switching to Vision mode "
-                    f"(score={analysis['score']}, reason={analysis['reason']})"
+                    f"(score={analysis.get('score')}, reason={analysis.get('reason')}, subject={subject_hint})"
                 )
                 _publish_progress(exam_id, "progress", {
                     "percent": 15,
-                    "message": f"Phát hiện công thức toán phức tạp — chuyển sang Vision mode..."
+                    "message": f"Phát hiện công thức phức tạp — chuyển sang Vision mode..."
                 })
                 try:
                     extracted = await file_handler.extract_text(file_path, use_vision=True)
@@ -521,7 +583,7 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
 
         # ── Phase 4: AI parsing (no DB needed — this takes 30s-3min) ──
         if questions is None:
-            if not use_vision and (not extracted_text.strip() or _is_math_text_poor_quality(extracted_text)):
+            if not use_vision and (not extracted_text.strip() or _is_text_poor_quality(extracted_text)):
                 logger.info(f"Exam {exam_id}: Text quality poor, falling back to Vision mode")
                 _publish_progress(exam_id, "progress", {"percent": 30, "message": "Chuyển sang Vision mode..."})
                 try:
@@ -560,26 +622,35 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
             heartbeat_task = asyncio.create_task(_heartbeat())
 
             # This is the LONG operation — no DB session open here.
-            # Global 7-minute timeout prevents indefinite hanging when Gemini
-            # keeps timing out across all tiers.
-            MAX_PARSE_SECONDS = 420  # 7 minutes
+            # Timeout strategy:
+            # - Text parse: 4 min (was 7) — fail faster so vision fallback has time
+            # - Vision parse: 5 min
+            # - Vision fallback (after text fail): 5 min
+            _text_timed_out = False
+            MAX_TEXT_SECONDS = 240   # 4 minutes for text parse
+            MAX_VISION_SECONDS = 300  # 5 minutes for vision parse
             try:
                 if use_vision and images:
                     questions = await asyncio.wait_for(
-                        ai_parser.parse_images(images, progress_callback=_chunk_progress),
-                        timeout=MAX_PARSE_SECONDS,
+                        ai_parser.parse_images(images, progress_callback=_chunk_progress, subject_hint=subject_hint),
+                        timeout=MAX_VISION_SECONDS,
                     )
                 elif extracted_text.strip():
-                    questions = await asyncio.wait_for(
-                        ai_parser.parse(extracted_text, progress_callback=_chunk_progress),
-                        timeout=MAX_PARSE_SECONDS,
-                    )
+                    try:
+                        questions = await asyncio.wait_for(
+                            ai_parser.parse(extracted_text, progress_callback=_chunk_progress, subject_hint=subject_hint),
+                            timeout=MAX_TEXT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Exam {exam_id}: Text parse timed out after {MAX_TEXT_SECONDS}s — will try Vision fallback")
+                        _text_timed_out = True
+                        questions = None
                 else:
                     raise ValueError("No content could be extracted from the file")
             except asyncio.TimeoutError:
                 raise ValueError(
-                    "AI phân tích quá thời gian (>7 phút). API Gemini có thể đang quá tải. "
-                    "Vui lòng thử lại sau vài phút."
+                    "AI phân tích quá thời gian. API Gemini có thể đang quá tải. "
+                    "Vui lòng thử lại sau vài phút hoặc bật Vision mode."
                 )
             finally:
                 _heartbeat_active = False
@@ -589,33 +660,40 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
                 except asyncio.CancelledError:
                     pass
 
-            if not questions and not use_vision:
-                logger.info(f"Exam {exam_id}: Text parse returned empty — trying Vision fallback")
+            # Vision fallback: when text parse returned 0 questions OR timed out
+            if (not questions) and (not use_vision):
+                reason = "timed out" if _text_timed_out else "returned empty"
+                logger.warning(f"Exam {exam_id}: Text parse {reason} — trying Vision fallback (file_path={file_path})")
                 _publish_progress(exam_id, "progress", {
-                    "percent": 60, "message": "Thử lại với Vision mode..."
+                    "percent": 60, "message": "Text mode thất bại. Thử lại với Vision mode..."
                 })
                 try:
                     _vis = await file_handler.extract_text(file_path, use_vision=True)
                     _vis_imgs = _vis.get("images", [])
+                    logger.info(f"Exam {exam_id}: Vision extraction got {len(_vis_imgs)} images")
                     if _vis_imgs:
                         try:
                             questions = await asyncio.wait_for(
-                                ai_parser.parse_images(_vis_imgs, progress_callback=_chunk_progress),
-                                timeout=300,  # 5 min for vision fallback
+                                ai_parser.parse_images(_vis_imgs, progress_callback=_chunk_progress, subject_hint=subject_hint),
+                                timeout=MAX_VISION_SECONDS,
                             )
                         except asyncio.TimeoutError:
-                            logger.warning(f"Exam {exam_id}: Vision fallback timed out")
+                            logger.warning(f"Exam {exam_id}: Vision fallback timed out after {MAX_VISION_SECONDS}s")
                         if questions:
                             use_vision = True
                             logger.info(f"Exam {exam_id}: Vision fallback found {len(questions)} questions")
+                        else:
+                            logger.warning(f"Exam {exam_id}: Vision fallback also returned 0 questions")
+                    else:
+                        logger.warning(f"Exam {exam_id}: Vision extraction returned 0 images — cannot fallback")
                 except Exception as _ve:
-                    logger.warning(f"Exam {exam_id}: Vision fallback failed: {_ve}")
+                    logger.error(f"Exam {exam_id}: Vision fallback EXCEPTION: {_ve}", exc_info=True)
 
             if not questions:
                 mode = "Vision" if use_vision else "Text"
                 raise ValueError(
                     f"AI không tìm được câu hỏi nào ({mode} mode). "
-                    "Thử bật Vision mode hoặc kiểm tra file có chứa đề toán không."
+                    "Thử bật Vision mode hoặc kiểm tra file có chứa đề thi/bài tập không."
                 )
 
         _publish_progress(exam_id, "progress", {"percent": 80, "message": f"Đã tìm {len(questions)} câu. Đang lưu..."})
@@ -628,12 +706,19 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
         result_json = json.dumps(questions, ensure_ascii=False)
 
         # Phase 5a: Populate Question Bank
+        bank_dup_count = 0
         try:
             async with AsyncSessionLocal() as db:
                 r = await db.execute(select(Exam).filter(Exam.id == exam_id))
                 exam = r.scalars().first()
                 if exam:
-                    await _save_questions_to_bank(db, exam.id, exam.user_id, questions)
+                    _saved, _skipped, bank_dup_count = await _save_questions_to_bank(db, exam.id, exam.user_id, questions)
+                    if bank_dup_count > 0:
+                        _publish_progress(exam_id, "progress", {
+                            "percent": 85,
+                            "message": f"Đã lưu {_saved} câu. {bank_dup_count} câu trùng với ngân hàng.",
+                            "duplicate_count": bank_dup_count,
+                        })
         except Exception as save_err:
             logger.error(f"Exam {exam_id}: Bank save failed (will still mark complete): {save_err}")
 
@@ -676,8 +761,9 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
                 raise
 
         _publish_progress(exam_id, "complete", {
-            "message": f"Hoàn tất! {len(questions)} câu hỏi.",
+            "message": f"Hoàn tất! {len(questions)} câu hỏi." + (f" {bank_dup_count} câu trùng với ngân hàng." if bank_dup_count else ""),
             "result_json": result_json,
+            "duplicate_count": bank_dup_count,
         })
 
         # Push notification to user's devices
@@ -733,11 +819,18 @@ async def parse_file_endpoint(
     file: UploadFile = File(...),
     speed: str = Query("balanced", pattern="^(fast|balanced|quality)$"),
     use_vision: bool = Query(False, description="Force Vision mode (recommended for scanned PDFs)"),
+    subject_hint: str = Query(..., description="Mã môn học (bắt buộc): toan, vat-li, hoa-hoc, ngu-van, tieng-anh, ..."),
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Upload a math exam file and parse it into structured JSON."""
+    """Upload an exam file and parse it into structured JSON."""
     from app.core.config import settings
+
+    if subject_hint not in VALID_SUBJECT_CODES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Môn học '{subject_hint}' không hợp lệ. Vui lòng chọn môn học từ danh sách.",
+        )
 
     allowed_extensions = {'.pdf', '.docx', '.doc', '.png', '.jpg', '.jpeg', '.txt', '.md'}
     file_ext = os.path.splitext(file.filename or "")[1].lower()
@@ -799,11 +892,16 @@ async def parse_file_endpoint(
         logger.error(f"File write failed for exam upload: {e}")
         raise HTTPException(status_code=500, detail="Không thể lưu file. Vui lòng thử lại.")
 
+    # Compute file hash early so it's stored immediately on the Exam record
+    file_hash = hashlib.md5(content).hexdigest()
+
     # Create DB record — clean up file if commit fails to avoid orphans
     exam = Exam(
         user_id=current_user.id,
         filename=file.filename,
         file_path=file_path,
+        file_hash=file_hash,
+        subject_code=subject_hint,
         status="pending",
     )
     db.add(exam)
@@ -819,7 +917,7 @@ async def parse_file_endpoint(
 
     # Images/scanned PDFs benefit from vision, but let user decide
     # Auto-fallback happens inside process_file if text quality is poor
-    background_tasks.add_task(process_file, exam.id, speed, use_vision)
+    background_tasks.add_task(process_file, exam.id, speed, use_vision, subject_hint)
 
     return ParseResponse(job_id=exam.id, status="pending", message="File queued for processing")
 

@@ -253,7 +253,9 @@ def _cache_key(text_content: str) -> str:
 
 
 _EMBED_MODELS = [
-    "gemini-embedding-001",     # Full path format
+    "gemini-embedding-001",         # Newest (2025+)
+    "models/text-embedding-004",    # Stable fallback
+    "text-embedding-004",           # Without prefix
 ]
 _working_embed_model: Optional[str] = None
 
@@ -416,6 +418,10 @@ async def embed_questions(db: AsyncSession, question_ids: list[int]):
             })
 
     if not rows_to_insert:
+        logger.warning(
+            f"Embedding generation returned 0 results for {len(questions)} questions. "
+            f"Check GOOGLE_API_KEY and embedding model availability."
+        )
         return
 
     stored = 0

@@ -22,6 +22,7 @@ import base64
 from typing import List, Dict, Any, Optional, Callable
 from enum import Enum
 from dotenv import load_dotenv
+from app.services.subject_prompts import get_prompt_config
 
 load_dotenv()
 
@@ -41,6 +42,7 @@ PARSE_SCHEMA = {
         "type": "OBJECT",
         "properties": {
             "question":     {"type": "STRING"},
+            "subject":      {"type": "STRING"},
             "type":         {"type": "STRING"},
             "difficulty":   {"type": "STRING"},
             "grade":        {"type": "INTEGER"},
@@ -49,10 +51,20 @@ PARSE_SCHEMA = {
             "answer":       {"type": "STRING"},
             "solution_steps": {"type": "ARRAY", "items": {"type": "STRING"}},
         },
-        "required": ["question", "type", "difficulty",
+        "required": ["question", "subject", "type", "difficulty",
                      "grade", "chapter", "lesson_title", "answer", "solution_steps"],
     }
 }
+
+# ── Safety settings — disable blocking for educational content (chemistry etc.) ──
+# Chemistry formulas (HCl, H₂SO₄) can trigger DANGEROUS_CONTENT filters.
+# This is K12 educational content — blocking is inappropriate.
+_SAFETY_SETTINGS = [
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+]
 
 # ── Pre-compiled regex patterns (module-level — compiled once) ──
 _RE_TRIPLE_BACKSLASH = re.compile(r'\\{3,}')
@@ -75,11 +87,18 @@ class AIQuestionParser:
     """
 
     # ── SYSTEM_PROMPT v3 — ~1500 tokens (was ~2500) ──
-    SYSTEM_PROMPT = r"""You are a Math OCR expert. Extract ALL math problems from documents into structured JSON.
+    SYSTEM_PROMPT = r"""You are a Vietnamese K12 exam parser expert. Extract ALL problems from documents into structured JSON.
+
+SUBJECT DETECTION:
+- Detect subject from document header, content, and question style
+- subject codes: toan, ngu-van, tieng-anh, khtn, vat-li, hoa-hoc, sinh-hoc, lich-su, dia-li, gdcd, gdktpl, tin-hoc, cong-nghe, tieng-viet, khoa-hoc, ls-dl, dao-duc, am-nhac, my-thuat
+- Math documents → "toan", Physics → "vat-li" (grades 10-12) or "khtn" (grades 6-9)
+- Chemistry → "hoa-hoc" (10-12) or "khtn" (6-9), Biology → "sinh-hoc" (10-12) or "khtn" (6-9)
+{subject_hint_line}
 
 EXTRACTION:
 - Return ONLY raw JSON array — no markdown, no explanation
-- DO NOT generate IDs. DO NOT modify/simplify math.
+- DO NOT generate IDs. DO NOT modify/simplify content.
 - Process 100% of problems — never stop midway
 - Multi-part (a,b,c) → 1 object, separators "--- a)", "--- b)" in solution_steps
 - If question cut off: "[YÊU CẦU BỊ THIẾU]"
@@ -90,21 +109,21 @@ ANSWER MATCHING:
 - If answer section separate from questions, cross-reference carefully
 - Documents with solutions below each question: extract full solution_steps
 
-LATEX:
+LATEX (for math/science):
 - All math → $...$ inline. In JSON strings: \\ before commands (\\frac, \\sqrt, \\Rightarrow)
 - Fractions: \\frac{a}{b}, Roots: \\sqrt{x}, Powers: x^{2}, Greek: \\alpha
 - Systems: \\begin{cases}...\\end{cases}
 - NEVER modify radical scope: "√x + 4" → $\\sqrt{x} + 4$ NOT $\\sqrt{x+4}$
 - Images → [HÌNH VẼ], Graphs → [ĐỒ THỊ], Tables → [BẢNG DỮ LIỆU]
 
-TYPE (pick one): TN | TL | Chứng minh | Tìm x | Tìm GTLN/GTNN | Tính toán | Hệ phương trình | Rút gọn biểu thức | So sánh | Bài toán thực tế
+TYPE: TN | TL | Chứng minh | Tìm x | Tìm GTLN/GTNN | Tính toán | Hệ phương trình | Rút gọn biểu thức | So sánh | Bài toán thực tế | Đọc hiểu | Nghị luận | Tập làm văn | Reading | Writing | Listening | Thí nghiệm | Giải thích hiện tượng
 DIFFICULTY: NB | TH | VD | VDC
-GRADE: integer 6-12 (infer from document header or content)
+GRADE: integer 1-12 (infer from document header or content)
 CHAPTER: chapter name as it appears in the document (e.g. "Chương 2. Hàm số bậc nhất")
 LESSON_TITLE: specific lesson name within the chapter
 
 JSON SCHEMA:
-{"question":"<LaTeX>","type":"<type>","difficulty":"<NB|TH|VD|VDC>","grade":<6-12>,"chapter":"<chapter name>","lesson_title":"<lesson>","answer":"<answer or empty>","solution_steps":["<step>",...]}
+{"question":"<content>","subject":"<subject_code>","type":"<type>","difficulty":"<NB|TH|VD|VDC>","grade":<1-12>,"chapter":"<chapter name>","lesson_title":"<lesson>","answer":"<answer or empty>","solution_steps":["<step>",...]}
 
 SPECIAL CASES:
 - Trắc nghiệm: options A/B/C/D in question, correct answer in answer field
@@ -114,33 +133,34 @@ SPECIAL CASES:
 
 OUTPUT: Start with [, end with ]. One object per problem. No text outside array."""
 
-    PARSE_PROMPT_V1 = """Extract ALL math questions from this text into a JSON array.
-RULES: Close all JSON properly. Copy coefficients EXACTLY. If running out of tokens: finish current object, close array.
+    PARSE_PROMPT_V1 = """Extract ALL questions from this document into a JSON array.
+RULES: Close all JSON properly. Copy all content EXACTLY (numbers, formulas, chemical equations, text). If running out of tokens: finish current object, close array.
 If text contains SOLUTIONS below questions, extract them into solution_steps.
 
 {text}
 
 JSON array:"""
 
-    PARSE_PROMPT_V2 = """Extract math questions to JSON array. Copy every number exactly. Include solution_steps if present.
+    PARSE_PROMPT_V2 = """Extract questions to JSON array. Copy every number and formula exactly. Include solution_steps if present.
 
 {text}
 
 JSON:"""
 
-    PARSE_PROMPT_V3 = """Math questions → JSON array. Include answers and solution steps.
+    PARSE_PROMPT_V3 = """Questions → JSON array. Include answers and solution steps.
 {text}
 JSON:"""
 
-    VISION_PROMPT = """Extract ALL math questions from these page images into a JSON array.
+    VISION_PROMPT = """Extract ALL questions from these page images into a JSON array.
 
 CRITICAL RULES:
 - Scan EVERY page. Missing questions is unacceptable.
-- ALL math → LaTeX: $...$ inline. In JSON: \\ before frac, sqrt, etc.
+- Math/science formulas → LaTeX: $...$ inline. In JSON: \\ before frac, sqrt, etc.
+- Chemical equations: preserve exactly (e.g. Fe + HCl → FeCl₂ + H₂↑)
 - Questions with FULL SOLUTIONS below them: extract solution_steps too.
 - Multi-part (a,b,c) → ONE object, steps prefixed "--- a)", "--- b)"
 - If answers at end of doc, match by CONTENT not number.
-- Copy formulas EXACTLY. Never modify coefficients or radical scope.
+- Copy ALL content EXACTLY. Never modify formulas, equations, or coefficients.
 - Output ONLY raw JSON array — no markdown.
 
 JSON array:"""
@@ -166,6 +186,7 @@ JSON array:"""
         self._semaphore: Optional[asyncio.Semaphore] = None
 
         self._answer_pool: Dict[str, str] = {}
+        self._token_usage: Dict[str, int] = {"input": 0, "output": 0, "calls": 0}
         self._client = None
         self._init_clients()
 
@@ -194,10 +215,39 @@ JSON array:"""
 
     # ==================== PUBLIC API ====================
 
+    def _build_system_prompt(self, subject_code: Optional[str] = None) -> str:
+        """Get subject-specific system prompt."""
+        return get_prompt_config(subject_code).system_prompt
+
+    def _reset_token_usage(self):
+        self._token_usage = {"input": 0, "output": 0, "calls": 0}
+
+    def _track_tokens(self, response):
+        """Extract and accumulate token usage from Gemini response."""
+        try:
+            meta = getattr(response, 'usage_metadata', None)
+            if meta:
+                inp = getattr(meta, 'prompt_token_count', 0) or 0
+                out = getattr(meta, 'candidates_token_count', 0) or 0
+                self._token_usage["input"] += inp
+                self._token_usage["output"] += out
+                self._token_usage["calls"] += 1
+        except Exception:
+            self._token_usage["calls"] += 1
+
+    def _log_token_summary(self, label: str):
+        u = self._token_usage
+        total = u["input"] + u["output"]
+        logger.info(
+            f"💰 {label}: {u['calls']} API calls, "
+            f"{u['input']:,} input + {u['output']:,} output = {total:,} total tokens"
+        )
+
     async def parse(
         self,
         text: str,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        subject_hint: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Main entry point — parse text into questions."""
         if not text or not text.strip():
@@ -208,24 +258,29 @@ JSON array:"""
                 "Vui lòng thêm API key trong Settings → Environment Variables."
             )
 
+        config = get_prompt_config(subject_hint)
+        logger.info(f"Using prompt family: {config.family} (subject={subject_hint})")
+
         text = self._clean_text(text)
         start_time = time.time()
         logger.info(f"Document length: {len(text):,} chars")
         self._answer_pool = {}
+        self._reset_token_usage()
 
         if len(text) > self.max_chunk_size:
-            result = await self._parse_chunked_parallel(text, progress_callback)
+            result = await self._parse_chunked_parallel(text, progress_callback, subject_hint=subject_hint)
         else:
-            result = await self._parse_single(text, chunk_id=0)
+            result = await self._parse_single(text, chunk_id=0, subject_hint=subject_hint)
 
         elapsed = time.time() - start_time
-        logger.info(f"Total time: {elapsed:.1f}s ({len(result)} questions)")
+        self._log_token_summary(f"Text parse ({len(result)} questions, {elapsed:.1f}s)")
         return result
 
     async def parse_images(
         self,
         images: List[Dict],
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        subject_hint: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Parse questions from images using Vision API.
 
@@ -253,6 +308,7 @@ JSON array:"""
         total_pages = len(images)
         logger.info(f"Processing {total_pages} page images with Vision API")
         self._answer_pool = {}
+        self._reset_token_usage()
 
         # Smart batch sizing
         if total_pages <= 5:
@@ -276,7 +332,7 @@ JSON array:"""
         async def _process_batch(batch_start: int, batch_end: int, batch_imgs: List[Dict]):
             nonlocal completed
             async with self._get_semaphore():
-                result = await self._call_gemini_vision(batch_imgs)
+                result = await self._call_gemini_vision(batch_imgs, subject_hint=subject_hint)
             completed += batch_end - batch_start
             if progress_callback:
                 progress_callback(min(completed, total_pages), total_pages)
@@ -315,21 +371,22 @@ JSON array:"""
 
         all_questions = self._match_answers_from_pool(all_questions)
         elapsed = time.time() - start_time
-        logger.info(f"Vision total: {elapsed:.1f}s ({len(all_questions)} questions from {total_pages} pages)")
+        self._log_token_summary(f"Vision parse ({len(all_questions)} questions, {elapsed:.1f}s)")
         return all_questions
 
     # ==================== GEMINI VISION ====================
 
-    async def _call_gemini_vision(self, images: List[Dict]) -> List[Dict[str, Any]]:
+    async def _call_gemini_vision(self, images: List[Dict], subject_hint: Optional[str] = None) -> List[Dict[str, Any]]:
         """Call Gemini Vision API — 3-tier fallback.
-        
+
         v3: Adaptive timeout based on page count. Rate limit retry with backoff.
         """
         if not self._client:
             return []
         from google.genai import types
 
-        parts = [self.VISION_PROMPT]
+        config = get_prompt_config(subject_hint)
+        parts = [config.vision_prompt]
         for img in images:
             parts.append(types.Part.from_bytes(
                 data=base64.b64decode(img["data"]),
@@ -347,16 +404,17 @@ JSON array:"""
         ]:
             try:
                 cfg_kwargs: Dict[str, Any] = dict(
-                    system_instruction=self.SYSTEM_PROMPT,
+                    system_instruction=self._build_system_prompt(subject_hint),
                     temperature=0,
                     max_output_tokens=self.max_tokens,
+                    safety_settings=[types.SafetySetting(**s) for s in _SAFETY_SETTINGS],
                 )
                 if mime:
                     cfg_kwargs["response_mime_type"] = mime
                 if schema:
                     cfg_kwargs["response_schema"] = schema
 
-                for attempt in range(3):
+                for attempt in range(2):  # 2 attempts per tier (was 3)
                     try:
                         response = await asyncio.wait_for(
                             self._client.aio.models.generate_content(
@@ -366,6 +424,7 @@ JSON array:"""
                             ),
                             timeout=timeout,
                         )
+                        self._track_tokens(response)
                         content = self._safe_text(response)
                         if content:
                             result = self._extract_json(content)
@@ -397,77 +456,85 @@ JSON array:"""
 
     # ==================== TEXT PARSING ====================
 
-    async def _parse_single(self, text: str, chunk_id: int = 0) -> List[Dict[str, Any]]:
-        """Parse single chunk with retry logic and rate limiting."""
+    async def _parse_single(self, text: str, chunk_id: int = 0, subject_hint: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Parse single chunk — uses ONE prompt only (no more 3-prompt loop).
+
+        v4: Cost optimization — removed 3-prompt rotation that tripled API calls
+        with minimal benefit (V1/V2/V3 prompts are similar, if V1 fails V2/V3 also fail).
+        Now: 1 prompt × 3 tiers = 6 calls max (was 27).
+        """
         sem = self._get_semaphore()
+        config = get_prompt_config(subject_hint)
         async with sem:
-            prompts = [self.PARSE_PROMPT_V1, self.PARSE_PROMPT_V2, self.PARSE_PROMPT_V3]
-            last_content = ""
+            try:
+                logger.info(f"Chunk {chunk_id} - parsing with {config.family} prompt...")
+                result, raw_content = await self._call_gemini(text, config.parse_prompt_v1, subject_hint=subject_hint)
 
-            for attempt, prompt_template in enumerate(prompts):
-                try:
-                    logger.info(f"Chunk {chunk_id} - Attempt {attempt + 1}/{len(prompts)}...")
-                    result, raw_content = await self._call_gemini(text, prompt_template)
-                    last_content = raw_content
-
-                    if result:
-                        logger.info(f"Chunk {chunk_id} - Extracted {len(result)} questions")
-                        self._collect_answers(result)
-                        return result
-                    else:
-                        logger.warning(f"Chunk {chunk_id} - Attempt {attempt + 1}: Empty result")
-                except Exception as e:
-                    logger.error(f"Chunk {chunk_id} - Attempt {attempt + 1} failed: {e}")
-                    await asyncio.sleep(0.5)
-
-            # Salvage from last response
-            if last_content:
-                result = self._aggressive_extract_json(last_content)
                 if result:
-                    logger.info(f"Chunk {chunk_id} - Salvaged {len(result)} questions")
+                    logger.info(f"Chunk {chunk_id} - Extracted {len(result)} questions")
                     self._collect_answers(result)
                     return result
 
-            logger.error(f"Chunk {chunk_id} - All attempts failed")
+                # Try salvage from raw content if Gemini returned text but JSON parse failed
+                if raw_content:
+                    result = self._aggressive_extract_json(raw_content)
+                    if result:
+                        logger.info(f"Chunk {chunk_id} - Salvaged {len(result)} questions from raw response")
+                        self._collect_answers(result)
+                        return result
+
+                logger.warning(f"Chunk {chunk_id} - No questions extracted")
+            except Exception as e:
+                logger.error(f"Chunk {chunk_id} - Failed: {e}")
+
             return []
 
-    async def _call_gemini(self, text: str, prompt_template: str) -> tuple[List[Dict], str]:
-        """Call Gemini API — 3-tier fallback with 429 retry."""
+    async def _call_gemini(self, text: str, prompt_template: str, subject_hint: Optional[str] = None) -> tuple[List[Dict], str]:
+        """Call Gemini API — 3-tier fallback with retry.
+
+        v4: Cost optimization — reduced retries from 3→2 per tier.
+        Max calls: 3 tiers × 2 retries = 6 (was 9).
+        """
         from google.genai import types
 
         prompt = prompt_template.format(text=text)
+        logger.info(f"_call_gemini: text={len(text)} chars, subject={subject_hint}, model={self.gemini_model}")
 
         async def _try_with_retry(config, label):
-            for attempt in range(3):  # 3 attempts per tier
+            for attempt in range(2):  # 2 attempts per tier (was 3)
                 try:
+                    t0 = time.time()
                     response = await asyncio.wait_for(
                         self._client.aio.models.generate_content(
                             model=self.gemini_model,
                             contents=prompt,
                             config=config,
                         ),
-                        timeout=90,  # 90s per call — prevents indefinite hang
+                        timeout=90,
                     )
+                    elapsed = time.time() - t0
+                    self._track_tokens(response)
                     content = self._safe_text(response)
+                    logger.info(f"{label}: response in {elapsed:.1f}s, content={len(content or '')} chars")
                     if content:
                         result = self._extract_json(content)
                         if result:
-                            logger.info(f"{label}: {len(result)} questions")
+                            logger.info(f"{label}: {len(result)} questions extracted")
                             return result, content
+                        else:
+                            logger.warning(f"{label}: content received but JSON invalid, preview: {(content or '')[:200]!r}")
                     return None, content or ""
                 except asyncio.TimeoutError:
-                    # Don't retry on timeout — move to next tier immediately
                     logger.warning(f"{label} timed out after 90s, skipping to next tier")
                     return None, ""
                 except Exception as e:
                     err_str = str(e)
                     err_lower = err_str.lower()
                     if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                        wait = (attempt + 1) * 5  # 5/10/15s
+                        wait = (attempt + 1) * 5  # 5/10s
                         logger.warning(f"{label} rate limited, waiting {wait}s...")
                         await asyncio.sleep(wait)
                         continue
-                    # 5xx server errors (502, 503, 500) — transient, retry with back-off
                     if (
                         "502" in err_str or "503" in err_str or "500" in err_str
                         or "bad gateway" in err_lower
@@ -475,7 +542,7 @@ JSON array:"""
                         or "server error" in err_lower
                         or "internal error" in err_lower
                     ):
-                        wait = (attempt + 1) * 15  # 15s / 30s — then give up this tier
+                        wait = (attempt + 1) * 15  # 15/30s
                         logger.warning(f"{label} server error (attempt {attempt + 1}), retry in {wait}s: {err_str[:80]}")
                         await asyncio.sleep(wait)
                         continue
@@ -484,15 +551,17 @@ JSON array:"""
             return None, ""
 
         content = ""
+        sys_prompt = self._build_system_prompt(subject_hint)
         for mime, schema, label in [
             ("application/json", PARSE_SCHEMA, "Schema mode"),
             ("application/json", None,         "JSON mode"),
             (None,               None,          "Plain text"),
         ]:
             cfg_kwargs: Dict[str, Any] = dict(
-                system_instruction=self.SYSTEM_PROMPT,
+                system_instruction=sys_prompt,
                 temperature=0,
                 max_output_tokens=self.max_tokens,
+                safety_settings=[types.SafetySetting(**s) for s in _SAFETY_SETTINGS],
             )
             if mime:
                 cfg_kwargs["response_mime_type"] = mime
@@ -508,7 +577,7 @@ JSON array:"""
         return [], content
 
     async def _parse_chunked_parallel(
-        self, text: str, progress_callback: Optional[Callable] = None
+        self, text: str, progress_callback: Optional[Callable] = None, subject_hint: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Parallel chunk processing with deduplication."""
         chunks = self._smart_chunk(text)
@@ -520,7 +589,7 @@ JSON array:"""
         async def process_chunk(idx: int, chunk: str) -> tuple[int, List[Dict]]:
             nonlocal completed
             start = time.time()
-            result = await self._parse_single(chunk, chunk_id=idx)
+            result = await self._parse_single(chunk, chunk_id=idx, subject_hint=subject_hint)
             elapsed = time.time() - start
             completed += 1
             logger.info(f"Chunk {idx + 1}/{total_chunks} done ({len(result)} questions, {elapsed:.1f}s)")
@@ -642,8 +711,9 @@ JSON array:"""
         try:
             if hasattr(response, 'text') and response.text:
                 return response.text
-        except Exception:
-            pass
+        except Exception as e:
+            # Gemini raises ValueError when response is blocked by safety filters
+            logger.warning(f"_safe_text: response.text failed: {e}")
         try:
             for c in response.candidates:
                 for p in c.content.parts:
@@ -651,6 +721,28 @@ JSON array:"""
                         return p.text
         except Exception:
             pass
+        # Log WHY the response is empty — safety block? empty candidates?
+        try:
+            # Check for safety block
+            if hasattr(response, 'prompt_feedback'):
+                fb = response.prompt_feedback
+                if fb:
+                    logger.warning(f"_safe_text: prompt_feedback={fb}")
+            # Check candidate finish reason
+            if hasattr(response, 'candidates') and response.candidates:
+                for i, c in enumerate(response.candidates):
+                    finish = getattr(c, 'finish_reason', None)
+                    safety = getattr(c, 'safety_ratings', None)
+                    if finish and str(finish) != "STOP":
+                        logger.warning(f"_safe_text: candidate[{i}] finish_reason={finish}")
+                    if safety:
+                        blocked = [s for s in safety if getattr(s, 'blocked', False)]
+                        if blocked:
+                            logger.warning(f"_safe_text: BLOCKED by safety: {blocked}")
+            elif hasattr(response, 'candidates'):
+                logger.warning(f"_safe_text: 0 candidates in response")
+        except Exception as diag_err:
+            logger.debug(f"_safe_text: diagnostic failed: {diag_err}")
         return ""
 
     def _extract_json(self, content: str) -> List[Dict]:

@@ -31,6 +31,7 @@ class DashboardStats(BaseModel):
     total_questions: int
     total_exams: int
     active_users: int
+    duplicate_questions: int = 0
 
 class UserUpdate(BaseModel):
     role: str | None = None
@@ -68,12 +69,22 @@ async def get_admin_stats(
     # Total exams
     res = await db.execute(select(func.count(Exam.id)))
     total_exams = res.scalar() or 0
-    
+
+    # Duplicate questions
+    try:
+        res = await db.execute(
+            select(func.count(Question.id)).where(Question.is_bank_duplicate == True)
+        )
+        duplicate_questions = res.scalar() or 0
+    except Exception:
+        duplicate_questions = 0
+
     return {
         "total_users": total_users,
         "total_questions": total_questions,
         "total_exams": total_exams,
-        "active_users": active_users
+        "active_users": active_users,
+        "duplicate_questions": duplicate_questions,
     }
 
 # ─── Users Management ────────────────────────────────────────────────────
@@ -146,27 +157,30 @@ async def admin_list_questions(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     search: Optional[str] = None,
+    duplicates_only: bool = Query(False, description="Show only bank-duplicate questions"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_superuser)
 ) -> Any:
     query = select(Question, User.email.label("author_email")).outerjoin(User, Question.user_id == User.id)
     count_query = select(func.count(Question.id))
-    
+
     if search:
         query = query.where(func.lower(Question.question_text).like(f"%{search.lower()}%"))
         count_query = count_query.where(func.lower(Question.question_text).like(f"%{search.lower()}%"))
-        
+
+    if duplicates_only:
+        query = query.where(Question.is_bank_duplicate == True)
+        count_query = count_query.where(Question.is_bank_duplicate == True)
+
     total_res = await db.execute(count_query)
     total = total_res.scalar() or 0
-    
+
     query = query.order_by(desc(Question.created_at)).offset((page - 1) * page_size).limit(page_size)
     res = await db.execute(query)
     rows = res.all()
-    
+
     items = []
     for q_obj, email in rows:
-        # Since we use List[dict] we explicitly create dictionary payload
-        # Pydantic schema validator logic for 'solution_steps' must be simulated or manually coerced
         q_dict = {
             "id": q_obj.id,
             "exam_id": q_obj.exam_id,
@@ -182,6 +196,7 @@ async def admin_list_questions(
             "solution_steps": [],
             "question_order": getattr(q_obj, 'question_order', 0) or 0,
             "is_public": getattr(q_obj, 'is_public', True) if getattr(q_obj, 'is_public', None) is not None else True,
+            "is_bank_duplicate": getattr(q_obj, 'is_bank_duplicate', False) or False,
             "author_email": email,
             "created_at": q_obj.created_at.isoformat() if q_obj.created_at else None
         }
@@ -194,20 +209,198 @@ async def admin_list_questions(
         "page_size": page_size
     }
 
-@router.delete("/questions/{question_id}")
-async def admin_delete_question(
-    question_id: int,
+# ─── Duplicate Detection (must be BEFORE {question_id} routes) ────────
+
+@router.get("/questions/duplicates")
+async def admin_find_duplicates(
+    threshold: float = Query(0.85, ge=0.5, le=1.0),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_superuser)
 ) -> Any:
-    res = await db.execute(select(Question).filter(Question.id == question_id))
-    q = res.scalars().first()
-    if not q:
-        raise HTTPException(status_code=404, detail="Question not found")
-    
-    await db.delete(q)
+    """System-wide duplicate detection: exact hash + semantic embeddings."""
+    from collections import defaultdict
+
+    # 1) Exact content_hash duplicates
+    hash_rows = (await db.execute(
+        select(Question.content_hash, func.count(Question.id))
+        .where(Question.content_hash.isnot(None))
+        .group_by(Question.content_hash)
+        .having(func.count(Question.id) > 1)
+    )).fetchall()
+
+    dup_hashes = [r[0] for r in hash_rows]
+
+    hash_questions: dict[str, list] = defaultdict(list)
+    if dup_hashes:
+        rows = (await db.execute(
+            select(Question, User.email.label("author_email"))
+            .outerjoin(User, Question.user_id == User.id)
+            .where(Question.content_hash.in_(dup_hashes))
+            .order_by(Question.content_hash, Question.created_at)
+        )).all()
+        for q_obj, email in rows:
+            hash_questions[q_obj.content_hash].append({
+                "id": q_obj.id,
+                "question_text": q_obj.question_text,
+                "question_type": q_obj.question_type,
+                "topic": q_obj.topic,
+                "difficulty": q_obj.difficulty,
+                "grade": q_obj.grade,
+                "exam_id": q_obj.exam_id,
+                "author_email": email,
+                "created_at": q_obj.created_at.isoformat() if q_obj.created_at else None,
+            })
+
+    # 2) Semantic embedding duplicates (via similarity_detector)
+    semantic_pairs: list[tuple[int, int, float]] = []
+    try:
+        from app.services.similarity_detector import find_all_duplicates
+        semantic_pairs = await find_all_duplicates(db, threshold=threshold)
+    except Exception:
+        pass
+
+    # 3) Union-Find to merge hash groups + semantic pairs
+    parent: dict[int, int] = {}
+
+    def find(x: int) -> int:
+        while parent.get(x, x) != x:
+            parent[x] = parent.get(parent[x], parent[x])
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    # Union from hash groups
+    for _hash, qs in hash_questions.items():
+        ids = [q["id"] for q in qs]
+        for i in range(1, len(ids)):
+            union(ids[0], ids[i])
+
+    # Union from semantic pairs
+    for q1, q2, _score in semantic_pairs:
+        union(q1, q2)
+
+    # Build groups
+    all_question_ids: set[int] = set()
+    for qs in hash_questions.values():
+        all_question_ids.update(q["id"] for q in qs)
+    for q1, q2, _ in semantic_pairs:
+        all_question_ids.add(q1)
+        all_question_ids.add(q2)
+
+    # Load any questions from semantic pairs not already loaded
+    loaded_ids = {q["id"] for qs in hash_questions.values() for q in qs}
+    missing_ids = all_question_ids - loaded_ids
+    extra_map: dict[int, dict] = {}
+    if missing_ids:
+        rows = (await db.execute(
+            select(Question, User.email.label("author_email"))
+            .outerjoin(User, Question.user_id == User.id)
+            .where(Question.id.in_(list(missing_ids)))
+        )).all()
+        for q_obj, email in rows:
+            extra_map[q_obj.id] = {
+                "id": q_obj.id,
+                "question_text": q_obj.question_text,
+                "question_type": q_obj.question_type,
+                "topic": q_obj.topic,
+                "difficulty": q_obj.difficulty,
+                "grade": q_obj.grade,
+                "exam_id": q_obj.exam_id,
+                "author_email": email,
+                "created_at": q_obj.created_at.isoformat() if q_obj.created_at else None,
+            }
+
+    # Collect all question data by id
+    q_by_id: dict[int, dict] = {}
+    for qs in hash_questions.values():
+        for q in qs:
+            q_by_id[q["id"]] = q
+    q_by_id.update(extra_map)
+
+    # Build semantic score lookup
+    score_map: dict[tuple[int, int], float] = {}
+    for q1, q2, score in semantic_pairs:
+        score_map[(min(q1, q2), max(q1, q2))] = score
+
+    # Group by root
+    groups_map: dict[int, list[int]] = defaultdict(list)
+    for qid in all_question_ids:
+        groups_map[find(qid)].append(qid)
+
+    # Format response
+    groups = []
+    for root, members in groups_map.items():
+        if len(members) < 2:
+            continue
+        members.sort()
+        group_items = []
+        for qid in members:
+            q_data = q_by_id.get(qid)
+            if not q_data:
+                continue
+            # Find best similarity score to any other member
+            best_score = 0.0
+            is_exact = False
+            for other in members:
+                if other == qid:
+                    continue
+                pair_key = (min(qid, other), max(qid, other))
+                if pair_key in score_map:
+                    best_score = max(best_score, score_map[pair_key])
+                # Check exact hash match
+                q_other = q_by_id.get(other)
+                if q_other and q_data.get("_hash") and q_data.get("_hash") == q_other.get("_hash"):
+                    is_exact = True
+                    best_score = 1.0
+
+            # Check exact hash: questions with same content_hash
+            for _hash, qs in hash_questions.items():
+                hash_ids = {q["id"] for q in qs}
+                if qid in hash_ids and len(hash_ids) > 1:
+                    is_exact = True
+                    best_score = 1.0
+                    break
+
+            group_items.append({
+                **q_data,
+                "similarity": round(best_score, 4),
+                "is_exact": is_exact,
+            })
+
+        if len(group_items) >= 2:
+            group_items.sort(key=lambda x: x.get("created_at") or "")
+            groups.append({
+                "group_id": root,
+                "count": len(group_items),
+                "max_similarity": max(item["similarity"] for item in group_items),
+                "questions": group_items,
+            })
+
+    groups.sort(key=lambda g: g["max_similarity"], reverse=True)
+    return {"groups": groups, "total_groups": len(groups)}
+
+
+class BulkDeleteRequest(BaseModel):
+    question_ids: List[int]
+
+@router.post("/questions/bulk-delete")
+async def admin_bulk_delete(
+    payload: BulkDeleteRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_superuser)
+) -> Any:
+    if not payload.question_ids:
+        raise HTTPException(status_code=400, detail="No question IDs provided")
+
+    from sqlalchemy import delete as sa_delete
+    stmt = sa_delete(Question).where(Question.id.in_(payload.question_ids))
+    res = await db.execute(stmt)
     await db.commit()
-    return {"detail": "Question deleted"}
+    return {"detail": f"Deleted {res.rowcount} questions.", "deleted": res.rowcount}
 
 class BulkVisibilityRequest(BaseModel):
     question_ids: List[int]
@@ -221,13 +414,30 @@ async def admin_bulk_visibility(
 ) -> Any:
     if not payload.question_ids:
         raise HTTPException(status_code=400, detail="No question IDs provided")
-    
+
     from sqlalchemy import update as sa_update
     stmt = sa_update(Question).where(Question.id.in_(payload.question_ids)).values(is_public=payload.is_public)
     res = await db.execute(stmt)
     await db.commit()
-    
+
     return {"detail": f"Updated {res.rowcount} questions.", "updated": res.rowcount}
+
+# ─── Question CRUD (parameterized routes MUST be last) ────────────────
+
+@router.delete("/questions/{question_id}")
+async def admin_delete_question(
+    question_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_superuser)
+) -> Any:
+    res = await db.execute(select(Question).filter(Question.id == question_id))
+    q = res.scalars().first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Question not found")
+
+    await db.delete(q)
+    await db.commit()
+    return {"detail": "Question deleted"}
 
 from app.schemas.question import QuestionUpdate
 @router.put("/questions/{question_id}", response_model=QuestionResponse)
@@ -271,6 +481,7 @@ async def admin_update_question(
         "solution_steps": [],
         "question_order": getattr(q, 'question_order', 0) or 0,
         "is_public": getattr(q, 'is_public', True) if getattr(q, 'is_public', None) is not None else True,
+        "is_bank_duplicate": getattr(q, 'is_bank_duplicate', False) or False,
         "author_email": author_email,
         "created_at": q.created_at.isoformat() if q.created_at else None
     }

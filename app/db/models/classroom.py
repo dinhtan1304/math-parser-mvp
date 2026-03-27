@@ -35,8 +35,9 @@ class Class(Base):
     teacher_id  = Column(Integer, ForeignKey("user.id"), nullable=False)
 
     name        = Column(String(200), nullable=False)
-    subject     = Column(String(100), nullable=True)   # e.g. "Toán", "Vật lý"
-    grade       = Column(Integer, nullable=True)        # 6-12
+    subject     = Column(String(100), nullable=True)   # legacy freeform, kept for backward compat
+    subject_code = Column(String(30), ForeignKey("subject.subject_code"), nullable=True)
+    grade       = Column(Integer, nullable=True)        # 1-12
     description = Column(Text, nullable=True)
     code        = Column(String(10), unique=True, index=True, nullable=False)
     is_active   = Column(Boolean, default=True)

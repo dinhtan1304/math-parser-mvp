@@ -9,7 +9,7 @@ from starlette.requests import Request as StarletteRequest
 logger = logging.getLogger(__name__)
 
 from app.core.config import settings
-from app.api import auth, parser, questions, generator, dashboard, export, classes, assignments, submissions, game, analytics, curriculum, chat, notifications, live
+from app.api import auth, parser, questions, generator, dashboard, export, classes, assignments, submissions, game, analytics, curriculum, subjects, chat, notifications, live
 from app.db.session import engine
 from app.db.base import Base
 
@@ -39,21 +39,35 @@ async def lifespan(app: FastAPI):
         ("devicetoken", "platform",      "ALTER TABLE devicetoken ADD COLUMN platform VARCHAR(10)"),
         ("user",        "reset_token",   "ALTER TABLE \"user\" ADD COLUMN reset_token VARCHAR(128)"),
         ("user",        "reset_token_expires", "ALTER TABLE \"user\" ADD COLUMN reset_token_expires TIMESTAMPTZ"),
+        ("question",    "is_bank_duplicate", "ALTER TABLE question ADD COLUMN is_bank_duplicate BOOLEAN DEFAULT FALSE"),
+        # ── Multi-subject support ──
+        ("curriculum",  "subject_code",  "ALTER TABLE curriculum ADD COLUMN subject_code VARCHAR(30) DEFAULT 'toan'"),
+        ("curriculum",  "section_code",  "ALTER TABLE curriculum ADD COLUMN section_code VARCHAR(30) DEFAULT ''"),
+        ("question",    "subject_code",  "ALTER TABLE question ADD COLUMN subject_code VARCHAR(30) DEFAULT 'toan'"),
+        ("exam",        "subject_code",  "ALTER TABLE exam ADD COLUMN subject_code VARCHAR(30) DEFAULT 'toan'"),
+        ("class",       "subject_code",  "ALTER TABLE class ADD COLUMN subject_code VARCHAR(30)"),
     ]
     # OPT: Index migrations (CREATE INDEX IF NOT EXISTS is idempotent)
     _index_migrations = [
         "CREATE INDEX IF NOT EXISTS ix_question_user_created ON question(user_id, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS ix_exam_user_created ON exam(user_id, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS ix_exam_hash_status ON exam(file_hash, status)",
+        # Multi-subject indexes
+        "CREATE INDEX IF NOT EXISTS ix_curriculum_subject_grade ON curriculum(subject_code, grade)",
+        "CREATE INDEX IF NOT EXISTS ix_question_user_subject ON question(user_id, subject_code)",
+        "CREATE INDEX IF NOT EXISTS ix_question_user_subject_grade ON question(user_id, subject_code, grade)",
     ]
-    async with engine.begin() as conn:
-        for table, col, sql in _migrations:
-            try:
+    # Run each migration in its own transaction so a failed ALTER
+    # (column already exists) doesn't abort subsequent migrations.
+    for table, col, sql in _migrations:
+        try:
+            async with engine.begin() as conn:
                 await conn.execute(text(sql))
-                import logging
-                logging.getLogger(__name__).info(f"Migration: added {table}.{col}")
-            except Exception:
-                pass  # Column already exists
+            import logging
+            logging.getLogger(__name__).info(f"Migration: added {table}.{col}")
+        except Exception:
+            pass  # Column already exists
+    async with engine.begin() as conn:
         for idx_sql in _index_migrations:
             try:
                 await conn.execute(text(idx_sql))
@@ -64,6 +78,50 @@ async def lifespan(app: FastAPI):
             await conn.execute(text("UPDATE \"user\" SET role='student' WHERE role='user' OR role IS NULL"))
         except Exception:
             pass
+
+    # ── Seed subject + curriculum data ──
+    try:
+        from app.db.session import AsyncSessionLocal
+        from app.db.models.subject import Subject, SUBJECTS_GDPT_2018
+        from app.db.models.curriculum import Curriculum, GDPT_2018_MATH
+
+        async with AsyncSessionLocal() as session:
+            # Seed subjects (if empty)
+            subj_count = (await session.execute(text("SELECT COUNT(*) FROM subject"))).scalar()
+            if subj_count == 0:
+                for s in SUBJECTS_GDPT_2018:
+                    session.add(Subject(**s))
+                await session.commit()
+                logger.info(f"Seeded {len(SUBJECTS_GDPT_2018)} subjects")
+
+            # Seed curriculum (if empty)
+            cur_count = (await session.execute(text("SELECT COUNT(*) FROM curriculum"))).scalar()
+            if cur_count == 0:
+                for row in GDPT_2018_MATH:
+                    session.add(Curriculum(**row))
+                await session.commit()
+                logger.info(f"Seeded {len(GDPT_2018_MATH)} curriculum entries")
+            else:
+                # Backfill subject_code for existing curriculum rows
+                await session.execute(
+                    text("UPDATE curriculum SET subject_code = 'toan' WHERE subject_code IS NULL")
+                )
+                await session.commit()
+    except Exception as e:
+        logger.warning(f"Subject/curriculum seed skipped: {e}")
+
+    # ── Constraint migration (PostgreSQL only) ──
+    try:
+        async with engine.begin() as conn:
+            # Drop old curriculum unique constraint, add new one with subject_code
+            await conn.execute(text("ALTER TABLE curriculum DROP CONSTRAINT IF EXISTS uq_curriculum"))
+            await conn.execute(text(
+                "ALTER TABLE curriculum ADD CONSTRAINT uq_curriculum_subject "
+                "UNIQUE (subject_code, grade, section_code, chapter_no, lesson_no)"
+            ))
+            logger.info("Migrated curriculum unique constraint → uq_curriculum_subject")
+    except Exception:
+        pass  # SQLite: constraints managed by create_all; or already migrated
 
     # Migrate old broken FTS5 table (had wrong content= definition) — drop and recreate
     try:
@@ -194,6 +252,7 @@ app.include_router(assignments.router, prefix=f"{settings.API_V1_STR}/submission
 app.include_router(game.router,        prefix=f"{settings.API_V1_STR}/game",        tags=["game"])
 app.include_router(analytics.router,   prefix=f"{settings.API_V1_STR}/analytics",   tags=["analytics"])
 app.include_router(curriculum.router,  prefix=f"{settings.API_V1_STR}/curriculum",  tags=["curriculum"])
+app.include_router(subjects.router,   prefix=f"{settings.API_V1_STR}/subjects",   tags=["subjects"])
 app.include_router(chat.router,          prefix=f"{settings.API_V1_STR}/chat",          tags=["chat"])
 app.include_router(notifications.router, prefix=f"{settings.API_V1_STR}/notifications", tags=["notifications"])
 app.include_router(live.router,          prefix=f"{settings.API_V1_STR}/live",          tags=["live"])
