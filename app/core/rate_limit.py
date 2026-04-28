@@ -42,6 +42,9 @@ RATE_RULES: List[Tuple[str, int, int]] = [
     ("/api/v1/parser/parse",         10, 60),    # 10 req/min — Gemini cost
     ("/api/v1/generate",             10, 60),    # 10 req/min — Gemini cost
     ("/api/v1/chat",                 20, 60),    # 20 req/min — Gemini cost
+    ("/api/v1/quiz-attempts/start",  5,  60),    # 5 req/min  — prevent attempt spam
+    ("/api/v1/quiz-attempts",        10, 60),    # 10 req/min — submission rate limit
+    ("/api/v1/quizzes",              60, 60),    # 60 req/min — quiz CRUD + chunked import (500q / 25 = 20 chunks)
 ]
 
 DEFAULT_LIMIT  = 60   # 60 req/min for all other API endpoints

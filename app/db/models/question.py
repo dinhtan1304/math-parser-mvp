@@ -43,7 +43,9 @@ class Question(Base):
 
     # Answer and solution
     answer = Column(Text, nullable=True)
+    answer_source = Column(String(20), nullable=True)  # "gemini"|"table"|"inline"|"section"|None
     solution_steps = Column(Text, nullable=True)
+    extra_data = Column(Text, nullable=True)  # JSON: IELTS-specific data (passage_text, choices, items, word_limit)
 
     # Visibility: True = public (visible to all users), False = private (owner only)
     is_public = Column(Boolean, default=False, nullable=False, server_default='false')

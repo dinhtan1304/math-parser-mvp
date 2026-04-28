@@ -32,6 +32,10 @@ pypdf>=3.0.0                     # Last resort fallback
 python-docx>=1.0.0               # DOCX text extraction + export
 lxml>=4.9.0                      # XML/OMML processing (LaTeX→DOCX math)
 
+# ==================== OCR (OPTIONAL) ====================
+# pix2text[multilingual]>=1.1.4  # Local OCR + math formula recognition (LaTeX)
+# magic-pdf[full]                # MinerU: layout-aware PDF extraction (heavy, optional)
+
 # ==================== VECTOR SEARCH ====================
 numpy>=1.24.0                    # Vectorized cosine similarity (SQLite fallback)
 pgvector>=0.3.0                  # PostgreSQL vector similarity (pgvector extension)

@@ -62,12 +62,15 @@ elif _is_postgres:
     _engine_kwargs["pool_timeout"] = 30
 
     if "neon" in _db_url.lower():
-        # Neon serverless aggressively closes idle connections
-        # Use smaller pool + faster recycle
-        _engine_kwargs["pool_size"] = 2
-        _engine_kwargs["max_overflow"] = 3
-        _engine_kwargs["pool_recycle"] = 60       # Recycle every 60s (Neon closes fast)
-        logger.info("Neon PostgreSQL detected — optimized pool settings")
+        # Neon serverless aggressively closes idle connections.
+        # On Windows the Proactor loop throws WinError 121 when closing
+        # an already-dropped connection — use NullPool to avoid idle pooling.
+        from sqlalchemy.pool import NullPool
+        _engine_kwargs["poolclass"] = NullPool
+        # Remove pool_* keys that NullPool doesn't accept
+        for k in ("pool_size", "max_overflow", "pool_recycle", "pool_timeout", "pool_pre_ping"):
+            _engine_kwargs.pop(k, None)
+        logger.info("Neon PostgreSQL detected — using NullPool (no idle connections)")
 
 
 engine = create_async_engine(_db_url, **_engine_kwargs)
