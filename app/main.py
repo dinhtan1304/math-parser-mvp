@@ -9,7 +9,7 @@ from starlette.requests import Request as StarletteRequest
 logger = logging.getLogger(__name__)
 
 from app.core.config import settings
-from app.api import auth, parser, questions, generator, dashboard, export, classes, assignments, submissions, game, analytics, curriculum, subjects, chat, notifications, live
+from app.api import auth, parser, questions, generator, dashboard, export, classes, assignments, submissions, game, analytics, curriculum, subjects, chat, notifications, live, quizzes, quiz_attempts, media, pages, ielts_parser
 from app.db.session import engine
 from app.db.base import Base
 
@@ -46,6 +46,20 @@ async def lifespan(app: FastAPI):
         ("question",    "subject_code",  "ALTER TABLE question ADD COLUMN subject_code VARCHAR(30) DEFAULT 'toan'"),
         ("exam",        "subject_code",  "ALTER TABLE exam ADD COLUMN subject_code VARCHAR(30) DEFAULT 'toan'"),
         ("class",       "subject_code",  "ALTER TABLE class ADD COLUMN subject_code VARCHAR(30)"),
+        ("question",    "answer_source", "ALTER TABLE question ADD COLUMN answer_source VARCHAR(20)"),
+        # ── Quiz system ──
+        ("assignment",  "quiz_id",       "ALTER TABLE assignment ADD COLUMN quiz_id INTEGER REFERENCES quiz(id) ON DELETE SET NULL"),
+        ("livesession", "quiz_id",       "ALTER TABLE livesession ADD COLUMN quiz_id INTEGER REFERENCES quiz(id) ON DELETE SET NULL"),
+        # Make student_id nullable for anonymous quiz attempts
+        ("quizattempt", "student_id_nullable", "ALTER TABLE quizattempt ALTER COLUMN student_id DROP NOT NULL"),
+        # Manual grading support
+        ("quizattempt", "graded_by_id", "ALTER TABLE quizattempt ADD COLUMN graded_by_id INTEGER REFERENCES \"user\"(id)"),
+        ("quizattempt", "graded_at",    "ALTER TABLE quizattempt ADD COLUMN graded_at TIMESTAMPTZ"),
+        ("quizanswer",  "teacher_comment", "ALTER TABLE quizanswer ADD COLUMN teacher_comment VARCHAR(1000)"),
+        # Teacher page feature
+        ("teacherpage", "view_count",      "ALTER TABLE teacherpage ADD COLUMN view_count INTEGER DEFAULT 0"),
+        # IELTS bank support
+        ("question",    "extra_data",      "ALTER TABLE question ADD COLUMN extra_data TEXT"),
     ]
     # OPT: Index migrations (CREATE INDEX IF NOT EXISTS is idempotent)
     _index_migrations = [
@@ -56,6 +70,8 @@ async def lifespan(app: FastAPI):
         "CREATE INDEX IF NOT EXISTS ix_curriculum_subject_grade ON curriculum(subject_code, grade)",
         "CREATE INDEX IF NOT EXISTS ix_question_user_subject ON question(user_id, subject_code)",
         "CREATE INDEX IF NOT EXISTS ix_question_user_subject_grade ON question(user_id, subject_code, grade)",
+        # Quiz system indexes
+        "CREATE INDEX IF NOT EXISTS ix_assignment_quiz ON assignment(quiz_id)",
     ]
     # Run each migration in its own transaction so a failed ALTER
     # (column already exists) doesn't abort subsequent migrations.
@@ -198,6 +214,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Skipped-Duplicates", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-Request-Id"],
 )
 
 # Security headers middleware
@@ -216,7 +233,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "default-src 'self'",
             "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
             "style-src 'self' 'unsafe-inline'",
-            "img-src 'self' data: blob:",
+            "img-src 'self' data: blob: https:",
+            "media-src 'self' https:",
             "connect-src 'self' " + " ".join(settings.BACKEND_CORS_ORIGINS) if settings.BACKEND_CORS_ORIGINS else "connect-src 'self'",
             "font-src 'self' data:",
             "frame-ancestors 'none'",
@@ -239,6 +257,7 @@ app.add_middleware(RateLimitMiddleware, enabled=(settings.ENV == "production"))
 # Include Routers
 app.include_router(auth.router,        prefix=f"{settings.API_V1_STR}/auth",        tags=["auth"])
 app.include_router(parser.router,      prefix=f"{settings.API_V1_STR}/parser",      tags=["parser"])
+app.include_router(ielts_parser.router, prefix=f"{settings.API_V1_STR}/parser",     tags=["ielts"])
 app.include_router(questions.router,   prefix=f"{settings.API_V1_STR}/questions",   tags=["questions"])
 app.include_router(generator.router,   prefix=f"{settings.API_V1_STR}/generate",    tags=["generator"])
 app.include_router(dashboard.router,   prefix=f"{settings.API_V1_STR}/dashboard",   tags=["dashboard"])
@@ -256,10 +275,21 @@ app.include_router(subjects.router,   prefix=f"{settings.API_V1_STR}/subjects", 
 app.include_router(chat.router,          prefix=f"{settings.API_V1_STR}/chat",          tags=["chat"])
 app.include_router(notifications.router, prefix=f"{settings.API_V1_STR}/notifications", tags=["notifications"])
 app.include_router(live.router,          prefix=f"{settings.API_V1_STR}/live",          tags=["live"])
+app.include_router(quizzes.router,       prefix=f"{settings.API_V1_STR}/quizzes",      tags=["quiz"])
+app.include_router(quiz_attempts.router, prefix=f"{settings.API_V1_STR}/quiz-attempts", tags=["quiz"])
+app.include_router(media.router,         prefix=f"{settings.API_V1_STR}/media",         tags=["media"])
+app.include_router(pages.router,         prefix=f"{settings.API_V1_STR}/pages",         tags=["pages"])
 
 # Admin APIs
 from app.api import admin
 app.include_router(admin.router,         prefix=f"{settings.API_V1_STR}/admin",         tags=["admin"])
+
+# Serve uploaded media files (images, audio)
+import os
+from fastapi.staticfiles import StaticFiles
+MEDIA_DIR = "media_uploads"
+os.makedirs(MEDIA_DIR, exist_ok=True)
+app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 
 # ── Health check (Sprint 1, Task 8) ──
 @app.get("/health", tags=["system"])

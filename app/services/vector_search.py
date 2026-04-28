@@ -81,13 +81,17 @@ async def init_vector_table(engine: AsyncEngine):
             # else: vector_based — already correct
 
             # Add missing columns if upgrading from old schema
+            # Each ALTER runs in a SAVEPOINT so a failure doesn't abort the whole transaction
             for col, typedef in [("grade", "INTEGER"), ("chapter", "TEXT")]:
                 try:
+                    await conn.execute(text("SAVEPOINT sp_alter"))
                     await conn.execute(text(
                         f"ALTER TABLE question_embedding ADD COLUMN {col} {typedef}"
                     ))
+                    await conn.execute(text("RELEASE SAVEPOINT sp_alter"))
                     logger.info(f"Added question_embedding.{col}")
                 except Exception:
+                    await conn.execute(text("ROLLBACK TO SAVEPOINT sp_alter"))
                     pass  # Already exists
 
             # Indexes

@@ -35,7 +35,7 @@ class AIProvider(Enum):
     AUTO = "auto"
 
 
-# ── Structured output schema ──
+# ── Structured output schema (math/science) ──
 PARSE_SCHEMA = {
     "type": "ARRAY",
     "items": {
@@ -53,6 +53,30 @@ PARSE_SCHEMA = {
         },
         "required": ["question", "subject", "type", "difficulty",
                      "grade", "chapter", "lesson_title", "answer", "solution_steps"],
+    }
+}
+
+# ── IELTS structured output schema ──
+IELTS_PARSE_SCHEMA = {
+    "type": "ARRAY",
+    "items": {
+        "type": "OBJECT",
+        "properties": {
+            "section_title":     {"type": "STRING"},
+            "passage_text":      {"type": "STRING"},
+            "group_instruction": {"type": "STRING"},
+            "word_limit":        {"type": "STRING"},
+            "global_number":     {"type": "INTEGER"},
+            "question_text":     {"type": "STRING"},
+            "question_type":     {"type": "STRING"},
+            "answer":            {"type": "STRING"},
+            "choices_json":      {"type": "STRING"},
+            "items_json":        {"type": "STRING"},
+            "points":            {"type": "NUMBER"},
+        },
+        "required": [
+            "question_text", "question_type", "answer", "global_number",
+        ],
     }
 }
 
@@ -374,6 +398,129 @@ JSON array:"""
         self._log_token_summary(f"Vision parse ({len(all_questions)} questions, {elapsed:.1f}s)")
         return all_questions
 
+    # ==================== IELTS PARSE ====================
+
+    async def parse_ielts(
+        self,
+        text: str,
+        progress_callback: Optional[Callable] = None,
+    ) -> List[Dict[str, Any]]:
+        """Parse a full IELTS exam in a single Gemini call.
+
+        Returns a flat list where each item is one question with
+        section_title, passage_text, group_instruction, and other IELTS fields.
+        No chunking: Gemini 2.5 Flash 1M context handles a full IELTS exam easily.
+        """
+        if not text or not text.strip():
+            return []
+        if not self._client:
+            raise RuntimeError("GOOGLE_API_KEY chưa được cấu hình.")
+
+        config = get_prompt_config("ielts")
+        text = self._clean_text(text)
+        logger.info(f"IELTS parse: {len(text):,} chars")
+        self._reset_token_usage()
+
+        if progress_callback:
+            await progress_callback(10, "Đang gửi đề thi đến Gemini...")
+
+        result, _ = await self._call_gemini(
+            text=text,
+            prompt_template=config.parse_prompt_v1,
+            subject_hint="ielts",
+            override_schema=IELTS_PARSE_SCHEMA,
+        )
+
+        if progress_callback:
+            await progress_callback(80, f"Gemini trả về {len(result or [])} câu hỏi")
+
+        self._log_token_summary(f"IELTS parse ({len(result or [])} questions)")
+        return result or []
+
+    async def parse_ielts_vision(
+        self,
+        images: List[Dict],
+        progress_callback: Optional[Callable] = None,
+    ) -> List[Dict[str, Any]]:
+        """Parse IELTS exam from page images (for scanned/image-based PDFs).
+
+        Uses Gemini Vision with IELTS_PARSE_SCHEMA directly — one call for all pages
+        (≤20 pages). Cambridge IELTS books are always image PDFs.
+        """
+        if not images:
+            return []
+        if not self._client:
+            raise RuntimeError("GOOGLE_API_KEY chưa được cấu hình.")
+
+        from google.genai import types
+
+        # Cap pages to avoid hitting API limits on full Cambridge IELTS books
+        MAX_PAGES = 25
+        if len(images) > MAX_PAGES:
+            logger.warning(f"IELTS Vision: truncating {len(images)} pages to {MAX_PAGES}")
+            images = images[:MAX_PAGES]
+
+        config = get_prompt_config("ielts")
+        logger.info(f"IELTS Vision parse: {len(images)} pages")
+        self._reset_token_usage()
+
+        if progress_callback:
+            await progress_callback(20, f"Đang phân tích {len(images)} trang bằng Gemini Vision...")
+
+        # Build parts: prompt + all page images
+        parts: List[Any] = [config.vision_prompt]
+        for img in images:
+            parts.append(types.Part.from_bytes(
+                data=base64.b64decode(img["data"]),
+                mime_type=img.get("mime_type", "image/jpeg"),
+            ))
+
+        timeout = max(120, min(300, 20 * len(images)))
+
+        for mime, schema, label in [
+            ("application/json", IELTS_PARSE_SCHEMA, "schema"),
+            ("application/json", None,               "json"),
+            (None,               None,               "plain"),
+        ]:
+            try:
+                cfg_kwargs: Dict[str, Any] = dict(
+                    system_instruction=config.system_prompt,
+                    temperature=0,
+                    max_output_tokens=self.max_tokens,
+                    safety_settings=[types.SafetySetting(**s) for s in _SAFETY_SETTINGS],
+                )
+                if mime:
+                    cfg_kwargs["response_mime_type"] = mime
+                if schema:
+                    cfg_kwargs["response_schema"] = schema
+
+                response = await asyncio.wait_for(
+                    self._client.aio.models.generate_content(
+                        model=self.gemini_model,
+                        contents=parts,
+                        config=types.GenerateContentConfig(**cfg_kwargs),
+                    ),
+                    timeout=timeout,
+                )
+                self._track_tokens(response)
+                content = self._safe_text(response)
+
+                parsed_attr = getattr(response, 'parsed', None) if schema else None
+                result = parsed_attr if isinstance(parsed_attr, list) else self._extract_json(content)
+
+                if result:
+                    if progress_callback:
+                        await progress_callback(80, f"Gemini Vision trả về {len(result)} câu hỏi")
+                    self._log_token_summary(f"IELTS vision parse ({len(result)} questions)")
+                    return result
+
+            except Exception as e:
+                logger.warning(f"IELTS vision tier {label} failed: {e}")
+                continue
+
+        logger.error("IELTS Vision parse: all tiers failed")
+        return []
+
     # ==================== GEMINI VISION ====================
 
     async def _call_gemini_vision(self, images: List[Dict], subject_hint: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -489,7 +636,7 @@ JSON array:"""
 
             return []
 
-    async def _call_gemini(self, text: str, prompt_template: str, subject_hint: Optional[str] = None) -> tuple[List[Dict], str]:
+    async def _call_gemini(self, text: str, prompt_template: str, subject_hint: Optional[str] = None, override_schema=None) -> tuple[List[Dict], str]:
         """Call Gemini API — 3-tier fallback with retry.
 
         v4: Cost optimization — reduced retries from 3→2 per tier.
@@ -552,10 +699,11 @@ JSON array:"""
 
         content = ""
         sys_prompt = self._build_system_prompt(subject_hint)
+        tier1_schema = override_schema if override_schema is not None else PARSE_SCHEMA
         for mime, schema, label in [
-            ("application/json", PARSE_SCHEMA, "Schema mode"),
-            ("application/json", None,         "JSON mode"),
-            (None,               None,          "Plain text"),
+            ("application/json", tier1_schema, "Schema mode"),
+            ("application/json", None,          "JSON mode"),
+            (None,               None,           "Plain text"),
         ]:
             cfg_kwargs: Dict[str, Any] = dict(
                 system_instruction=sys_prompt,

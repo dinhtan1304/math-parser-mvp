@@ -26,6 +26,8 @@ class PromptConfig:
 # ── Subject code → family mapping ──────────────────────────────────────────────
 
 SUBJECT_TO_FAMILY: dict[str, str] = {
+    # IELTS
+    "ielts": "ielts",
     # Math
     "toan": "math",
     # Physics
@@ -609,6 +611,92 @@ JSON array:"""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# FAMILY: IELTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+_IELTS_SYSTEM = """
+You are an expert IELTS exam parser. Extract every question preserving IELTS
+structure exactly: section titles, full passage/transcript texts, group
+instructions, and individual questions with their correct answers.
+
+QUESTION TYPES (use exactly these strings):
+  true_false_not_given  - Reading: TRUE / FALSE / NOT GIVEN statements
+  yes_no_not_given      - Reading: YES / NO / NOT GIVEN opinion questions
+  matching              - Match list A items to list B options (dict answer)
+  matching_headings     - Match paragraph labels to heading options (dict answer)
+  multiple_choice       - Single correct letter A/B/C/D
+  checkbox              - Multiple correct letters (rare in IELTS)
+  fill_blank            - Note/summary/sentence/diagram completion
+  essay                 - Writing Task 1 or Task 2 (no auto-grade)
+
+ANSWER FORMAT per type:
+  true_false_not_given  -> string: "TRUE" | "FALSE" | "NOT GIVEN"
+  yes_no_not_given      -> string: "YES" | "NO" | "NOT GIVEN"
+  matching              -> JSON string: {"L1":"C","L2":"B","L3":"A"}
+  matching_headings     -> JSON string: {"PA":"iii","PB":"i","PC":"v"}
+  multiple_choice       -> string: "B"
+  fill_blank            -> JSON string: {"B1":"volcanic rock","B2":"1492"}
+  essay                 -> "" (empty string)
+
+CRITICAL RULES:
+- passage_text: include FULL passage for the FIRST question of each section only.
+  Leave "" for all subsequent questions in the same section.
+- global_number: sequential integer 1, 2, 3... across the entire exam (never reset).
+- group_instruction: copy the exact instruction block from the exam
+  (e.g. "Questions 1-7: Do the following statements agree with the information
+  in the Reading Passage? Write TRUE, FALSE or NOT GIVEN in boxes 1-7.")
+- word_limit: extract the limit string if present (e.g. "TWO WORDS AND/OR A NUMBER"),
+  else leave "".
+- choices_json: for matching/matching_headings/multiple_choice - JSON array string of
+  {"key": "A", "text": "..."} objects. Use "" for other types.
+- items_json: for matching/matching_headings - JSON array string of
+  {"id": "L1", "text": "27. Newton"} or {"id": "PA", "text": "Paragraph A"}.
+  Use "" for other types.
+- Return ONLY raw JSON array - no markdown, no explanation outside the array.
+"""
+
+_IELTS_PARSE_V1 = """
+Parse the IELTS exam below. Output a JSON array - one object per question.
+
+Required fields for every object:
+  section_title     : e.g. "Reading Passage 1", "Listening Section 3"
+  passage_text      : full passage text (FIRST question of section only, else "")
+  group_instruction : exact instruction block from exam (e.g. "Questions 1-7: ...")
+  word_limit        : e.g. "TWO WORDS AND/OR A NUMBER" or ""
+  global_number     : integer - sequential across whole exam
+  question_text     : the question stem or statement
+  question_type     : one of the 8 types listed in the system prompt
+  answer            : correct answer in the format described in the system prompt
+  choices_json      : JSON array string or ""
+  items_json        : JSON array string or ""
+  points            : 1.0 for Reading/Listening; 0.0 for Writing/Speaking
+
+EXAM TEXT:
+{text}
+
+JSON array:"""
+
+_IELTS_PARSE_V2 = """Parse the IELTS exam. Output JSON array, one object per question with fields:
+section_title, passage_text (first Q of section only), group_instruction, word_limit,
+global_number, question_text, question_type, answer, choices_json, items_json, points.
+
+{text}
+
+JSON:"""
+
+_IELTS_VISION = """
+Parse the IELTS exam from these images. Output a JSON array - one object per question.
+
+Required fields: section_title, passage_text (first Q of section only), group_instruction,
+word_limit, global_number, question_text, question_type, answer, choices_json, items_json, points.
+
+Types: true_false_not_given | yes_no_not_given | matching | matching_headings |
+       multiple_choice | checkbox | fill_blank | essay
+
+JSON array:"""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # FAMILY: GENERIC (fallback for rare subjects)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -658,6 +746,14 @@ JSON array:"""
 # ── Build prompt config registry ─────────────────────────────────────────────
 
 PROMPT_CONFIGS: dict[str, PromptConfig] = {
+    "ielts": PromptConfig(
+        family="ielts",
+        system_prompt=_IELTS_SYSTEM,
+        parse_prompt_v1=_IELTS_PARSE_V1,
+        parse_prompt_v2=_IELTS_PARSE_V2,
+        parse_prompt_v3=_SHARED_PARSE_V3,
+        vision_prompt=_IELTS_VISION,
+    ),
     "math": PromptConfig(
         family="math",
         system_prompt=_MATH_SYSTEM,

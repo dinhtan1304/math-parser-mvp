@@ -12,6 +12,7 @@ class LiveSession(Base):
     id = Column(Integer, primary_key=True, index=True)
     room_code = Column(String(6), unique=True, nullable=False, index=True)
     assignment_id = Column(Integer, ForeignKey("assignment.id", ondelete="CASCADE"), nullable=False)
+    quiz_id = Column(Integer, ForeignKey("quiz.id", ondelete="SET NULL"), nullable=True)
     teacher_id = Column(Integer, ForeignKey("user.id"), nullable=False)
     status = Column(String(20), default="waiting", nullable=False)  # waiting | active | ended
     current_question_idx = Column(Integer, default=0)

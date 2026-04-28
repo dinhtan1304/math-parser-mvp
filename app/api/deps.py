@@ -103,3 +103,32 @@ def get_current_active_superuser(
 
 # Alias — same as get_current_user (active check is already inside)
 get_current_active_user = get_current_user
+
+
+# ── Optional auth (returns None if no token / invalid token) ──
+_optional_oauth2 = OAuth2PasswordBearer(
+    tokenUrl=f"{settings.API_V1_STR}/auth/login", auto_error=False
+)
+
+
+async def get_optional_user(
+    db: AsyncSession = Depends(get_db),
+    token: str | None = Depends(_optional_oauth2),
+) -> User | None:
+    """Return the current user if a valid token is present, else None."""
+    if not token:
+        return None
+    if is_token_blacklisted(token):
+        return None
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[security.ALGORITHM])
+        token_data = TokenPayload(**payload)
+    except (JWTError, ValidationError):
+        return None
+    if not token_data.sub:
+        return None
+    result = await db.execute(select(User).filter(User.id == int(token_data.sub)))
+    user = result.scalars().first()
+    if not user or not user.is_active:
+        return None
+    return user

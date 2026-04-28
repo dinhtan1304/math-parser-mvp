@@ -698,6 +698,96 @@ class FileHandler:
             logger.warning(f"Pix2Text image extraction failed: {e}")
             return None  # caller falls back to base64 vision
 
+    # ==================== MINERU (LAYOUT-AWARE OCR) ====================
+
+    async def _extract_pdf_mineru(self, file_path: str) -> dict:
+        """Extract text from PDF using MinerU (magic-pdf CLI).
+
+        MinerU excels at layout-aware extraction with images, tables, and equations.
+        Best for: Biology, KHTN, Geography (diagrams, cell images, maps).
+        Requires: pip install magic-pdf[full]
+        """
+        import subprocess
+        import tempfile
+        import shutil
+
+        loop = asyncio.get_running_loop()
+
+        def extract():
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                result = subprocess.run(
+                    ["magic-pdf", "-p", file_path, "-o", tmp_dir, "-m", "auto", "--lang", "ch"],
+                    capture_output=True, text=True, timeout=120
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(f"MinerU failed: {result.stderr[:300]}")
+
+                pdf_name = Path(file_path).stem
+                content_list_path = Path(tmp_dir) / pdf_name / "auto" / f"{pdf_name}_content_list.json"
+                images_dir = Path(tmp_dir) / pdf_name / "auto" / "images"
+
+                # Try alternate path structures MinerU may use
+                if not content_list_path.exists():
+                    content_list_path = Path(tmp_dir) / pdf_name / f"{pdf_name}_content_list.json"
+                    images_dir = Path(tmp_dir) / pdf_name / "images"
+
+                if not content_list_path.exists():
+                    return {"text": "", "image_map": {}, "method": "mineru-no-output"}
+
+                import json as _json
+                content_list = _json.loads(content_list_path.read_text(encoding="utf-8"))
+
+                # Save images outside tmp_dir before it gets cleaned up
+                exam_hash = hashlib.md5(Path(file_path).read_bytes()).hexdigest()[:12]
+                saved_images_dir = Path("uploads") / f"exam_{exam_hash}_images"
+                saved_images_dir.mkdir(parents=True, exist_ok=True)
+
+                image_map = {}
+                text_parts = []
+
+                for item in content_list:
+                    t = item.get("type")
+                    if t == "text":
+                        text_parts.append(item.get("text", "").strip())
+                    elif t == "equation":
+                        text_parts.append(item.get("text", ""))
+                    elif t == "image":
+                        src_name = Path(item.get("img_path", "")).name
+                        src = images_dir / src_name if src_name else None
+                        if src and src.exists():
+                            img_hash = src.stem[:12]
+                            dest = saved_images_dir / src.name
+                            shutil.copy2(src, dest)
+                            placeholder = f"[HÌNH_{img_hash}]"
+                            image_map[placeholder] = str(dest)
+                            caption = " ".join(item.get("image_caption", []))
+                            text_parts.append(f"{placeholder} ({caption})" if caption else placeholder)
+                    elif t == "table":
+                        caption = " ".join(item.get("table_caption", []))
+                        html = item.get("table_body", "")
+                        text_parts.append(f"[BẢNG: {caption}]\n{html}" if caption else f"[BẢNG]\n{html}")
+
+                return {
+                    "text": "\n".join(t for t in text_parts if t),
+                    "image_map": image_map,
+                    "method": "mineru",
+                }
+
+        try:
+            result = await loop.run_in_executor(self.executor, extract)
+            if result.get("text"):
+                result["text"] = self._clean_text(result["text"])
+            return result
+        except FileNotFoundError:
+            logger.warning("MinerU (magic-pdf) not installed. Falling back.")
+            return {"text": "", "image_map": {}, "method": "mineru-not-installed"}
+        except subprocess.TimeoutExpired:
+            logger.warning("MinerU timed out after 120s")
+            return {"text": "", "image_map": {}, "method": "mineru-timeout"}
+        except Exception as e:
+            logger.warning(f"MinerU extraction failed: {e}")
+            return {"text": "", "image_map": {}, "method": "mineru-error"}
+
     # ==================== OTHER FORMATS ====================
     
     async def _extract_text_file(self, file_path: str) -> Dict[str, Any]:

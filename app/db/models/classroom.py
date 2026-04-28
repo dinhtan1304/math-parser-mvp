@@ -81,6 +81,7 @@ class Assignment(Base):
     id           = Column(Integer, primary_key=True, index=True)
     class_id     = Column(Integer, ForeignKey("class.id", ondelete="CASCADE"), nullable=False)
     exam_id      = Column(Integer, ForeignKey("exam.id", ondelete="SET NULL"), nullable=True)
+    quiz_id      = Column(Integer, ForeignKey("quiz.id", ondelete="SET NULL"), nullable=True)
     created_by   = Column(Integer, ForeignKey("user.id"), nullable=False)
 
     title        = Column(String(300), nullable=False)
@@ -98,6 +99,7 @@ class Assignment(Base):
     __table_args__ = (
         Index("ix_assignment_class_active", "class_id", "is_active"),
         Index("ix_assignment_class_deadline", "class_id", "deadline"),
+        Index("ix_assignment_quiz", "quiz_id"),
     )
 
 

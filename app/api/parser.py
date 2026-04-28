@@ -15,6 +15,7 @@ from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services import file_handler, ai_parser_service as ai_parser
+from app.services.pipeline import step1_ocr, step2_preprocess, step3_classify
 from app.services.subject_prompts import VALID_SUBJECT_CODES
 from app.api import deps
 from app.db.session import AsyncSessionLocal, get_db
@@ -377,6 +378,7 @@ async def _save_questions_to_bank(
                 chapter=q.get("chapter"),
                 lesson_title=q.get("lesson_title"),
                 answer=q.get("answer"),
+                answer_source=q.get("answer_source"),
                 solution_steps=json.dumps(q.get("solution_steps", []), ensure_ascii=False),
                 question_order=i + 1,
                 is_public=False,
@@ -484,13 +486,25 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
             logger.error(f"Exam {exam_id}: Failed to read exam: {e}")
             return
 
-        _publish_progress(exam_id, "progress", {"percent": 10, "message": "Đang trích xuất nội dung..."})
+        # ── Phase 2: OCR (route to backend by subject) ──
+        _publish_progress(exam_id, "progress", {"percent": 10, "message": "Đang OCR file..."})
 
-        # ── Phase 2: Extract content (no DB needed) ──
-        extracted = await file_handler.extract_text(file_path, use_vision=use_vision)
-        extracted_text = extracted.get("text", "")
-        images = extracted.get("images", [])
-        file_hash = extracted.get("file_hash", "")
+        try:
+            ocr_result = await asyncio.wait_for(
+                step1_ocr(file_path, subject_hint or "toan"),
+                timeout=120,
+            )
+        except asyncio.TimeoutError:
+            raise ValueError("OCR quá thời gian (120s). File có thể quá lớn.")
+
+        extracted_text = ocr_result.get("text", "")
+        file_hash = ""
+
+        # Compute file hash for cache
+        try:
+            file_hash = await file_handler._compute_hash(file_path)
+        except Exception:
+            pass
 
         # Save file hash (short DB session)
         if file_hash:
@@ -504,196 +518,125 @@ async def process_file(exam_id: int, speed: str = "balanced", use_vision: bool =
             except Exception as e:
                 logger.debug(f"Exam {exam_id}: file_hash save failed: {e}")
 
-        # Log extracted text info for debugging
         logger.info(
-            f"Exam {exam_id}: Extracted {len(extracted_text)} chars, "
-            f"{len(images)} images, subject={subject_hint}, use_vision={use_vision}"
+            f"Exam {exam_id}: OCR done — {len(extracted_text)} chars, "
+            f"method={ocr_result.get('method')}, subject={subject_hint}"
         )
-        if extracted_text:
-            logger.info(f"Exam {exam_id}: Text preview: {extracted_text[:300]!r}")
 
-        # v4: Smart vision auto-detection — STEM subjects with formulas often need vision
-        _STEM_VISION_SUBJECTS = {"hoa-hoc", "vat-li", "khtn", "sinh-hoc", "toan"}
-        if not use_vision and extracted_text.strip():
-            analysis = file_handler.analyze_math_quality(extracted_text)
-            should_auto_vision = analysis.get("should_use_vision", False)
+        # ── Phase 3: Pre-process (split questions + find answers, no AI) ──
+        _publish_progress(exam_id, "progress", {"percent": 35, "message": "Đang tìm câu hỏi và đáp án..."})
 
-            if not should_auto_vision and subject_hint in _STEM_VISION_SUBJECTS:
-                txt = extracted_text.strip()
-                # Short text → likely scanned/image PDF
-                if len(txt) < 200:
-                    should_auto_vision = True
-                    logger.info(f"Exam {exam_id}: STEM + short text ({len(txt)} chars) → Vision")
-                # Chemistry/science: check if formulas are garbled (lots of isolated chars)
-                elif subject_hint in {"hoa-hoc", "khtn"}:
-                    import re
-                    # Garbled chemical formulas produce many isolated single chars
-                    isolated = len(re.findall(r'(?:^|\s)([A-Za-z0-9])(?:\s|$)', txt))
-                    ratio = isolated / max(len(txt), 1)
-                    if ratio > 0.06:
-                        should_auto_vision = True
-                        logger.info(f"Exam {exam_id}: Chemistry text looks garbled (isolated_ratio={ratio:.3f}) → Vision")
+        structured = step2_preprocess(ocr_result)
 
-            if should_auto_vision:
-                logger.info(
-                    f"Exam {exam_id}: Auto-switching to Vision mode "
-                    f"(score={analysis.get('score')}, reason={analysis.get('reason')}, subject={subject_hint})"
-                )
-                _publish_progress(exam_id, "progress", {
-                    "percent": 15,
-                    "message": f"Phát hiện công thức phức tạp — chuyển sang Vision mode..."
-                })
-                try:
-                    extracted = await file_handler.extract_text(file_path, use_vision=True)
-                    images = extracted.get("images", [])
-                    extracted_text = extracted.get("text", "")
-                    use_vision = True
-                except Exception as e:
-                    logger.warning(f"Exam {exam_id}: Auto-vision failed: {e}")
+        if not structured:
+            # Fallback: if OCR text exists but split failed, try old AI parse path
+            if extracted_text.strip():
+                logger.warning(f"Exam {exam_id}: Preprocess found 0 questions, falling back to legacy AI parse")
+                _publish_progress(exam_id, "progress", {"percent": 40, "message": "Đang phân tích bằng AI..."})
 
-        _publish_progress(exam_id, "progress", {"percent": 25, "message": "Trích xuất xong. Đang phân tích..."})
-
-        # ── Phase 3: Check cache (short DB session) ──
-        questions = None
-        if file_hash and ai_parser._client:
-            try:
-                async with AsyncSessionLocal() as db:
-                    cache_result = await db.execute(
-                        select(Exam.result_json).filter(
-                            Exam.file_hash == file_hash,
-                            Exam.status == "completed",
-                            Exam.result_json.isnot(None),
-                            Exam.id != exam_id,
-                        ).order_by(Exam.created_at.desc()).limit(1)
-                    )
-                    cached_json = cache_result.scalar()
-                    if cached_json:
-                        try:
-                            cached_questions = json.loads(cached_json)
-                            if cached_questions and not _is_mock_result(cached_questions):
-                                questions = cached_questions
-                                logger.info(f"Exam {exam_id}: Cache HIT (hash={file_hash[:8]}), reusing {len(questions)} questions")
-                                _publish_progress(exam_id, "progress", {"percent": 70, "message": f"Cache hit! Tìm thấy {len(questions)} câu đã phân tích."})
-                            else:
-                                logger.info(f"Exam {exam_id}: Cache rejected (low quality mock data)")
-                        except json.JSONDecodeError:
-                            questions = None
-            except Exception as e:
-                logger.debug(f"Exam {exam_id}: cache check failed: {e}")
-
-        # ── Phase 4: AI parsing (no DB needed — this takes 30s-3min) ──
-        if questions is None:
-            if not use_vision and (not extracted_text.strip() or _is_text_poor_quality(extracted_text)):
-                logger.info(f"Exam {exam_id}: Text quality poor, falling back to Vision mode")
-                _publish_progress(exam_id, "progress", {"percent": 30, "message": "Chuyển sang Vision mode..."})
-                try:
-                    extracted = await file_handler.extract_text(file_path, use_vision=True)
-                    images = extracted.get("images", [])
-                    extracted_text = extracted.get("text", "")
-                    use_vision = True
-                except Exception as e:
-                    logger.warning(f"Exam {exam_id}: Vision fallback failed: {e}")
-
-            _publish_progress(exam_id, "progress", {"percent": 40, "message": "AI đang phân tích câu hỏi..."})
-
-            def _chunk_progress(done: int, total: int):
-                pct = 40 + int((done / max(total, 1)) * 35)
-                _publish_progress(exam_id, "progress", {
-                    "percent": pct,
-                    "message": f"AI đang xử lý... ({done}/{total} phần)",
-                })
-
-            # Heartbeat task — sends SSE every 30s to keep connection alive
-            # and show the user parsing is still in progress.
-            _heartbeat_active = True
-            _heartbeat_elapsed = [0]
-
-            async def _heartbeat():
-                while _heartbeat_active:
-                    await asyncio.sleep(30)
-                    if not _heartbeat_active:
-                        break
-                    _heartbeat_elapsed[0] += 30
+                def _chunk_progress_legacy(done: int, total: int):
+                    pct = 40 + int((done / max(total, 1)) * 35)
                     _publish_progress(exam_id, "progress", {
-                        "percent": 50,
-                        "message": f"AI đang phân tích... ({_heartbeat_elapsed[0]}s)",
+                        "percent": pct,
+                        "message": f"AI đang xử lý... ({done}/{total} phần)",
                     })
 
-            heartbeat_task = asyncio.create_task(_heartbeat())
-
-            # This is the LONG operation — no DB session open here.
-            # Timeout strategy:
-            # - Text parse: 4 min (was 7) — fail faster so vision fallback has time
-            # - Vision parse: 5 min
-            # - Vision fallback (after text fail): 5 min
-            _text_timed_out = False
-            MAX_TEXT_SECONDS = 240   # 4 minutes for text parse
-            MAX_VISION_SECONDS = 300  # 5 minutes for vision parse
-            try:
-                if use_vision and images:
-                    questions = await asyncio.wait_for(
-                        ai_parser.parse_images(images, progress_callback=_chunk_progress, subject_hint=subject_hint),
-                        timeout=MAX_VISION_SECONDS,
-                    )
-                elif extracted_text.strip():
-                    try:
-                        questions = await asyncio.wait_for(
-                            ai_parser.parse(extracted_text, progress_callback=_chunk_progress, subject_hint=subject_hint),
-                            timeout=MAX_TEXT_SECONDS,
-                        )
-                    except asyncio.TimeoutError:
-                        logger.warning(f"Exam {exam_id}: Text parse timed out after {MAX_TEXT_SECONDS}s — will try Vision fallback")
-                        _text_timed_out = True
-                        questions = None
-                else:
-                    raise ValueError("No content could be extracted from the file")
-            except asyncio.TimeoutError:
-                raise ValueError(
-                    "AI phân tích quá thời gian. API Gemini có thể đang quá tải. "
-                    "Vui lòng thử lại sau vài phút hoặc bật Vision mode."
+                questions = await asyncio.wait_for(
+                    ai_parser.parse(extracted_text, progress_callback=_chunk_progress_legacy, subject_hint=subject_hint),
+                    timeout=240,
                 )
-            finally:
-                _heartbeat_active = False
-                heartbeat_task.cancel()
-                try:
-                    await heartbeat_task
-                except asyncio.CancelledError:
-                    pass
+                if not questions:
+                    raise ValueError("Không tìm được câu hỏi nào trong file.")
+            else:
+                raise ValueError("Không tìm được câu hỏi nào trong file. OCR không trích xuất được nội dung.")
+        else:
+            # Normal pipeline: preprocess succeeded
+            has_answers = sum(1 for q in structured if q.get("answer"))
+            _publish_progress(exam_id, "progress", {
+                "percent": 50,
+                "message": f"Tìm thấy {len(structured)} câu. {has_answers} câu đã có đáp án. Đang phân tích..."
+            })
 
-            # Vision fallback: when text parse returned 0 questions OR timed out
-            if (not questions) and (not use_vision):
-                reason = "timed out" if _text_timed_out else "returned empty"
-                logger.warning(f"Exam {exam_id}: Text parse {reason} — trying Vision fallback (file_path={file_path})")
-                _publish_progress(exam_id, "progress", {
-                    "percent": 60, "message": "Text mode thất bại. Thử lại với Vision mode..."
-                })
+            # ── Phase 3b: Check cache (short DB session) ──
+            questions = None
+            if file_hash and ai_parser._client:
                 try:
-                    _vis = await file_handler.extract_text(file_path, use_vision=True)
-                    _vis_imgs = _vis.get("images", [])
-                    logger.info(f"Exam {exam_id}: Vision extraction got {len(_vis_imgs)} images")
-                    if _vis_imgs:
-                        try:
-                            questions = await asyncio.wait_for(
-                                ai_parser.parse_images(_vis_imgs, progress_callback=_chunk_progress, subject_hint=subject_hint),
-                                timeout=MAX_VISION_SECONDS,
-                            )
-                        except asyncio.TimeoutError:
-                            logger.warning(f"Exam {exam_id}: Vision fallback timed out after {MAX_VISION_SECONDS}s")
-                        if questions:
-                            use_vision = True
-                            logger.info(f"Exam {exam_id}: Vision fallback found {len(questions)} questions")
-                        else:
-                            logger.warning(f"Exam {exam_id}: Vision fallback also returned 0 questions")
-                    else:
-                        logger.warning(f"Exam {exam_id}: Vision extraction returned 0 images — cannot fallback")
-                except Exception as _ve:
-                    logger.error(f"Exam {exam_id}: Vision fallback EXCEPTION: {_ve}", exc_info=True)
+                    async with AsyncSessionLocal() as db:
+                        cache_result = await db.execute(
+                            select(Exam.result_json).filter(
+                                Exam.file_hash == file_hash,
+                                Exam.status == "completed",
+                                Exam.result_json.isnot(None),
+                                Exam.id != exam_id,
+                            ).order_by(Exam.created_at.desc()).limit(1)
+                        )
+                        cached_json = cache_result.scalar()
+                        if cached_json:
+                            try:
+                                cached_questions = json.loads(cached_json)
+                                if cached_questions and not _is_mock_result(cached_questions):
+                                    questions = cached_questions
+                                    logger.info(f"Exam {exam_id}: Cache HIT (hash={file_hash[:8]}), reusing {len(questions)} questions")
+                                    _publish_progress(exam_id, "progress", {"percent": 70, "message": f"Cache hit! Tìm thấy {len(questions)} câu đã phân tích."})
+                                else:
+                                    logger.info(f"Exam {exam_id}: Cache rejected (low quality mock data)")
+                            except json.JSONDecodeError:
+                                questions = None
+                except Exception as e:
+                    logger.debug(f"Exam {exam_id}: cache check failed: {e}")
+
+            # ── Phase 4: Gemini classify only (no text extraction) ──
+            if questions is None:
+                def _chunk_progress(done: int, total: int):
+                    pct = 50 + int((done / max(total, 1)) * 38)
+                    _publish_progress(exam_id, "progress", {
+                        "percent": pct,
+                        "message": f"Gemini đang phân loại... ({done}/{total} phần)",
+                    })
+
+                # Heartbeat task — sends SSE every 30s to keep connection alive
+                _heartbeat_active = True
+                _heartbeat_elapsed = [0]
+
+                async def _heartbeat():
+                    while _heartbeat_active:
+                        await asyncio.sleep(30)
+                        if not _heartbeat_active:
+                            break
+                        _heartbeat_elapsed[0] += 30
+                        _publish_progress(exam_id, "progress", {
+                            "percent": 60,
+                            "message": f"Gemini đang phân loại... ({_heartbeat_elapsed[0]}s)",
+                        })
+
+                heartbeat_task = asyncio.create_task(_heartbeat())
+
+                try:
+                    questions = await asyncio.wait_for(
+                        step3_classify(
+                            structured,
+                            subject_hint=subject_hint,
+                            progress_cb=_chunk_progress,
+                        ),
+                        timeout=180,
+                    )
+                except asyncio.TimeoutError:
+                    raise ValueError(
+                        "Gemini phân loại quá thời gian (180s). "
+                        "API có thể đang quá tải. Vui lòng thử lại sau."
+                    )
+                finally:
+                    _heartbeat_active = False
+                    heartbeat_task.cancel()
+                    try:
+                        await heartbeat_task
+                    except asyncio.CancelledError:
+                        pass
 
             if not questions:
-                mode = "Vision" if use_vision else "Text"
                 raise ValueError(
-                    f"AI không tìm được câu hỏi nào ({mode} mode). "
-                    "Thử bật Vision mode hoặc kiểm tra file có chứa đề thi/bài tập không."
+                    "AI không tìm được câu hỏi nào. "
+                    "Kiểm tra file có chứa đề thi/bài tập không."
                 )
 
         _publish_progress(exam_id, "progress", {"percent": 80, "message": f"Đã tìm {len(questions)} câu. Đang lưu..."})

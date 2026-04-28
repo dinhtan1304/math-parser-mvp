@@ -13,3 +13,6 @@ from app.db.models.curriculum import Curriculum
 from app.db.models.notification import DeviceToken
 from app.db.models.live_session import LiveSession, LiveParticipant, LiveAnswer
 from app.db.models.question_report import QuestionReport
+from app.db.models.quiz import Quiz, QuizTheory, QuizTheorySection, QuizQuestion
+from app.db.models.quiz_attempt import QuizAttempt, QuizAnswer
+from app.db.models.teacher_page import TeacherPage
