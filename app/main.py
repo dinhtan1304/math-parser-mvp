@@ -231,8 +231,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # CSP — restrict resource loading
         csp_parts = [
             "default-src 'self'",
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
-            "style-src 'self' 'unsafe-inline'",
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net",
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
             "img-src 'self' data: blob: https:",
             "media-src 'self' https:",
             "connect-src 'self' " + " ".join(settings.BACKEND_CORS_ORIGINS) if settings.BACKEND_CORS_ORIGINS else "connect-src 'self'",
