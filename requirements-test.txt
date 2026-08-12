@@ -1,0 +1,26 @@
+# Minimal dependency set to run the pytest suite in CI WITHOUT the heavy
+# OCR / ML stack (torch, marker-pdf, mineru, paddleocr, docling, ...).
+# OCR-dependent tests are skipped or mock their engines, so the app imports
+# and all fast unit/integration tests run with just these packages.
+fastapi>=0.104.0
+uvicorn>=0.24.0
+python-multipart>=0.0.6
+python-dotenv>=1.0.0
+pydantic[email]>=2.0.0
+pydantic-settings>=2.0.0
+sqlalchemy>=2.0.0,<3.0.0
+aiosqlite>=0.19.0
+python-jose[cryptography]>=3.3.0
+passlib[argon2]>=1.7.4
+argon2-cffi>=23.0.0
+httpx>=0.27.0
+PyMuPDF>=1.24.0
+google-genai>=0.3.0
+redis>=5.0.0
+python-docx>=1.1.0
+PyYAML>=6.0
+beautifulsoup4>=4.12.0
+
+# Test runner
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
