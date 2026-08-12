@@ -24,12 +24,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api import deps
 from app.core import content_origin
 from app.core.config import settings
-from app.api.parser import (
-    _publish_progress,
+# Kênh tiến độ dùng chung — KHÔNG lấy từ api.parser nữa (trước đây module này
+# import tên private + biến toàn cục của router kia, xem app/core/progress_bus.py).
+from app.core.progress_bus import (
+    publish_progress as _publish_progress,
+    track_task,
     _background_tasks,
-    ParseResponse,
-    UPLOAD_DIR,
 )
+from app.schemas.parser import ParseResponse
+from app.core.upload_paths import UPLOAD_DIR
 from app.db.session import AsyncSessionLocal, get_db
 from app.db.models.exam import Exam
 from app.db.models.quiz import Quiz, QuizTheory, QuizTheorySection, QuizQuestion

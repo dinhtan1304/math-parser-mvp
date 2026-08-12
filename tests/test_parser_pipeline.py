@@ -1160,10 +1160,14 @@ class TestSSEProgressPublish:
     @pytest.mark.asyncio
     async def test_full_queue_drops_event_silently(self):
         """Slow client (full queue) → event dropped, no exception."""
+        # Khoá hàng đợi nay ở app/core/progress_bus.py (tách khỏi api/parser.py
+        # 2026-08-12). parser_mod vẫn dùng chung đúng dict _progress_queues đó.
+        from app.core import progress_bus
+
         q = asyncio.Queue(maxsize=1)
         exam_id = 9904
 
-        async with parser_mod._queues_lock:
+        async with progress_bus._queues_lock:
             parser_mod._progress_queues[exam_id] = [q]
 
         q.put_nowait(("progress", "{}"))  # fill queue
@@ -1171,7 +1175,7 @@ class TestSSEProgressPublish:
         # Second publish should not raise (QueueFull swallowed)
         parser_mod._publish_progress(exam_id, "progress", {"percent": 90})
 
-        async with parser_mod._queues_lock:
+        async with progress_bus._queues_lock:
             del parser_mod._progress_queues[exam_id]
 
     @pytest.mark.asyncio

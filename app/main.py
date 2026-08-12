@@ -251,7 +251,7 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown
     try:
-        from app.api.parser import drain_background_tasks
+        from app.core.progress_bus import drain_background_tasks
         await drain_background_tasks()
     except Exception as e:
         logger.warning(f"Background task drain skipped: {e}")

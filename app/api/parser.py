@@ -37,8 +37,20 @@ from app.schemas.review import (
 
 logger = logging.getLogger(__name__)
 
-# Keep references to background tasks to prevent garbage collection
-_background_tasks: set[asyncio.Task] = set()
+# Kênh SSE + sổ background task nay nằm ở app/core/progress_bus.py để
+# api/ielts_parser.py không phải với sang lấy nội tạng của module này.
+# Giữ bí danh dấu gạch dưới cho các chỗ gọi sẵn có trong file (2500+ dòng).
+from app.core.progress_bus import (  # noqa: E402
+    _background_tasks,
+    _progress_queues,
+    _sse_redis_bridges,
+    drain_background_tasks,
+    publish_progress as _publish_progress,
+    subscribe as _subscribe,
+    track_task,
+    unsubscribe as _unsubscribe,
+)
+
 RAG_WAIT_TIMEOUT_SECONDS = 20
 
 # Phase 3.5: per-user save lock — serialize dedup+insert cho cùng 1 user để tránh
@@ -119,24 +131,6 @@ def cleanup_old_uploads(retention_days: int, upload_dir: str = "uploads") -> int
     return removed
 
 
-async def drain_background_tasks(timeout: float = 20.0) -> int:
-    """B4: on shutdown, wait for outstanding background indexing tasks
-    (FTS / embeddings / similarity / difficulty) so questions don't end up
-    missing their indexes when the process exits. Returns the number awaited."""
-    pending = [t for t in list(_background_tasks) if not t.done()]
-    if not pending:
-        return 0
-    try:
-        await asyncio.wait_for(
-            asyncio.gather(*pending, return_exceptions=True), timeout=timeout
-        )
-    except asyncio.TimeoutError:
-        logger.warning(
-            "drain_background_tasks: %d task(s) still running after %ss", len(pending), timeout
-        )
-    return len(pending)
-
-
 def _pdf_page_count_from_bytes(content: bytes) -> int:
     """Best-effort PDF page count from raw bytes (0 if not a parseable PDF).
     Used by the D3 upload page-limit guard to fail fast before saving/OCR."""
@@ -184,13 +178,12 @@ async def _user_tokens_today(db: AsyncSession, user_id: int) -> int:
 
 router = APIRouter()
 
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# Đường dẫn upload nay ở app/core/upload_paths.py — dùng chung với ielts_parser.
+from app.core.upload_paths import UPLOAD_DIR, OCR_REVIEW_DIR  # noqa: E402
 
 # OCR review step (PaddleOCR-style PDF|markdown). The OCR phase writes the
 # editable markdown + the parse context here; the user edits it in /upload/ocr,
 # then a parse-trigger re-runs process_file which picks up the edited markdown.
-OCR_REVIEW_DIR = os.path.join(UPLOAD_DIR, "ocr_review")
 os.makedirs(OCR_REVIEW_DIR, exist_ok=True)
 # Gate: insert a markdown-review step after OCR (default on for K12 uploads).
 OCR_REVIEW_STEP = os.getenv("OCR_REVIEW_STEP", "1").strip().lower() not in {"0", "false", "no", "off"}
@@ -272,17 +265,10 @@ def _cleanup_ocr_review(exam_id: int) -> None:
             pass
 
 
-# ── SSE progress tracking (Sprint 3, Task 18) ──
-# In-memory store: exam_id → asyncio.Queue of SSE events (single-worker path).
-# When Redis is configured, events fan out across workers via pub/sub instead
-# (channel "parser:{exam_id}") so an SSE client on any worker receives them.
-_progress_queues: Dict[int, List[asyncio.Queue]] = {}
-# FIX #11: Lock to prevent concurrent subscribe/unsubscribe corruption
-_queues_lock = asyncio.Lock()
-# Per-subscriber Redis bridge: id(queue) → (pubsub, forward_task)
-_sse_redis_bridges: Dict[int, tuple] = {}
-
 # ── SSE one-time tokens (replaces JWT in URL) ──
+# Cơ chế phát/nghe sự kiện SSE đã chuyển sang app/core/progress_bus.py (import
+# ở đầu file). Phần token dùng-một-lần dưới đây vẫn thuộc về router vì nó gắn
+# với xác thực HTTP, không phải với việc truyền sự kiện.
 import time as _time
 import secrets as _secrets
 from app.core.redis_client import get_redis
@@ -292,109 +278,11 @@ _sse_tokens: Dict[str, tuple] = {}
 _SSE_TOKEN_TTL = 300  # 5 minutes
 
 
-async def _safe_publish(r, channel: str, payload: str):
-    """Best-effort Redis publish (errors swallowed)."""
-    try:
-        await r.publish(channel, payload)
-    except Exception as e:
-        logger.debug("SSE redis publish failed: %s", e)
-
-
-def _publish_progress(exam_id: int, event: str, data: dict):
-    """Publish a progress event to all connected SSE clients.
-
-    With Redis: fan out across workers via PUBLISH (fire-and-forget). Without:
-    push to local queues. The two paths are mutually exclusive so a client on
-    the publisher's own worker never receives a duplicate.
-    """
-    r = get_redis()
-    if r is not None:
-        payload = json.dumps({"event": event, "data": data}, ensure_ascii=False)
-        task = asyncio.create_task(_safe_publish(r, f"parser:{exam_id}", payload))
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
-        return
-
-    # In-memory fan-out (single worker)
-    queues = _progress_queues.get(exam_id, [])
-    msg = json.dumps(data, ensure_ascii=False)
-    for q in list(queues):  # FIX #11: iterate copy to avoid mutation during loop
-        try:
-            q.put_nowait((event, msg))
-        except asyncio.QueueFull:
-            pass  # Drop if client is too slow
-
-
-async def _pubsub_forward(pubsub, q: asyncio.Queue):
-    """Forward Redis pub/sub messages for one subscriber into its local queue."""
-    try:
-        async for message in pubsub.listen():
-            if message.get("type") != "message":
-                continue
-            try:
-                obj = json.loads(message["data"])
-                event = obj.get("event", "progress")
-                payload = json.dumps(obj.get("data", {}), ensure_ascii=False)
-                q.put_nowait((event, payload))
-            except asyncio.QueueFull:
-                pass
-            except Exception:
-                pass
-    except asyncio.CancelledError:
-        pass
-    except Exception as e:
-        logger.debug("SSE pubsub forward ended: %s", e)
-
-
-async def _subscribe(exam_id: int) -> asyncio.Queue:
-    """Subscribe to progress events for an exam."""
-    q = asyncio.Queue(maxsize=100)
-
-    r = get_redis()
-    if r is not None:
-        try:
-            pubsub = r.pubsub()
-            await pubsub.subscribe(f"parser:{exam_id}")
-            task = asyncio.create_task(_pubsub_forward(pubsub, q))
-            _sse_redis_bridges[id(q)] = (pubsub, task)
-            return q
-        except Exception as e:
-            logger.warning("Redis SSE subscribe failed, using in-memory: %s", e)
-
-    async with _queues_lock:  # FIX #11: protect list mutation
-        if exam_id not in _progress_queues:
-            _progress_queues[exam_id] = []
-        _progress_queues[exam_id].append(q)
-    return q
-
-
-async def _unsubscribe(exam_id: int, q: asyncio.Queue):
-    """Unsubscribe from progress events."""
-    bridge = _sse_redis_bridges.pop(id(q), None)
-    if bridge is not None:
-        pubsub, task = bridge
-        task.cancel()
-        try:
-            await pubsub.unsubscribe(f"parser:{exam_id}")
-            await pubsub.aclose()
-        except Exception:
-            pass
-        return
-
-    async with _queues_lock:  # FIX #11: protect list mutation
-        queues = _progress_queues.get(exam_id, [])
-        if q in queues:
-            queues.remove(q)
-        if not queues and exam_id in _progress_queues:
-            del _progress_queues[exam_id]
-
-
 # ==================== Response Models ====================
 
-class ParseResponse(BaseModel):
-    job_id: int
-    status: str
-    message: str
+# ParseResponse chuyển sang app/schemas/parser.py để ielts_parser không phải
+# import model từ router này.
+from app.schemas.parser import ParseResponse  # noqa: E402,F401
 
 
 class ExamResponse(BaseModel):
