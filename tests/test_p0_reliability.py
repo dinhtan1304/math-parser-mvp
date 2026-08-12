@@ -100,7 +100,7 @@ def test_mineru_budget_caps_subprocess_timeout(monkeypatch, tmp_path):
             return FakeResult()
 
     monkeypatch.setattr(me, "MinerUEngine", FakeEngine)
-    monkeypatch.setattr(kp, "_read_content_list", lambda wd: [])
+    monkeypatch.setattr(kp, "read_content_list", lambda wd: [])
     monkeypatch.setenv("MINERU_TIMEOUT_SECONDS", "1800")
 
     async def run():
@@ -140,7 +140,7 @@ def test_mineru_no_budget_keeps_configured_timeout(monkeypatch, tmp_path):
             return FakeResult()
 
     monkeypatch.setattr(me, "MinerUEngine", FakeEngine)
-    monkeypatch.setattr(kp, "_read_content_list", lambda wd: [])
+    monkeypatch.setattr(kp, "read_content_list", lambda wd: [])
     monkeypatch.setenv("MINERU_TIMEOUT_SECONDS", "1234")
 
     async def run():

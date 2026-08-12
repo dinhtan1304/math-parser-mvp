@@ -558,7 +558,7 @@ async def _run_mineru_pipeline(
     from pathlib import Path as _Path
 
     from app.benchmark.engines.mineru_engine import MinerUEngine
-    from app.services.k12_batch.pipeline import _read_content_list
+    from app.services.k12_batch.pipeline import read_content_list
 
     # Wire MinerU env knobs (override .env values that ship a 600s shortcut).
     # Cap at the caller's remaining budget (parser adaptive timeout) so the CLI
@@ -592,7 +592,7 @@ async def _run_mineru_pipeline(
         if result.status != "success":
             raise RuntimeError(f"MinerU OCR failed: {result.error}")
         markdown = result.markdown or ""
-        content_list = _read_content_list(work_dir)
+        content_list = read_content_list(work_dir)
     except BaseException:
         _shutil.rmtree(work_dir, ignore_errors=True)
         raise

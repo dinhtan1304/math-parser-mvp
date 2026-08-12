@@ -77,8 +77,16 @@ def _slug(name: str) -> str:
     return safe.strip("_") or "file"
 
 
-def _read_content_list(out_dir: Path) -> list[dict[str, Any]]:
-    """Find and parse MinerU's content_list.json output."""
+def read_content_list(out_dir: Path) -> list[dict[str, Any]]:
+    """Tìm và đọc file content_list.json do MinerU sinh ra.
+
+    CÔNG KHAI có chủ ý: ba module dùng chung hàm này — luồng upload
+    (`services/local_ocr_service`), endpoint admin (`api/k12_ocr`) và chính CLI
+    xử lý theo lô ở dưới. Trước 2026-08-12 nó mang tên có dấu gạch dưới đầu và
+    bị import xuyên module bằng tên private — hợp đồng ngầm, dễ vỡ khi refactor.
+
+    Trả `[]` khi không tìm thấy hoặc parse lỗi (bên gọi tự rơi về markdown thuần).
+    """
     candidates = list(out_dir.rglob("*content_list.json"))
     if not candidates:
         return []
@@ -221,7 +229,7 @@ async def process_one(
         if ocr_result.status != "success":
             raise RuntimeError(f"MinerU failed: {ocr_result.error}")
         markdown = ocr_result.markdown or ""
-        content_list = _read_content_list(mineru_dir)
+        content_list = read_content_list(mineru_dir)
         logger.info("  → markdown=%d chars, content_list=%d items", len(markdown), len(content_list))
 
         # ── Step 2: formula validation + retry ────────────────

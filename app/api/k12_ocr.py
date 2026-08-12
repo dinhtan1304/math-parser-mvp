@@ -41,7 +41,7 @@ from app.benchmark.engines.paddle_engine import PaddleEngine
 from app.db.models.user import User
 from app.services.k12_batch.config import load_config
 from app.services.k12_batch.formula_validator import revalidate_markdown
-from app.services.k12_batch.pipeline import _read_content_list
+from app.services.k12_batch.pipeline import read_content_list
 
 
 logger = logging.getLogger(__name__)
@@ -424,7 +424,7 @@ def _run_ocr_pipeline(
     # content_list.json only ships from MinerU — Paddle doesn't write it.
     # That's fine: formula crop retry just won't find bboxes (recorded as
     # `no_bbox` in stats) and falls through cleanly.
-    content_list = _read_content_list(work_dir)
+    content_list = read_content_list(work_dir)
 
     # Formula validation (and optional PaddleOCR-VL crop retry).
     if enable_formula_retry:
