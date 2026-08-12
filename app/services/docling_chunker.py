@@ -21,6 +21,8 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
+from app.services.question_markers import find_question_markers
+
 logger = logging.getLogger(__name__)
 
 _executor = ThreadPoolExecutor(max_workers=2)
@@ -463,13 +465,9 @@ async def chunk_exam_markdown(
 
     masked, masks = _mask_formulas(markdown_text)
 
-    # Question boundaries (reuse the parser's markers; lazy import avoids cycle).
-    try:
-        from app.services.pipeline import _find_question_markers
-        markers = _find_question_markers(masked)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("chunk_exam_markdown: marker import failed (%s) → fallback", exc)
-        markers = []
+    # Ranh giới câu — dùng chung với pipeline qua module tầng thấp
+    # `question_markers` (trước đây import ngược lên pipeline → vòng import).
+    markers = find_question_markers(masked)
 
     if not markers:
         return await chunk_markdown_text(markdown_text, max_chunk_chars=2000)

@@ -19,18 +19,18 @@ from typing import Optional, Any
 from app.services.answer_extractor import AnswerExtractor
 from app.services.native_pdf import extract_native_pdf_markdown
 from app.services.pdf_detector import analyze_pdf_for_ocr, recommended_ocr_mode
+from app.services.question_markers import (
+    RE_MARKDOWN_QUESTION_SPLIT,
+    RE_QUESTION_SPLIT,
+    find_question_markers,
+)
 
 logger = logging.getLogger(__name__)
 
 # Pre-compiled regex for question splitting.
-# Sprint 6 A1: lookahead `(?=\D)` thay cho `\s*[.:\)]` để match được format
-# "Câu 2 (4,0 điểm)" — đề thi HSG/Olympiad thường ghi điểm trong ngoặc.
-# Match: "Câu 1.", "Câu 2 (4,0 điểm)", "Câu 3:", "Câu 4)", "Câu 5\n", "Bài 6 ".
-# Không match: digit ngay sau "Câu N" (ví dụ "Câu 12" sẽ match cả số 12).
-_RE_QUESTION_SPLIT = re.compile(
-    r'(?:^|\n)\s*(?:Câu|câu|Bài|bài|Question)\s+(\d+)(?=\D|$)',
-    re.IGNORECASE
-)
+# Regex tách câu dùng chung — định nghĩa ở app/services/question_markers.py.
+# Giữ bí danh gạch dưới cho các chỗ dùng sẵn có trong file này.
+_RE_QUESTION_SPLIT = RE_QUESTION_SPLIT
 
 # Sprint 5.1 — Markers signal start of solution/answer block trong text gốc.
 # Cắt question text TẠI điểm xuất hiện đầu tiên của bất kỳ marker nào.
@@ -92,23 +92,11 @@ _RE_NUMBERED_SPLIT = re.compile(
 # match nhầm số trong phân số/công thức.
 _RE_NUMBERED_SPLIT_RELAXED = re.compile(r'(?:^|\n)\s*(\d+)\s*[.)]\s+(?=\S)')
 
-# Marker markdown renderer often prefixes question headings with "## " / "### ".
-_RE_MARKDOWN_QUESTION_SPLIT = re.compile(
-    r'(?:^|\n)\s*#{1,6}\s*(?:\*{1,2}\s*)?(?:Câu|câu|Bài|bài|Question)\s+(\d+)(?=\D|$)',
-    re.IGNORECASE,
-)
-
-
-def _find_question_markers(text: str) -> list[re.Match]:
-    """Find question boundaries in plain OCR or Marker markdown output."""
-    matches = list(_RE_QUESTION_SPLIT.finditer(text))
-    markdown_matches = list(_RE_MARKDOWN_QUESTION_SPLIT.finditer(text))
-    if not markdown_matches:
-        return matches
-    by_start = {m.start(): m for m in matches}
-    for m in markdown_matches:
-        by_start[m.start()] = m
-    return [by_start[k] for k in sorted(by_start)]
+# Bộ nhận diện ranh giới câu nay ở app/services/question_markers.py — dùng
+# chung với docling_chunker. Trước đây docling_chunker phải import ngược lên
+# module này để lấy `_find_question_markers`, tạo vòng import.
+_RE_MARKDOWN_QUESTION_SPLIT = RE_MARKDOWN_QUESTION_SPLIT
+_find_question_markers = find_question_markers
 
 # Sprint 6 A2 — Answer key section header.
 # Đề thi HSG/Olympiad thường có 2 phần: ĐỀ THI (trang đầu) + HƯỚNG DẪN CHẤM
