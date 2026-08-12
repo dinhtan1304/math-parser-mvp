@@ -1,0 +1,42 @@
+# OCR K12 batch pipeline — default config.
+# CLI flags override individual fields at runtime (see scripts/ocr_k12_batch.py).
+
+mineru:
+  method: ocr            # ocr (full pipeline, LaTeX-aware) | txt | auto
+  backend: pipeline      # pipeline (avoids Qwen2-VL VRAM) | hybrid
+  lang: latin            # MinerU's Vietnamese bucket
+  # First-run downloads ~5GB of models; CPU-only inference on a multi-page
+  # PDF can take >10 minutes. Bump to 1800+ if you don't have CUDA.
+  timeout_seconds: 1800
+
+paddle_vl:
+  device: auto           # auto | cpu | gpu
+  enable_formula_retry: true
+
+formula_validator:
+  backend: latex2mathml  # latex2mathml is fast + lenient; we layer structural checks
+  max_retries_per_doc: 50
+  max_workers: 4
+
+regex_segmenter:
+  fallback_numeric: true        # accept "1." / "1)" when no Câu/Bài found
+  min_options_for_tn_hint: 3    # ≥3 of A-D for hint_type=tn_4choice
+  essay_long_min_chars: 300
+
+gemini_finalizer:
+  enabled: true                          # set false (or pass --skip-gemini) for offline debug
+  max_concurrent_chunks: 2               # cap concurrent Gemini calls
+  chunk_target_tokens: 4000              # roughly matches AIQuestionParser B6 default
+  inject_subject_hint: true              # prepend "Đây là đề <subject> lớp <grade>"
+  override_answer_from_extractor: true   # AnswerExtractor wins when confident
+  extractor_confidence_threshold: 0.85
+
+output:
+  image_dirname: images
+  raw_filename: raw.md
+  json_filename: questions.json
+  report_filename: report.json
+
+logging:
+  level: INFO
+  per_question: true

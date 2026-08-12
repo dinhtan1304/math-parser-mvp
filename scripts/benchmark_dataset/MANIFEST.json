@@ -1,0 +1,284 @@
+{
+  "schema_version": "1.0",
+  "description": "Benchmark dataset cho OCR engine A/B testing. Mỗi file đại diện cho 1 category traffic thực tế của Edu Smart App K-12 (VN+EN).",
+  "categories": {
+    "vn_scanned": {
+      "label": "Vietnamese scanned PDF",
+      "description": "Đề thi photocopy/scan có dấu tiếng Việt, không có text-layer",
+      "expected_pain": "VN diacritics, broken unicode, no text-layer → bắt buộc OCR"
+    },
+    "stem_text_layer": {
+      "label": "STEM PDF có text-layer",
+      "description": "Đề HSG Toán/Lý/Hoá xuất từ Word/LaTeX, có text-layer nhưng math bị flatten",
+      "expected_pain": "Formula bị flatten thành plain text → cần force OCR để khôi phục LaTeX"
+    },
+    "stem_scanned": {
+      "label": "STEM scanned (math-heavy)",
+      "description": "Đề Toán/Lý scan từ sách, đầy công thức",
+      "expected_pain": "Formula OCR chính xác, LaTeX delimiter, fraction/integral/sum"
+    },
+    "layout_heavy": {
+      "label": "Layout-heavy (bảng + diagram)",
+      "description": "Sách giáo khoa Sinh/Địa có bảng + hình vẽ + đa cột",
+      "expected_pain": "Table extraction, image bbox, reading order multi-column"
+    },
+    "text_heavy": {
+      "label": "Text-heavy non-STEM",
+      "description": "Đề Văn/Sử/GDCD nhiều text, ít/không có math",
+      "expected_pain": "Text-layer extraction nhanh, không cần OCR phức tạp"
+    },
+    "edge_case": {
+      "label": "Edge cases",
+      "description": "DOCX, ảnh chụp đề từ điện thoại, multi-column, low quality scan",
+      "expected_pain": "Tolerance với input quality kém, format đa dạng"
+    }
+  },
+  "target_size": {
+    "files_per_category": 2,
+    "total_files": 12,
+    "note": "Hiện đang là target. Sẽ điền dần khi user upload file thực qua /admin/ocr-benchmark."
+  },
+  "files": [
+    {
+      "file_id": "edge_0806edad_cđ1_dạng_5___so_sánh__785c43",
+      "filename": "edge_0806edad_cđ1_dạng_5___so_sánh__785c43.pdf",
+      "category": "edge_case",
+      "subject": "unknown",
+      "grade": 10,
+      "page_count": 44,
+      "ground_truth": {
+        "expected_question_count": null,
+        "expected_latex_inline_min": null,
+        "expected_latex_block_min": null,
+        "expected_table_count": null,
+        "expected_figure_count": null,
+        "has_vn_diacritics": null,
+        "is_scanned": null,
+        "notes": ""
+      },
+      "added_at": "2026-05-22T13:37:06Z",
+      "anonymized": true,
+      "sha256": "8374f8bb02290078b53519b1dabce7bed06ff6446210d8df737332bb08ae58e3",
+      "file_size_bytes": 1321405
+    },
+    {
+      "file_id": "text_0a31f45a_19e8_4b_cambridge_pra_8e8af9",
+      "filename": "text_0a31f45a_19e8_4b_cambridge_pra_8e8af9.pdf",
+      "category": "text_heavy",
+      "subject": "tieng-anh",
+      "grade": 10,
+      "page_count": 20,
+      "ground_truth": {
+        "expected_question_count": null,
+        "expected_latex_inline_min": null,
+        "expected_latex_block_min": null,
+        "expected_table_count": null,
+        "expected_figure_count": null,
+        "has_vn_diacritics": null,
+        "is_scanned": null,
+        "notes": ""
+      },
+      "added_at": "2026-05-22T13:37:06Z",
+      "anonymized": true,
+      "sha256": "4b367750d787f96f610a08e836e8ddcbebe24a0076f67bb152831fd40f1380ce",
+      "file_size_bytes": 461864
+    },
+    {
+      "file_id": "stem_0c4b053f_b3_dạy_hsg_7tháng_12_0a69fe",
+      "filename": "stem_0c4b053f_b3_dạy_hsg_7tháng_12_0a69fe.pdf",
+      "category": "stem_scanned",
+      "subject": "toan",
+      "grade": 10,
+      "page_count": 7,
+      "ground_truth": {
+        "expected_question_count": null,
+        "expected_latex_inline_min": null,
+        "expected_latex_block_min": null,
+        "expected_table_count": null,
+        "expected_figure_count": null,
+        "has_vn_diacritics": null,
+        "is_scanned": null,
+        "notes": ""
+      },
+      "added_at": "2026-05-22T13:37:06Z",
+      "anonymized": true,
+      "sha256": "a73e1d466d908366d7ddd6a744c4295a8a010840bddcebe59d969c279150c70a",
+      "file_size_bytes": 422119
+    },
+    {
+      "file_id": "stem_10ca2151_0154_4e_de_thi_hsg_to_38fbfd",
+      "filename": "stem_10ca2151_0154_4e_de_thi_hsg_to_38fbfd.pdf",
+      "category": "stem_text_layer",
+      "subject": "toan",
+      "grade": 10,
+      "page_count": 7,
+      "ground_truth": {
+        "expected_question_count": null,
+        "expected_latex_inline_min": null,
+        "expected_latex_block_min": null,
+        "expected_table_count": null,
+        "expected_figure_count": null,
+        "has_vn_diacritics": null,
+        "is_scanned": null,
+        "notes": ""
+      },
+      "added_at": "2026-05-22T13:37:06Z",
+      "anonymized": true,
+      "sha256": "5ccecce84f3468dc62d5b3706923a0a77e8d190284e6aacab4d45c78c2e63ccd",
+      "file_size_bytes": 84719
+    },
+    {
+      "file_id": "vn_2700b103_kiêm_tra_57aca6",
+      "filename": "vn_2700b103_kiêm_tra_57aca6.pdf",
+      "category": "vn_scanned",
+      "subject": "toan",
+      "grade": 10,
+      "page_count": 4,
+      "ground_truth": {
+        "expected_question_count": null,
+        "expected_latex_inline_min": null,
+        "expected_latex_block_min": null,
+        "expected_table_count": null,
+        "expected_figure_count": null,
+        "has_vn_diacritics": null,
+        "is_scanned": null,
+        "notes": ""
+      },
+      "added_at": "2026-05-22T13:37:06Z",
+      "anonymized": true,
+      "sha256": "9ec37b65395e379c8e63419a9e2d3a452bc475e67e911ee117630bdda9d62234",
+      "file_size_bytes": 334236
+    },
+    {
+      "file_id": "vn_de_thi_hsg_toan7_latex_6ce072",
+      "filename": "vn_de_thi_hsg_toan7_latex_6ce072.pdf",
+      "category": "vn_scanned",
+      "subject": "toan",
+      "grade": 10,
+      "page_count": 6,
+      "ground_truth": {
+        "expected_question_count": null,
+        "expected_latex_inline_min": null,
+        "expected_latex_block_min": null,
+        "expected_table_count": null,
+        "expected_figure_count": null,
+        "has_vn_diacritics": true,
+        "is_scanned": false,
+        "notes": ""
+      },
+      "added_at": "2026-05-22T13:45:50Z",
+      "anonymized": true,
+      "sha256": "a80530d669ed0797e3b755e7efe1d84d033cb786fb884770b14c917e0b7c443c",
+      "file_size_bytes": 81969
+    },
+    {
+      "file_id": "vn_de_thi_hsg_toan7_de2_latex_26fce6",
+      "filename": "vn_de_thi_hsg_toan7_de2_latex_26fce6.pdf",
+      "category": "vn_scanned",
+      "subject": "toan",
+      "grade": 10,
+      "page_count": 7,
+      "ground_truth": {
+        "expected_question_count": null,
+        "expected_latex_inline_min": null,
+        "expected_latex_block_min": null,
+        "expected_table_count": null,
+        "expected_figure_count": null,
+        "has_vn_diacritics": true,
+        "is_scanned": false,
+        "notes": ""
+      },
+      "added_at": "2026-05-22T13:45:55Z",
+      "anonymized": true,
+      "sha256": "5ccecce84f3468dc62d5b3706923a0a77e8d190284e6aacab4d45c78c2e63ccd",
+      "file_size_bytes": 84719
+    },
+    {
+      "file_id": "vn_hoclieu_108921_1436867312_cecd32",
+      "filename": "vn_hoclieu_108921_1436867312_cecd32.pdf",
+      "category": "vn_scanned",
+      "subject": "toan",
+      "grade": 10,
+      "page_count": 1,
+      "ground_truth": {
+        "expected_question_count": null,
+        "expected_latex_inline_min": null,
+        "expected_latex_block_min": null,
+        "expected_table_count": null,
+        "expected_figure_count": null,
+        "has_vn_diacritics": true,
+        "is_scanned": false,
+        "notes": ""
+      },
+      "added_at": "2026-05-22T13:46:02Z",
+      "anonymized": true,
+      "sha256": "1cac79ca99898bf965f90d400747bb9b4b11dc2bf272f017ed4993623fe0f0e0",
+      "file_size_bytes": 202783
+    },
+    {
+      "file_id": "vn_toan_cd3_ffc85a",
+      "filename": "vn_toan_cd3_ffc85a.pdf",
+      "category": "vn_scanned",
+      "subject": "toan",
+      "grade": 10,
+      "page_count": 2,
+      "ground_truth": {
+        "expected_question_count": null,
+        "expected_latex_inline_min": null,
+        "expected_latex_block_min": null,
+        "expected_table_count": null,
+        "expected_figure_count": null,
+        "has_vn_diacritics": true,
+        "is_scanned": false,
+        "notes": ""
+      },
+      "added_at": "2026-05-22T13:46:08Z",
+      "anonymized": true,
+      "sha256": "7b3525ea297cdd93f42f95f8b4db94c09eeb860852452ce3099c8692877ed18b",
+      "file_size_bytes": 462337
+    },
+    {
+      "file_id": "vn_ki_m_tra_4fd05a",
+      "filename": "vn_ki_m_tra_4fd05a.pdf",
+      "category": "vn_scanned",
+      "subject": "toan",
+      "grade": 10,
+      "page_count": 4,
+      "ground_truth": {
+        "expected_question_count": null,
+        "expected_latex_inline_min": null,
+        "expected_latex_block_min": null,
+        "expected_table_count": null,
+        "expected_figure_count": null,
+        "has_vn_diacritics": true,
+        "is_scanned": false,
+        "notes": ""
+      },
+      "added_at": "2026-05-22T13:46:22Z",
+      "anonymized": true,
+      "sha256": "bcab0893b15501afb55a2a397b63245033a4bca234986c055be72fe477346e46",
+      "file_size_bytes": 168901
+    }
+  ],
+  "_file_template": {
+    "file_id": "category_short_<3-char-hash>",
+    "filename": "ten-file.pdf",
+    "category": "vn_scanned|stem_text_layer|stem_scanned|layout_heavy|text_heavy|edge_case",
+    "subject": "toan|vat-li|hoa-hoc|sinh-hoc|ngu-van|lich-su|...",
+    "grade": 10,
+    "page_count": 5,
+    "ground_truth": {
+      "expected_question_count": 25,
+      "expected_latex_inline_min": 15,
+      "expected_latex_block_min": 3,
+      "expected_table_count": 2,
+      "expected_figure_count": 1,
+      "has_vn_diacritics": true,
+      "is_scanned": false,
+      "notes": "Ghi chú về case test này"
+    },
+    "added_at": "2026-05-22",
+    "anonymized": true,
+    "sha256": "auto-computed-on-upload"
+  }
+}
