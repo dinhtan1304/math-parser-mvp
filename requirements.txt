@@ -13,6 +13,10 @@ pydantic-settings>=2.0.0         # BaseSettings + .env loading
 sqlalchemy>=2.0.0,<3.0.0         # Async ORM (DeclarativeBase style)
 asyncpg>=0.29.0                  # PostgreSQL async driver (required for Railway/Neon)
 aiosqlite>=0.19.0                # Async SQLite driver
+alembic>=1.13.0                  # Schema migrations (baseline 2026-07-10; xem alembic/env.py)
+
+# ==================== CACHE / SHARED STATE (optional) ====================
+redis>=5.0.0                     # Optional: shared blacklist/rate-limit/SSE state (set REDIS_URL)
 
 # ==================== AUTH & SECURITY ====================
 python-jose[cryptography]>=3.3.0 # JWT token encode/decode
@@ -36,6 +40,26 @@ lxml>=4.9.0                      # XML/OMML processing (LaTeX→DOCX math)
 # pix2text[multilingual]>=1.1.4  # Local OCR + math formula recognition (LaTeX)
 # magic-pdf[full]                # MinerU: layout-aware PDF extraction (heavy, optional)
 
+# ==================== HYBRID OCR + RAG ====================
+# marker-pdf>=1.0.0              # OPTIONAL — GPL-3.0 license risk cho sản phẩm thương mại.
+#                                # Đã gỡ khỏi pipeline /upload (2026-06-06); chỉ còn benchmark
+#                                # MarkerEngine + chunk-fallback dùng, cả hai guard is_available().
+#                                # Cài tay nếu cần benchmark Marker.
+docling>=2.0.0                   # Docling: hierarchical chunking for document RAG (MIT)
+
 # ==================== VECTOR SEARCH ====================
 numpy>=1.24.0                    # Vectorized cosine similarity (SQLite fallback)
 pgvector>=0.3.0                  # PostgreSQL vector similarity (pgvector extension)
+
+# ==================== K12 BATCH CLI (scripts/ocr_k12_batch.py) ====================
+latex2mathml>=3.77               # LaTeX → MathML validation in formula_validator
+PyYAML>=6.0                      # config/ocr_k12_batch.yaml loader
+# tqdm not needed yet — pipeline uses stderr progress lines; add if rich UI wanted
+# OCR chính = PaddleOCR-VL-1.6 (self-host GPU). Setup đã verify (Windows+CUDA12.6):
+#   pip install "paddleocr[doc-parser]>=3.6.0"   # [doc-parser] BẮT BUỘC: kéo deps
+#                                                # đăng ký pipeline class v1.6 (thiếu → ClassNotFound)
+#   pip install paddlepaddle-gpu==3.2.1 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+#   pip install nvidia-cuda-nvrtc-cu12==12.6.77  # cuDNN runtime-compiled engines cần nvrtc
+# Lưu ý Windows: paddle nạp cuDNN→cuBLAS/nvrtc, os.add_dll_directory KHÔNG đủ →
+# _ensure_nvidia_dlls (paddle_engine.py) prepend nvidia/*/bin vào PATH (fix WinError 127).
+# MinerU = fallback/baseline. Cả hai optional/manual (heavy GPU), xem scripts/setup_gpu_venv.ps1.

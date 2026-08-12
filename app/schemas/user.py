@@ -6,18 +6,36 @@ from pydantic import BaseModel, EmailStr, field_validator
 class UserBase(BaseModel):
     email: Optional[EmailStr] = None
     is_active: Optional[bool] = True
-    is_superuser: bool = False
+    # is_superuser đã bỏ khỏi schema (2026-07-10): nguồn sự thật duy nhất là
+    # role == "admin" (deps.get_current_active_superuser). Cột DB giữ nguyên
+    # để không phải migrate, nhưng không expose/không đọc.
     full_name: Optional[str] = None
-    role: str = "student"
+    role: str = "teacher"
 
 # Properties to receive via API on creation
 class UserCreate(UserBase):
     email: EmailStr
     password: str
     full_name: str
-    # Platform-based role: mobile sends "student", web sends "teacher"
-    # Admin cannot self-register
-    role: Literal["student", "teacher"] = "student"
+    # Teacher-only pivot: self-registration always creates a teacher account.
+    # Admin cannot self-register.
+    role: Literal["teacher"] = "teacher"
+
+    # Đồng ý Điều khoản + Chính sách bảo mật — BẮT BUỘC (Luật BVDLCN 91/2025).
+    # KHÔNG đặt giá trị mặc định: thiếu trường này thì request bị từ chối. Nếu để
+    # mặc định False, Pydantic sẽ bỏ qua validator và cổng đồng ý mất tác dụng.
+    accept_terms: bool
+    # Đồng ý nhận email/thông báo tiếp thị — TÙY CHỌN, mặc định không đồng ý.
+    accept_marketing: bool = False
+
+    @field_validator("accept_terms")
+    @classmethod
+    def must_accept_terms(cls, v: bool) -> bool:
+        if not v:
+            raise ValueError(
+                "Bạn cần đồng ý với Điều khoản sử dụng và Chính sách bảo mật để tạo tài khoản"
+            )
+        return v
 
     @field_validator("password")
     @classmethod
@@ -60,8 +78,13 @@ class UserInDB(UserInDBBase):
 class Token(BaseModel):
     access_token: str
     token_type: str
+    # None cho client cũ; login/refresh luôn trả về giá trị mới (rotate).
+    refresh_token: Optional[str] = None
 
 class TokenPayload(BaseModel):
     # BUG FIX: sub is encoded as str in JWT (`str(user_id)` in create_access_token).
     # Declaring as Optional[int] relied on Pydantic v2 coercion which may fail in strict mode.
     sub: Optional[str] = None
+    # type: "access" | "refresh"; token cũ (trước 2026-07-10) không có → coi như access.
+    type: Optional[str] = None
+    jti: Optional[str] = None

@@ -48,6 +48,7 @@ SUBJECTS_GDPT_2018: list[dict] = [
     {"subject_code": "tieng-viet",  "name_vi": "Tiếng Việt",                    "name_short": "TV",     "name_en": "Vietnamese",         "category": "bat_buoc", "grade_min": 1,  "grade_max": 5,  "parent_code": None, "display_order": 2,  "icon": "book-open"},
     {"subject_code": "ngu-van",     "name_vi": "Ngữ văn",                       "name_short": "Văn",    "name_en": "Literature",         "category": "bat_buoc", "grade_min": 6,  "grade_max": 12, "parent_code": None, "display_order": 3,  "icon": "book-open"},
     {"subject_code": "tieng-anh",   "name_vi": "Tiếng Anh",                     "name_short": "TA",     "name_en": "English",            "category": "bat_buoc", "grade_min": 3,  "grade_max": 12, "parent_code": None, "display_order": 4,  "icon": "globe"},
+    {"subject_code": "ielts",       "name_vi": "IELTS",                         "name_short": "IELTS",  "name_en": "IELTS",              "category": "lua_chon", "grade_min": 6,  "grade_max": 12, "parent_code": "tieng-anh", "display_order": 5, "icon": "globe"},
 
     # ── Khoa học tự nhiên ─────────────────────────────────────────────────────
     {"subject_code": "tnxh",        "name_vi": "Tự nhiên và Xã hội",            "name_short": "TNXH",   "name_en": "Nature & Society",   "category": "tich_hop", "grade_min": 1,  "grade_max": 3,  "parent_code": None,   "display_order": 10, "icon": "leaf"},

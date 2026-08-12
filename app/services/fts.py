@@ -142,6 +142,37 @@ async def search_fts(db: AsyncSession, keyword: str, user_id: int,
         return []
 
 
+async def search_fts_public(db: AsyncSession, keyword: str, exclude_user_id: int,
+                            limit: int = 200) -> list[int]:
+    """FTS search across OTHER users' questions (community bank).
+
+    Chỉ trả về candidate IDs theo keyword — caller vẫn phải AND thêm
+    ``is_public == True`` ở tầng SQL (FTS không index cột is_public).
+    """
+    if not keyword or not keyword.strip():
+        return []
+
+    safe_keyword = keyword.strip().replace('"', '""')
+
+    try:
+        result = await db.execute(text("""
+            SELECT question_id
+            FROM question_fts
+            WHERE question_fts MATCH :query
+              AND user_id != :uid
+            ORDER BY rank
+            LIMIT :lim
+        """), {
+            "query": f'"{safe_keyword}"',
+            "uid": exclude_user_id,
+            "lim": limit,
+        })
+        return [row[0] for row in result.fetchall()]
+    except Exception as e:
+        logger.warning(f"FTS public search failed: {e}")
+        return []
+
+
 async def delete_fts_question(db: AsyncSession, question_id: int):
     """Remove a question from FTS index."""
     try:

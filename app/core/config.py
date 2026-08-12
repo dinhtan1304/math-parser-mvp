@@ -25,7 +25,15 @@ def _get_or_create_secret_key() -> str:
     # 1. Env var — highest priority
     env_key = os.getenv("SECRET_KEY", "").strip()
     if env_key:
-        return env_key
+        if len(env_key) >= 32:
+            return env_key
+        # Too short to be safe. Fall through to file/generated path so the
+        # app can still start, but warn loudly so the operator notices.
+        logger.warning(
+            "SECRET_KEY env var is too short (need >=32 chars, got %d). "
+            "Ignoring it and falling back to %s.",
+            len(env_key), _SECRET_KEY_FILE,
+        )
 
     # 2. Persisted file
     if os.path.exists(_SECRET_KEY_FILE):
@@ -65,19 +73,58 @@ class Settings(BaseSettings):
     # DATABASE
     DATABASE_URL: str = "sqlite+aiosqlite:///./math_parser.db"
 
+    # REDIS — optional. When set, shared runtime state (JWT blacklist,
+    # rate-limit counters, SSE one-time tokens) is stored in Redis so it
+    # survives restarts and works across multiple workers. When unset (or
+    # unreachable), the app transparently falls back to in-memory state.
+    REDIS_URL: Optional[str] = None
+
     # SECURITY
     SECRET_KEY: str = _get_or_create_secret_key()
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8  # 8 days
+    # Access ngắn (1 ngày) + refresh dài (14 ngày, rotate mỗi lần dùng).
+    # Trước đây access 8 ngày không refresh — lộ token là mất 8 ngày.
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 1 day
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 14
 
     # UPLOAD
     MAX_UPLOAD_SIZE_MB: int = 50  # Max file size in MB
+
+    # C3b: per-user daily AI token quota for the parse pipeline (0 = disabled).
+    # Counts estimated input+output tokens across today's exams for the user.
+    DAILY_TOKEN_QUOTA: int = 0
+
+    # D3: reject PDFs with more than N pages at upload (0 = disabled). Guards
+    # against a huge/decompression-bomb PDF triggering a 30-min OCR + costly
+    # Gemini parse before any limit is hit.
+    MAX_PDF_PAGES: int = 0
+
+    # D2: delete original uploaded files older than N days on startup (0 =
+    # disabled, keep forever). The OCR artifact cache (uploads/ocr_artifacts/)
+    # is NOT touched, so re-uploading the same file still skips OCR.
+    UPLOAD_RETENTION_DAYS: int = 0
+
+    # ── TUÂN THỦ DỮ LIỆU CÁ NHÂN (Luật BVDLCN 91/2025) ──
+    # Số ngày chờ trước khi xóa vĩnh viễn tài khoản đã yêu cầu xóa. Trong thời
+    # gian này người dùng còn hủy được bằng mã hủy.
+    ACCOUNT_DELETE_GRACE_DAYS: int = 7
+    # Bài làm của khách (không tài khoản) được ẩn danh sau N tháng. 0 = tắt.
+    GUEST_ANON_MONTHS: int = 12
+    # Bật gửi email thật. Khi False, luồng xóa tài khoản KHÔNG chết: chuyển sang
+    # xác nhận bằng mật khẩu + gõ lại chuỗi xác nhận (xem app/api/me.py).
+    EMAIL_ENABLED: bool = False
+    SMTP_HOST: Optional[str] = None
+    SMTP_PORT: int = 587
+    SMTP_USER: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    SMTP_FROM: Optional[str] = None
 
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = []
 
     # EXTERNAL APIS
     GOOGLE_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-2.5-flash"  # Default Gemini model for parsing
     PORT: int = 8000
 
     # ENVIRONMENT

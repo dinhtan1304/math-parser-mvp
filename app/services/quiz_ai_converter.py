@@ -25,8 +25,9 @@ class QuizAIConverter:
     MAX_CONCURRENT = 5
 
     def __init__(self):
-        self.gemini_api_key = os.getenv("GOOGLE_API_KEY", "")
-        self.gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        from app.core.config import settings
+        self.gemini_api_key = settings.GOOGLE_API_KEY or os.getenv("GOOGLE_API_KEY", "")
+        self.gemini_model = settings.GEMINI_MODEL
         self._client = None
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._init_client()

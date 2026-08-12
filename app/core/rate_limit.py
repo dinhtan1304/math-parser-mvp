@@ -21,6 +21,7 @@ For production at scale, replace with Redis-backed limiter or API gateway.
 """
 
 import time
+import secrets
 import logging
 from collections import defaultdict
 from typing import Dict, List, Tuple
@@ -30,6 +31,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 from app.core.config import settings
+from app.core.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +125,27 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 "Possible IP-flood attack in progress."
             )
 
+    async def _redis_limit(self, r, key: str, limit: int, window: int, now: float):
+        """Redis sliding-window via a sorted set. Returns
+        (allowed, remaining, retry_after, reset_ts)."""
+        rkey = f"rl:{key}"
+        member = f"{now:.6f}:{secrets.token_hex(4)}"
+        pipe = r.pipeline()
+        pipe.zremrangebyscore(rkey, 0, now - window)   # drop entries outside window
+        pipe.zadd(rkey, {member: now})                 # record this request
+        pipe.zcard(rkey)                               # count within window
+        pipe.zrange(rkey, 0, 0, withscores=True)       # earliest entry
+        pipe.expire(rkey, window + 1)
+        _, _, count, earliest, _ = await pipe.execute()
+
+        earliest_ts = earliest[0][1] if earliest else now
+        if count > limit:
+            # Don't let blocked requests keep extending the window.
+            await r.zrem(rkey, member)
+            retry_after = int(earliest_ts + window - now) + 1
+            return False, 0, retry_after, int(earliest_ts + window)
+        return True, limit - count, 0, int(earliest_ts + window)
+
     async def dispatch(self, request: Request, call_next) -> Response:
         if not self.enabled:
             return await call_next(request)
@@ -135,10 +158,39 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         client_ip = self._get_client_ip(request)
         key = f"{client_ip}:{prefix}"
-
         now = time.time()
-        cutoff = now - window
 
+        # ── Redis-backed path (shared across workers) ──
+        r = get_redis()
+        if r is not None:
+            try:
+                allowed, remaining, retry_after, reset_ts = await self._redis_limit(
+                    r, key, limit, window, now
+                )
+                if not allowed:
+                    logger.warning(f"Rate limited (redis): {client_ip} on {prefix} (>{limit}/{window}s)")
+                    return JSONResponse(
+                        status_code=429,
+                        content={
+                            "detail": f"Quá nhiều request. Vui lòng thử lại sau {retry_after}s.",
+                            "retry_after": retry_after,
+                        },
+                        headers={
+                            "Retry-After": str(retry_after),
+                            "X-RateLimit-Limit": str(limit),
+                            "X-RateLimit-Remaining": "0",
+                            "X-RateLimit-Reset": str(reset_ts),
+                        },
+                    )
+                response = await call_next(request)
+                response.headers["X-RateLimit-Limit"] = str(limit)
+                response.headers["X-RateLimit-Remaining"] = str(remaining)
+                return response
+            except Exception as e:
+                logger.debug("Rate-limit redis error, falling back to in-memory: %s", e)
+
+        # ── In-memory fallback ──
+        cutoff = now - window
         timestamps = self._requests[key]
         timestamps[:] = [t for t in timestamps if t > cutoff]
 

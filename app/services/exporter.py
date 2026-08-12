@@ -26,6 +26,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
 
+from app.core.content_origin import is_ai_origin
 from app.services.latex_to_omml import add_math_to_paragraph
 
 # ── Pre-compiled patterns for hot paths ──
@@ -79,6 +80,9 @@ def _normalize_questions(questions) -> List[Dict]:
                 "lesson_title": q.lesson_title or "",
                 "answer": q.answer or "",
                 "solution_steps": steps if isinstance(steps, list) else [],
+                # Giữ nhãn nguồn gốc để gắn dấu hiệu AI vào tài liệu xuất ra.
+                "origin": getattr(q, "origin", None),
+                "reviewed_by_user": bool(getattr(q, "reviewed_by_user", False)),
             })
 
     # Sanitize all text fields — remove XML-invalid control chars
@@ -93,6 +97,48 @@ def _normalize_questions(questions) -> List[Dict]:
             ]
 
     return out
+
+
+# ── Gắn nhãn nội dung AI vào tài liệu xuất ra ────────────────────────────────
+# Bắt buộc theo Điều 44 Luật Công nghiệp công nghệ số và Luật Trí tuệ nhân tạo:
+# sản phẩm do AI tạo phải có dấu hiệu nhận dạng.
+
+AI_DISCLOSURE_TEXT = (
+    "Tài liệu có nội dung được tạo bởi AI và đã được giáo viên kiểm duyệt "
+    "— Edu Smart App"
+)
+
+
+def _has_ai_content(items: List[Dict]) -> bool:
+    """True khi có ít nhất 1 câu hỏi mang nhãn nguồn gốc có AI tham gia."""
+    return any(is_ai_origin(d.get("origin")) for d in items)
+
+
+def _set_doc_metadata(doc, title: str, has_ai: bool) -> None:
+    """Ghi docProps: thông tin cơ bản + cờ AIGenerated cho tài liệu có nội dung AI."""
+    try:
+        props = doc.core_properties
+        props.title = title
+        props.author = "Edu Smart App"
+        props.created = datetime.now()
+        if has_ai:
+            # core_properties không có trường tùy ý → ghi vào comments/keywords để
+            # dấu hiệu nhận dạng đi kèm file kể cả khi mở bằng công cụ khác.
+            props.comments = AI_DISCLOSURE_TEXT
+            props.keywords = "AIGenerated=true"
+            props.category = "AI-assisted"
+    except Exception:  # pragma: no cover - metadata không được phép làm hỏng export
+        pass
+
+
+def _add_ai_disclosure_paragraph(doc) -> None:
+    """Thêm dòng nhãn AI ở cuối tài liệu Word."""
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run(AI_DISCLOSURE_TEXT)
+    run.font.size = Pt(7.5)
+    run.font.italic = True
+    run.font.color.rgb = RGBColor(180, 180, 180)
 
 
 def _group_by_difficulty(questions: List[Dict]) -> Dict[str, List[Dict]]:
@@ -343,6 +389,12 @@ def export_docx(
     run.font.italic = True
     run.font.color.rgb = RGBColor(180, 180, 180)
 
+    # Dấu hiệu nhận dạng nội dung AI (Điều 44 Luật CN CNS + Luật AI).
+    _has_ai = _has_ai_content(items)
+    if _has_ai:
+        _add_ai_disclosure_paragraph(doc)
+    _set_doc_metadata(doc, title, _has_ai)
+
     # Save to buffer
     buf = io.BytesIO()
     doc.save(buf)
@@ -564,6 +616,12 @@ def export_latex(
     lines.append(r"\begin{center}")
     lines.append(r"  \textbf{── HẾT ──}")
     lines.append(r"\end{center}")
+    # Dấu hiệu nhận dạng nội dung AI (Điều 44 Luật CN CNS + Luật AI).
+    if _has_ai_content(items):
+        lines.append("")
+        lines.append(r"\begin{center}")
+        lines.append(r"  {\scriptsize\itshape " + _escape_latex_chars(AI_DISCLOSURE_TEXT) + r"}")
+        lines.append(r"\end{center}")
     lines.append("")
     lines.append(r"\end{document}")
 
@@ -651,6 +709,12 @@ def export_pdf_html(
     info_line = f"Ngày: {_esc(date_str)} &nbsp;|&nbsp; Số câu: {total}"
     if time_limit:
         info_line += f" &nbsp;|&nbsp; Thời gian: {_esc(time_limit)}"
+
+    # Dấu hiệu nhận dạng nội dung AI (Điều 44 Luật CN CNS + Luật AI).
+    ai_disclosure_html = (
+        f'<div class="generator">{_esc(AI_DISCLOSURE_TEXT)}</div>'
+        if _has_ai_content(items) else ""
+    )
 
     html = f"""<!DOCTYPE html>
 <html lang="vi">
@@ -786,6 +850,7 @@ body {{
     <div class="exam-footer">
         <div class="end-mark">── HẾT ──</div>
         <div class="generator">Tạo bởi Math Exam Parser AI</div>
+        {ai_disclosure_html}
     </div>
 </div>
 <script>

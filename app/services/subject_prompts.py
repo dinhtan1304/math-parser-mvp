@@ -6,7 +6,8 @@ Each subject (or subject group) gets a specialized PromptConfig with:
 - parse_prompt_v1: rich, subject-aware text extraction prompt
 - parse_prompt_v2: lighter fallback
 - parse_prompt_v3: minimal emergency fallback (shared across all)
-- vision_prompt: subject-aware image extraction prompt
+
+Vision prompts đã bị loại bỏ — toàn bộ OCR xử lý qua Marker/Docling/Pix2Text.
 """
 
 from dataclasses import dataclass
@@ -20,7 +21,6 @@ class PromptConfig:
     parse_prompt_v1: str
     parse_prompt_v2: str
     parse_prompt_v3: str
-    vision_prompt: str
 
 
 # ── Subject code → family mapping ──────────────────────────────────────────────
@@ -71,34 +71,114 @@ VISIBLE_SUBJECT_CODES: frozenset[str] = VALID_SUBJECT_CODES - {
 }
 
 
-# ── Common building blocks (shared across families) ───────────────────────────
+# ── Common building blocks (shared across families) — B2 compacted ────────────
+
+_COMMON_VN_DIACRITIC_RESTORE = r"""KHÔI PHỤC DẤU TIẾNG VIỆT (BẮT BUỘC — kiểm tra TỪNG TỪ trước khi emit):
+
+Input markdown từ MinerU OCR đã MẤT phần lớn dấu tiếng Việt — vd:
+  "đim"           → "điểm"
+  "Thi gian"      → "Thời gian"
+  "Chng minh răng"→ "Chứng minh rằng"
+  "biu thc"       → "biểu thức"
+  "phưong trình"  → "phương trình"
+  "tng s tin"     → "tổng số tiền"
+  "Tinh gia tri"  → "Tính giá trị"
+  "trng hp"       → "trường hợp"
+  "chia ht cho"   → "chia hết cho"
+  "đáp s"         → "đáp số"
+  "k thoi gian"   → "kể thời gian"
+  "đng"           → "đồng"
+  "thòi gian"     → "thời gian"
+  "dim"           → "điểm" (trong "(0,5 dim)" → "(0,5 điểm)")
+
+Trước khi emit MỖI string trong "question", "answer", "solution_steps":
+  1. Đọc lại từng từ tiếng Việt.
+  2. Nếu thấy từ thiếu dấu (vd "tng", "trng", "thc", "dim", "tn"...) → KHÔI PHỤC ngay.
+  3. Mọi từ tiếng Việt khi đọc lên KHÔNG được giống ngôn ngữ khác. "Tinh gia tri ca biu thc"
+     KHÔNG được tồn tại trong output — phải là "Tính giá trị của biểu thức".
+
+KHÔNG được sửa:
+- LaTeX bên trong $...$ và $$...$$ (giữ nguyên 100% byte).
+- Image links ![alt](path) — giữ path nguyên.
+- Tên riêng tiếng Anh, công thức hóa học (H2SO4, NaOH), code, số.
+- Đoạn tiếng Anh trong đề IELTS."""
 
 _COMMON_EXTRACTION = r"""EXTRACTION:
-- Return ONLY raw JSON array — no markdown, no explanation
-- DO NOT generate IDs. DO NOT modify/simplify content.
-- Process 100% of problems — never stop midway
-- Multi-part (a,b,c) → 1 object, separators "--- a)", "--- b)" in solution_steps
-- If question cut off: "[YÊU CẦU BỊ THIẾU]"
+- Return raw JSON array only. No markdown/explanation.
+- Process 100% of problems. Copy content exactly. No IDs, no simplifying.
+- Multi-part (a,b,c) → 1 object; solution_steps prefixed "--- a)", "--- b)"
+- Question cut off → "[YÊU CẦU BỊ THIẾU]"
 
-ANSWER MATCHING:
-- Match by CONTENT, not number label
-- Scan ALL pages including appendices before marking answer empty
-- If answer section separate from questions, cross-reference carefully
-- Documents with solutions below each question: extract full solution_steps"""
+ĐỌC TOÀN BỘ TÀI LIỆU TRƯỚC KHI EMIT JSON (BẮT BUỘC):
+Đề thi K12 Việt Nam thường gồm 2 PHẦN trong CÙNG 1 PDF:
+  PHẦN A — Đề bài: "Câu 1.", "Câu 2."... (chỉ question text, có thể có A/B/C/D options).
+  PHẦN B — Đáp án / Lời giải: bắt đầu bằng tiêu đề như
+    "ĐÁP ÁN", "HƯỚNG DẪN CHẤM", "ĐÁP ÁN VÀ THANG ĐIỂM", "BÀI GIẢI", "LỜI GIẢI".
+    Sau tiêu đề, các "Câu 1", "Câu 2"... LẶP LẠI — nội dung là LỜI GIẢI từng bước,
+    kết thúc bằng đáp án cuối.
 
-_COMMON_DIFFICULTY = """DIFFICULTY: NB | TH | VD | VDC
-GRADE: integer 1-12 (infer from document header or content)
-CHAPTER: chapter name as it appears in the document
-LESSON_TITLE: specific lesson name within the chapter"""
+QUY TẮC MAP CHẶT CHẼ (RẤT QUAN TRỌNG):
+1. ĐỌC HẾT cả PHẦN A và PHẦN B trước khi sinh JSON.
+2. Mỗi cau_num CHỈ tạo 1 object output (không tạo entry riêng cho đề + lời giải).
+3. "question" = TEXT từ PHẦN A của Câu N (đề bài, options).
+4. "answer" = đáp án CUỐI lấy từ PHẦN B của Câu N (vd "A", "đpcm", "x = 2", "$\\frac{1}{2}$").
+   Khi PHẦN B có cụm "Vậy ... = X" hoặc "Chọn X" hoặc "Đáp án X" → answer là phần sau.
+5. "solution_steps" = các bước giải lấy từ PHẦN B của Câu N — array,
+   mỗi bước 1 phần tử, theo thứ tự xuất hiện. KHÔNG bao gồm câu cuối "Vậy = X" (đó là answer).
+6. Nếu PDF KHÔNG có PHẦN B → answer="" và solution_steps=[].
+
+VÍ DỤ map (giả lập input → output):
+  INPUT MARKDOWN (rút gọn):
+    "Câu 1. Tính 1 + 1.
+     ...
+     ĐÁP ÁN
+     Câu 1. Ta có 1 + 1 = 2. Vậy đáp số là 2."
+  OUTPUT JSON cho Câu 1:
+    {
+      "question": "Câu 1. Tính 1 + 1.",
+      "answer": "2",
+      "solution_steps": ["Ta có 1 + 1 = 2."],
+      ...
+    }
+
+  INPUT (trắc nghiệm 4 lựa chọn):
+    "Câu 2. Số nào lớn hơn? A. 3  B. 5  C. 1  D. 4
+     ...
+     HƯỚNG DẪN CHẤM
+     Câu 2. So sánh các số. Chọn B."
+  OUTPUT Câu 2:
+    {
+      "question": "Câu 2. Số nào lớn hơn? A. 3  B. 5  C. 1  D. 4",
+      "answer": "B",
+      "solution_steps": ["So sánh các số."],
+      ...
+    }
+
+""" + _COMMON_VN_DIACRITIC_RESTORE + r"""
+
+STRICT FIELD SEPARATION (CRITICAL — output is REJECTED if violated):
+- "question" field contains ONLY the problem statement + multiple-choice options (A./B./C./D.).
+  FORBIDDEN trong "question": "Lời giải", "Hướng dẫn giải", "Bài giải",
+  "Chọn A/B/C/D", "Đáp án:", "ĐÁP ÁN", "Kết quả:", "Vậy ...".
+- "answer" field contains ONLY the final answer (e.g. "A", "đpcm", "x = 2", "$\\frac{\\pi}{2}$").
+- "solution_steps" array contains the step-by-step solution (each step = 1 element).
+  Move "Lời giải", "Chọn ...", reasoning sentences ALL into solution_steps.
+- Nếu input có format "Câu N. <đề> A.<opt> B.<opt> C.<opt> D.<opt> Lời giải <bước> Chọn X":
+  → "question" = "Câu N. <đề> A.<opt> B.<opt> C.<opt> D.<opt>"
+  → "answer" = "X"
+  → "solution_steps" = ["<bước 1>", "<bước 2>", ...]
+
+ANSWERS: match by content (not number). Scan all pages incl. appendices.
+Extract solution_steps when solutions appear below questions."""
+
+_COMMON_DIFFICULTY = """DIFFICULTY: NB|TH|VD|VDC. GRADE: 1-12. CHAPTER/LESSON_TITLE: as in document."""
 
 _COMMON_JSON_SCHEMA = r"""JSON SCHEMA:
 {"question":"<content>","subject":"<subject_code>","type":"<type>","difficulty":"<NB|TH|VD|VDC>","grade":<1-12>,"chapter":"<chapter name>","lesson_title":"<lesson>","answer":"<answer or empty>","solution_steps":["<step>",...]}"""
 
-_COMMON_SPECIAL_CASES = """SPECIAL CASES:
-- Trắc nghiệm: options A/B/C/D in question, correct answer in answer field
-- No answer found: answer="", solution_steps=[]"""
+_COMMON_SPECIAL_CASES = """SPECIAL: TN → A/B/C/D options in question, answer = correct letter. No answer → answer="", solution_steps=[]."""
 
-_COMMON_OUTPUT = """OUTPUT: Start with [, end with ]. One object per problem. No text outside array."""
+_COMMON_OUTPUT = """OUTPUT: [{...},...]. No text outside the array."""
 
 # ── Shared V3 parse prompt (emergency fallback) ──────────────────────────────
 
@@ -113,37 +193,32 @@ _LATEX_RULES = r"""LATEX (for math/science):
 - Fractions: \\frac{a}{b}, Roots: \\sqrt{x}, Powers: x^{2}, Greek: \\alpha
 - Systems: \\begin{cases}...\\end{cases}
 - NEVER modify radical scope: "√x + 4" → $\\sqrt{x} + 4$ NOT $\\sqrt{x+4}$
-- Images → [HÌNH VẼ], Graphs → [ĐỒ THỊ], Tables → [BẢNG DỮ LIỆU]"""
+- Images: nếu markdown input có sẵn ![alt](url) hoặc ![alt](/media/...) → COPY NGUYÊN vào "question"/"solution_steps" tại đúng vị trí. KHÔNG được thay bằng [HÌNH VẼ]. Chỉ dùng [HÌNH VẼ]/[ĐỒ THỊ]/[BẢNG DỮ LIỆU] khi KHÔNG có image link sẵn."""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FAMILY: MATH
 # ══════════════════════════════════════════════════════════════════════════════
 
-_MATH_SYSTEM = r"""You are a Vietnamese K12 Mathematics exam parser expert. Extract ALL problems from documents into structured JSON.
+_MATH_SYSTEM = r"""You parse Vietnamese K12 Mathematics exams into structured JSON.
+SUBJECT: "toan".
 
-SUBJECT: Always use subject code "toan".
+MATH FORMATTING (REQUIRED — output MUST be valid LaTeX):
+- EVERY mathematical expression → wrap in $...$ (inline). Block equations: $$...$$.
+- In JSON strings escape backslash: \\frac{{a}}{{b}}, \\sqrt{{x}}, \\Rightarrow, \\begin{{cases}}.
+- Powers/subscripts: $x^{{2}}$, $a_{{n}}$ (NOT $x^2$ when grouped).
+- Geometry: \\widehat{{ABC}}, \\overrightarrow{{AB}}, \\parallel, \\perp, \\triangle.
+- Combinatorics/Probability: $C_n^k$, $A_n^k$, $P(A)$, $P(A|B)$, $n!$.
+- Calculus: \\lim_{{x \\to a}}, \\int_a^b, \\sum_{{i=1}}^{{n}}, \\prod, \\partial.
+- Preserve radical scope EXACTLY: "√x + 4" → $\\sqrt{{x}} + 4$ (NOT $\\sqrt{{x+4}}$).
+- Fractions: NEVER write "1/2" — always $\\frac{{1}}{{2}}$.
+- If input markdown already has $...$ wrapper from OCR (Marker), KEEP it as-is.
+- Images: nếu markdown input có ![alt](/media/ocr_images/...) hoặc ![alt](url) → COPY NGUYÊN tại đúng vị trí trong "question" hoặc "solution_steps". KHÔNG được rút gọn thành [HÌNH VẼ]. Chỉ fallback [HÌNH VẼ]/[ĐỒ THỊ]/[BẢNG DỮ LIỆU] khi KHÔNG có image link sẵn.
 
-MATH-SPECIFIC RULES:
-- All math expressions → LaTeX $...$. In JSON: \\ before commands (\\frac, \\sqrt, \\Rightarrow)
-- Fractions: \\frac{{a}}{{b}}, Roots: \\sqrt{{x}}, Powers: x^{{2}}, Greek: \\alpha, \\beta
-- Systems of equations: \\begin{{cases}}...\\end{{cases}}
-- Geometry: \\widehat{{ABC}}, \\overrightarrow{{AB}}, \\parallel, \\perp, \\triangle
-- Combinatorics: $C_n^k$, $A_n^k$, $P_n$, $n!$
-- Probability: $P(A)$, $P(A|B)$, $E(X)$, $D(X)$
-- Limits/calculus: \\lim, \\int, \\sum, \\prod
-- NEVER modify radical scope: "√x + 4" → $\\sqrt{{x}} + 4$ NOT $\\sqrt{{x+4}}$
-- Images → [HÌNH VẼ], Graphs → [ĐỒ THỊ], Tables → [BẢNG DỮ LIỆU]
+QUESTION TYPE MUST be one of:
+TN | TL | Chứng minh | Tìm x | Tìm GTLN/GTNN | Tính toán | Hệ phương trình | Rút gọn biểu thức | So sánh | Bài toán thực tế | Xác suất | Tổ hợp | Hình học
 
-TYPE: TN | TL | Chứng minh | Tìm x | Tìm GTLN/GTNN | Tính toán | Hệ phương trình | Rút gọn biểu thức | So sánh | Bài toán thực tế | Xác suất | Tổ hợp | Hình học
-
-""" + _COMMON_EXTRACTION + "\n\n" + _COMMON_DIFFICULTY + "\n\n" + _COMMON_JSON_SCHEMA + "\n\n" + """SPECIAL CASES:
-- Trắc nghiệm: options A/B/C/D in question, correct answer in answer field
-- Chứng minh: answer="đpcm", full proof in solution_steps
-- GTLN/GTNN: answer includes value AND condition
-- No answer found: answer="", solution_steps=[]
-
-""" + _COMMON_OUTPUT
+""" + _COMMON_EXTRACTION + "\n\n" + _COMMON_DIFFICULTY + "\n\n" + _COMMON_JSON_SCHEMA + "\n\nSPECIAL: Chứng minh → answer=\"đpcm\", proof in solution_steps. GTLN/GTNN → answer includes value AND condition. " + _COMMON_SPECIAL_CASES + "\n\n" + _COMMON_OUTPUT
 
 _MATH_PARSE_V1 = r"""Extract ALL math questions from this document into a JSON array.
 RULES: Close all JSON properly. Copy all LaTeX expressions EXACTLY — preserve \\frac, \\sqrt scope, equation systems.
@@ -178,20 +253,19 @@ JSON array:"""
 # FAMILY: PHYSICS
 # ══════════════════════════════════════════════════════════════════════════════
 
-_PHYSICS_SYSTEM = r"""You are a Vietnamese K12 Physics exam parser expert. Extract ALL problems from documents into structured JSON.
+_PHYSICS_SYSTEM = r"""You parse Vietnamese K12 Physics exams into structured JSON.
+SUBJECT: "vat-li".
 
-SUBJECT: Always use subject code "vat-li".
-
-PHYSICS-SPECIFIC RULES:
-- Formulas → LaTeX $...$. ALWAYS include units: $v = 10 \text{ m/s}$, $F = 5 \text{ N}$
-- Vector notation: $\overrightarrow{F}$, $\overrightarrow{v}$, $\vec{a}$
-- Units: m/s, m/s², N, J, W, V, A, Ω, Hz, Pa, K, °C — preserve exactly
-- Scientific notation: $3{,}2 \times 10^{8}$
-- Constants: $g = 9{,}8 \text{ m/s}^2$, $c = 3 \times 10^8 \text{ m/s}$
-- Circuit diagrams → [SƠ ĐỒ MẠCH ĐIỆN] with description of components
-- Force diagrams → [HÌNH VẼ LỰC]
-- Graphs (v-t, x-t, U-I) → [ĐỒ THỊ] with axis labels if visible
-- Given/Find/Solution structure: extract all parts into solution_steps
+PHYSICS FORMATTING (REQUIRED — output MUST be valid LaTeX):
+- EVERY formula → wrap in $...$ inline (or $$...$$ block). KEEP units inside: $v = 10 \text{ m/s}$, $F = 5 \text{ N}$.
+- In JSON strings escape backslash: \\overrightarrow, \\vec, \\frac, \\Delta, \\partial.
+- Vector notation: $\\overrightarrow{F}$, $\\vec{a}$, $\\Delta v$.
+- Units (preserve exactly): m/s, m/s², N, J, W, V, A, Ω, Hz, Pa, K, °C.
+- Scientific notation: $3{,}2 \\times 10^{8}$ (Vietnamese decimal comma).
+- Constants: $g = 9{,}8 \\text{ m/s}^2$, $c = 3 \\times 10^8 \\text{ m/s}$.
+- If input markdown already has $...$ wrapper from OCR (Marker), KEEP it.
+- Images: nếu markdown input có ![alt](/media/...) hoặc ![alt](url) → COPY NGUYÊN tại đúng vị trí. KHÔNG được rút gọn. Chỉ fallback [SƠ ĐỒ MẠCH ĐIỆN]/[HÌNH VẼ LỰC]/[ĐỒ THỊ] khi KHÔNG có image link sẵn.
+- Given/Find/Solution structure: extract all parts into solution_steps.
 
 TYPE: TN | TL | Tính toán | Thí nghiệm | Giải thích hiện tượng | Bài tập đồ thị | Bài tập mạch điện | Bài toán thực tế
 
@@ -230,24 +304,21 @@ JSON array:"""
 # FAMILY: CHEMISTRY
 # ══════════════════════════════════════════════════════════════════════════════
 
-_CHEMISTRY_SYSTEM = r"""You are a Vietnamese K12 Chemistry exam parser expert. Extract ALL problems from documents into structured JSON.
+_CHEMISTRY_SYSTEM = r"""You parse Vietnamese K12 Chemistry exams into structured JSON.
+SUBJECT: "hoa-hoc".
 
-SUBJECT: Always use subject code "hoa-hoc".
-
-CHEMISTRY-SPECIFIC RULES:
-- Chemical formulas: preserve EXACTLY — H₂SO₄, NaOH, Fe₂O₃, CH₃COOH
-- In LaTeX: $H_2SO_4$, $Fe_2O_3$, $CH_3COOH$
-- Chemical equations: copy EXACTLY as written. Do NOT balance or modify.
-- Arrow notation: → (yields), ⇌ (equilibrium), ↑ (gas), ↓ (precipitate)
-- Reaction conditions above/below arrow: $\xrightarrow{t°}$, $\xrightarrow{xt, p}$, $\xrightarrow{H_2SO_4 đặc, t°}$
-  Or plain text: "→ (t°)", "→ (xt, p)" if LaTeX not feasible
-- State symbols: (r) rắn, (l) lỏng, (k) khí, (dd) dung dịch
-- Organic chemistry: CH₃-CH=CH₂, structural formulas, IUPAC names → preserve exactly
-- Concentration: $C_M$, C%, pH, pOH — include values and units
-- Moles/mass: mol, g, g/mol, lít — preserve units
-- Electrochemistry: electrode reactions, cell notation
-- Tables of data (nguyên tử khối, bảng tuần hoàn references) → [BẢNG DỮ LIỆU]
-- Experiment diagrams → [HÌNH VẼ THÍ NGHIỆM]
+CHEMISTRY FORMATTING (REQUIRED — preserve formulas EXACTLY):
+- Chemical formulas with subscripts: prefer LaTeX $H_2SO_4$, $Fe_2O_3$, $CH_3COOH$.
+  Plain Unicode H₂SO₄, NaOH, Fe₂O₃, CH₃COOH chấp nhận khi input đã có Unicode.
+- Chemical equations: copy EXACTLY. Do NOT balance or modify coefficients.
+- Arrow notation: → (yields), ⇌ (equilibrium), ↑ (gas), ↓ (precipitate).
+- Reaction conditions: $\\xrightarrow{t°}$, $\\xrightarrow{xt, p}$, $\\xrightarrow{H_2SO_4 đặc, t°}$. Hoặc plain "→ (t°)" nếu LaTeX phức tạp.
+- State symbols: (r) rắn, (l) lỏng, (k) khí, (dd) dung dịch.
+- Organic chemistry: CH₃-CH=CH₂, structural formulas, IUPAC names → preserve exactly.
+- Concentration/pH: $C_M$, C%, pH, pOH — include values and units.
+- Numerics with unit: mol, g, g/mol, l (lít) — preserve.
+- Tables: [BẢNG DỮ LIỆU]; experiments: [HÌNH VẼ THÍ NGHIỆM].
+- If input markdown already has $...$ wrapper from OCR, KEEP it.
 
 TYPE: TN | TL | Phương trình hóa học | Cân bằng phản ứng | Tính theo PTHH | Nhận biết chất | Thí nghiệm | Pha dung dịch | Hóa hữu cơ | Điện hóa | Giải thích hiện tượng
 
@@ -297,7 +368,7 @@ BIOLOGY-SPECIFIC RULES:
 - Cross diagrams: P × P → F₁ → F₂ — extract as structured text
 - DNA/RNA sequences: ATCG, AUGC — copy exactly, no modifications
 - Biological processes: quang hợp, hô hấp, nguyên phân, giảm phân — use Vietnamese terms
-- Diagrams of cells, organs, ecosystems → [HÌNH VẼ] with brief description
+- Images: nếu markdown input có ![alt](/media/...) hoặc ![alt](url) → COPY NGUYÊN. Chỉ fallback [HÌNH VẼ] với mô tả khi KHÔNG có image link sẵn.
 - Experiment descriptions: extract hypothesis, procedure, results, conclusion
 - Classification: giới, ngành, lớp, bộ, họ, chi, loài — preserve hierarchy
 - Tables of experimental data → [BẢNG DỮ LIỆU]
@@ -350,7 +421,7 @@ KHTN-SPECIFIC RULES:
 - Biology content: cell structure, organisms, ecosystems, basic genetics
 - Formulas → LaTeX $...$. Always include units for physics quantities.
 - Chemical equations: copy EXACTLY. Do NOT balance or modify.
-- Diagrams → [HÌNH VẼ], Experiments → [THÍ NGHIỆM], Tables → [BẢNG DỮ LIỆU]
+- Images: nếu markdown input có ![alt](/media/...) hoặc ![alt](url) → COPY NGUYÊN. Chỉ fallback [HÌNH VẼ]/[THÍ NGHIỆM]/[BẢNG DỮ LIỆU] khi KHÔNG có image link sẵn.
 - Grade 6-9 level: simpler than grades 10-12. Questions are typically more conceptual.
 
 TYPE: TN | TL | Tính toán | Thí nghiệm | Giải thích hiện tượng | Phương trình hóa học | Bài toán thực tế
@@ -574,8 +645,7 @@ INFORMATICS-SPECIFIC RULES:
 - Database: SQL queries — preserve exact syntax
 - Spreadsheet: cell references (A1, B2), formulas (=SUM, =IF) — preserve exactly
 - File paths, URLs: preserve exactly
-- Diagrams (flowcharts, ER diagrams) → [SƠ ĐỒ] with description
-- Technology (Công nghệ): technical drawings → [BẢN VẼ KỸ THUẬT]
+- Images: nếu markdown input có ![alt](/media/...) hoặc ![alt](url) → COPY NGUYÊN. Chỉ fallback [SƠ ĐỒ]/[BẢN VẼ KỸ THUẬT] với description khi KHÔNG có image link sẵn.
 
 TYPE: TN | TL | Viết chương trình | Đọc code | Thuật toán | Cơ sở dữ liệu | Bảng tính | Bài tập mạng | Bài tập thực hành
 
@@ -708,7 +778,7 @@ SUBJECT DETECTION:
 
 GENERAL RULES:
 - Copy ALL content EXACTLY as written — text, numbers, formulas, names
-- Images/diagrams → [HÌNH VẼ] with brief description
+- Images: nếu markdown input có ![alt](/media/...) hoặc ![alt](url) → COPY NGUYÊN. Chỉ fallback [HÌNH VẼ] với mô tả khi KHÔNG có image link sẵn.
 - Tables → [BẢNG DỮ LIỆU]
 - Preserve Vietnamese diacritics exactly
 
@@ -752,7 +822,6 @@ PROMPT_CONFIGS: dict[str, PromptConfig] = {
         parse_prompt_v1=_IELTS_PARSE_V1,
         parse_prompt_v2=_IELTS_PARSE_V2,
         parse_prompt_v3=_SHARED_PARSE_V3,
-        vision_prompt=_IELTS_VISION,
     ),
     "math": PromptConfig(
         family="math",
@@ -760,7 +829,6 @@ PROMPT_CONFIGS: dict[str, PromptConfig] = {
         parse_prompt_v1=_MATH_PARSE_V1,
         parse_prompt_v2=_MATH_PARSE_V2,
         parse_prompt_v3=_SHARED_PARSE_V3,
-        vision_prompt=_MATH_VISION,
     ),
     "physics": PromptConfig(
         family="physics",
@@ -768,7 +836,6 @@ PROMPT_CONFIGS: dict[str, PromptConfig] = {
         parse_prompt_v1=_PHYSICS_PARSE_V1,
         parse_prompt_v2=_PHYSICS_PARSE_V2,
         parse_prompt_v3=_SHARED_PARSE_V3,
-        vision_prompt=_PHYSICS_VISION,
     ),
     "chemistry": PromptConfig(
         family="chemistry",
@@ -776,7 +843,6 @@ PROMPT_CONFIGS: dict[str, PromptConfig] = {
         parse_prompt_v1=_CHEMISTRY_PARSE_V1,
         parse_prompt_v2=_CHEMISTRY_PARSE_V2,
         parse_prompt_v3=_SHARED_PARSE_V3,
-        vision_prompt=_CHEMISTRY_VISION,
     ),
     "biology": PromptConfig(
         family="biology",
@@ -784,7 +850,6 @@ PROMPT_CONFIGS: dict[str, PromptConfig] = {
         parse_prompt_v1=_BIOLOGY_PARSE_V1,
         parse_prompt_v2=_BIOLOGY_PARSE_V2,
         parse_prompt_v3=_SHARED_PARSE_V3,
-        vision_prompt=_BIOLOGY_VISION,
     ),
     "khtn": PromptConfig(
         family="khtn",
@@ -792,7 +857,6 @@ PROMPT_CONFIGS: dict[str, PromptConfig] = {
         parse_prompt_v1=_KHTN_PARSE_V1,
         parse_prompt_v2=_KHTN_PARSE_V2,
         parse_prompt_v3=_SHARED_PARSE_V3,
-        vision_prompt=_KHTN_VISION,
     ),
     "literature": PromptConfig(
         family="literature",
@@ -800,7 +864,6 @@ PROMPT_CONFIGS: dict[str, PromptConfig] = {
         parse_prompt_v1=_LITERATURE_PARSE_V1,
         parse_prompt_v2=_LITERATURE_PARSE_V2,
         parse_prompt_v3=_SHARED_PARSE_V3,
-        vision_prompt=_LITERATURE_VISION,
     ),
     "english": PromptConfig(
         family="english",
@@ -808,7 +871,6 @@ PROMPT_CONFIGS: dict[str, PromptConfig] = {
         parse_prompt_v1=_ENGLISH_PARSE_V1,
         parse_prompt_v2=_ENGLISH_PARSE_V2,
         parse_prompt_v3=_SHARED_PARSE_V3,
-        vision_prompt=_ENGLISH_VISION,
     ),
     "social": PromptConfig(
         family="social",
@@ -816,7 +878,6 @@ PROMPT_CONFIGS: dict[str, PromptConfig] = {
         parse_prompt_v1=_SOCIAL_PARSE_V1,
         parse_prompt_v2=_SOCIAL_PARSE_V2,
         parse_prompt_v3=_SHARED_PARSE_V3,
-        vision_prompt=_SOCIAL_VISION,
     ),
     "informatics": PromptConfig(
         family="informatics",
@@ -824,7 +885,6 @@ PROMPT_CONFIGS: dict[str, PromptConfig] = {
         parse_prompt_v1=_INFORMATICS_PARSE_V1,
         parse_prompt_v2=_INFORMATICS_PARSE_V2,
         parse_prompt_v3=_SHARED_PARSE_V3,
-        vision_prompt=_INFORMATICS_VISION,
     ),
     "generic": PromptConfig(
         family="generic",
@@ -832,7 +892,6 @@ PROMPT_CONFIGS: dict[str, PromptConfig] = {
         parse_prompt_v1=_GENERIC_PARSE_V1,
         parse_prompt_v2=_GENERIC_PARSE_V2,
         parse_prompt_v3=_SHARED_PARSE_V3,
-        vision_prompt=_GENERIC_VISION,
     ),
 }
 

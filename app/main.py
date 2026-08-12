@@ -9,17 +9,28 @@ from starlette.requests import Request as StarletteRequest
 logger = logging.getLogger(__name__)
 
 from app.core.config import settings
-from app.api import auth, parser, questions, generator, dashboard, export, classes, assignments, submissions, game, analytics, curriculum, subjects, chat, notifications, live, quizzes, quiz_attempts, media, pages, ielts_parser
+from app.api import auth, parser, questions, generator, dashboard, export, classes, assignments, submissions, analytics, curriculum, subjects, quizzes, quiz_attempts, media, pages, ielts_parser, ielts_audio, ielts_generator, ielts_writing, lesson_plans
 from app.db.session import engine
 from app.db.base import Base
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Optional Redis for shared runtime state (degrades to in-memory if absent)
+    try:
+        from app.core.redis_client import init_redis
+        await init_redis()
+    except Exception as e:
+        logger.warning(f"Redis init skipped: {e}")
+
     # Startup: create tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
     # ── Safe column migrations (works for both SQLite and PostgreSQL) ──
+    # ⚠️ LEGACY MIGRATIONS — từ 2026-07-10 schema mới quản lý bằng Alembic
+    # (alembic/versions/, baseline 404cab2e5e0c). Danh sách ALTER dưới đây giữ
+    # nguyên cho DB cũ chưa `alembic stamp head`; KHÔNG thêm mục mới vào đây —
+    # thêm cột/index mới = sửa model + `alembic revision --autogenerate`.
     _migrations = [
         ("exam",     "file_hash",    "ALTER TABLE exam ADD COLUMN file_hash VARCHAR(32)"),
         ("question", "content_hash", "ALTER TABLE question ADD COLUMN content_hash VARCHAR(32)"),
@@ -33,10 +44,8 @@ async def lifespan(app: FastAPI):
         ("assignment",  "description", "ALTER TABLE assignment ADD COLUMN description TEXT"),
         ("submission",  "game_mode",   "ALTER TABLE submission ADD COLUMN game_mode VARCHAR(50)"),
         ("submission",  "xp_earned",   "ALTER TABLE submission ADD COLUMN xp_earned INTEGER DEFAULT 0"),
-        ("studentxp",   "level",       "ALTER TABLE studentxp ADD COLUMN level INTEGER DEFAULT 1"),
         ("question",    "is_public",   "ALTER TABLE question ADD COLUMN is_public BOOLEAN DEFAULT TRUE"),
-        ("user",        "role",        "ALTER TABLE user ADD COLUMN role VARCHAR(20) DEFAULT 'student'"),
-        ("devicetoken", "platform",      "ALTER TABLE devicetoken ADD COLUMN platform VARCHAR(10)"),
+        ("user",        "role",        "ALTER TABLE user ADD COLUMN role VARCHAR(20) DEFAULT 'teacher'"),
         ("user",        "reset_token",   "ALTER TABLE \"user\" ADD COLUMN reset_token VARCHAR(128)"),
         ("user",        "reset_token_expires", "ALTER TABLE \"user\" ADD COLUMN reset_token_expires TIMESTAMPTZ"),
         ("question",    "is_bank_duplicate", "ALTER TABLE question ADD COLUMN is_bank_duplicate BOOLEAN DEFAULT FALSE"),
@@ -45,11 +54,12 @@ async def lifespan(app: FastAPI):
         ("curriculum",  "section_code",  "ALTER TABLE curriculum ADD COLUMN section_code VARCHAR(30) DEFAULT ''"),
         ("question",    "subject_code",  "ALTER TABLE question ADD COLUMN subject_code VARCHAR(30) DEFAULT 'toan'"),
         ("exam",        "subject_code",  "ALTER TABLE exam ADD COLUMN subject_code VARCHAR(30) DEFAULT 'toan'"),
+        ("exam",        "grade",         "ALTER TABLE exam ADD COLUMN grade INTEGER"),
+        ("exam",        "layout_json",    "ALTER TABLE exam ADD COLUMN layout_json TEXT"),
         ("class",       "subject_code",  "ALTER TABLE class ADD COLUMN subject_code VARCHAR(30)"),
         ("question",    "answer_source", "ALTER TABLE question ADD COLUMN answer_source VARCHAR(20)"),
         # ── Quiz system ──
         ("assignment",  "quiz_id",       "ALTER TABLE assignment ADD COLUMN quiz_id INTEGER REFERENCES quiz(id) ON DELETE SET NULL"),
-        ("livesession", "quiz_id",       "ALTER TABLE livesession ADD COLUMN quiz_id INTEGER REFERENCES quiz(id) ON DELETE SET NULL"),
         # Make student_id nullable for anonymous quiz attempts
         ("quizattempt", "student_id_nullable", "ALTER TABLE quizattempt ALTER COLUMN student_id DROP NOT NULL"),
         # Manual grading support
@@ -60,6 +70,10 @@ async def lifespan(app: FastAPI):
         ("teacherpage", "view_count",      "ALTER TABLE teacherpage ADD COLUMN view_count INTEGER DEFAULT 0"),
         # IELTS bank support
         ("question",    "extra_data",      "ALTER TABLE question ADD COLUMN extra_data TEXT"),
+        ("questiondraft", "page_num",      "ALTER TABLE questiondraft ADD COLUMN page_num INTEGER"),
+        # OCR layout — page_num + bbox cho mỗi câu (từ block-aware pipeline)
+        ("question",    "page_num",        "ALTER TABLE question ADD COLUMN page_num INTEGER"),
+        ("question",    "bbox_json",       "ALTER TABLE question ADD COLUMN bbox_json TEXT"),
     ]
     # OPT: Index migrations (CREATE INDEX IF NOT EXISTS is idempotent)
     _index_migrations = [
@@ -72,6 +86,8 @@ async def lifespan(app: FastAPI):
         "CREATE INDEX IF NOT EXISTS ix_question_user_subject_grade ON question(user_id, subject_code, grade)",
         # Quiz system indexes
         "CREATE INDEX IF NOT EXISTS ix_assignment_quiz ON assignment(quiz_id)",
+        # Community bank: is_public + created_at (query không lọc theo user_id)
+        "CREATE INDEX IF NOT EXISTS ix_question_public_created ON question(is_public, created_at DESC)",
     ]
     # Run each migration in its own transaction so a failed ALTER
     # (column already exists) doesn't abort subsequent migrations.
@@ -89,9 +105,9 @@ async def lifespan(app: FastAPI):
                 await conn.execute(text(idx_sql))
             except Exception:
                 pass  # Index already exists
-        # Migrate old role="user" → "student"
+        # Teacher-only pivot: normalize legacy/empty roles to 'teacher'
         try:
-            await conn.execute(text("UPDATE \"user\" SET role='student' WHERE role='user' OR role IS NULL"))
+            await conn.execute(text("UPDATE \"user\" SET role='teacher' WHERE role='user' OR role='student' OR role IS NULL"))
         except Exception:
             pass
 
@@ -102,13 +118,21 @@ async def lifespan(app: FastAPI):
         from app.db.models.curriculum import Curriculum, GDPT_2018_MATH
 
         async with AsyncSessionLocal() as session:
-            # Seed subjects (if empty)
-            subj_count = (await session.execute(text("SELECT COUNT(*) FROM subject"))).scalar()
-            if subj_count == 0:
-                for s in SUBJECTS_GDPT_2018:
+            # Seed/backfill subjects idempotently so new subjects added in code
+            # (for example IELTS) appear in existing databases.
+            existing_subjects = {
+                row[0]
+                for row in (await session.execute(text("SELECT subject_code FROM subject"))).fetchall()
+            }
+            missing_subjects = [
+                s for s in SUBJECTS_GDPT_2018
+                if s["subject_code"] not in existing_subjects
+            ]
+            if missing_subjects:
+                for s in missing_subjects:
                     session.add(Subject(**s))
                 await session.commit()
-                logger.info(f"Seeded {len(SUBJECTS_GDPT_2018)} subjects")
+                logger.info(f"Seeded {len(missing_subjects)} missing subjects")
 
             # Seed curriculum (if empty)
             cur_count = (await session.execute(text("SELECT COUNT(*) FROM curriculum"))).scalar()
@@ -123,6 +147,22 @@ async def lifespan(app: FastAPI):
                     text("UPDATE curriculum SET subject_code = 'toan' WHERE subject_code IS NULL")
                 )
                 await session.commit()
+
+            # Seed YCCĐ (yêu cầu cần đạt) Toán 6 — neo grounding cho KHBD
+            try:
+                from app.db.seed_yccd import seed_yccd_toan6
+                added_yccd = await seed_yccd_toan6(session)
+                if added_yccd:
+                    logger.info(f"Seeded {added_yccd} YCCĐ entries (Toán 6)")
+            except Exception as e:
+                logger.warning(f"YCCĐ seed skipped: {e}")
+
+            # Seed phiên bản chính sách — mốc so sánh cho luồng đồng ý lại.
+            try:
+                from app.services.consent_service import seed_policy_versions
+                await seed_policy_versions(session)
+            except Exception as e:
+                logger.warning(f"Policy version seed skipped: {e}")
     except Exception as e:
         logger.warning(f"Subject/curriculum seed skipped: {e}")
 
@@ -166,21 +206,60 @@ async def lifespan(app: FastAPI):
         from app.services.vector_search import init_vector_table
         await init_vector_table(engine)
         try:
-            from app.services.chat_rag import ensure_chat_tables
-            await ensure_chat_tables(engine)
-        except Exception as e:
-            logger.warning(f"Chat tables init skipped: {e}")
-        try:
             from app.services.similarity_detector import ensure_similarity_table
             await ensure_similarity_table(engine)
         except Exception as e:
             logger.warning(f"Similarity table init skipped: {e}")
+        # Document RAG chunk table (hybrid OCR + RAG pipeline)
+        try:
+            from app.services.document_rag import ensure_document_chunk_table
+            await ensure_document_chunk_table(engine)
+        except Exception as e:
+            logger.warning(f"Document chunk table init skipped: {e}")
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Vector table init skipped: {e}")
 
+    # D2: best-effort retention cleanup of old uploaded files (0 = disabled)
+    try:
+        if settings.UPLOAD_RETENTION_DAYS > 0:
+            from app.api.parser import cleanup_old_uploads
+            cleanup_old_uploads(settings.UPLOAD_RETENTION_DAYS)
+    except Exception as e:
+        logger.warning(f"Upload retention cleanup skipped: {e}")
+
+    # ── Orphan exam recovery ──
+    # Parse chạy bằng BackgroundTasks in-process → crash/restart giữa chừng để
+    # exam kẹt pending/processing vĩnh viễn (FE poll mãi). Tại boot, không task
+    # nào sống sót qua restart nên mọi exam ở 2 trạng thái đó là mồ côi → đánh
+    # failed để user re-upload (OCR artifact cache theo file_hash vẫn còn, chạy
+    # lại rất nhanh). ocr_review/needs_review là trạng thái chờ user, KHÔNG đụng.
+    try:
+        async with engine.begin() as conn:
+            result = await conn.execute(text(
+                "UPDATE exam SET status='failed', "
+                "error_message='Server khởi động lại giữa chừng khi đang xử lý. "
+                "Vui lòng tải lại file (kết quả OCR đã cache, chạy lại sẽ nhanh).' "
+                "WHERE status IN ('pending', 'processing')"
+            ))
+            recovered = getattr(result, "rowcount", 0) or 0
+            if recovered:
+                logger.warning(f"Orphan exam recovery: marked {recovered} stuck exam(s) as failed")
+    except Exception as e:
+        logger.warning(f"Orphan exam recovery skipped: {e}")
+
     yield
     # Shutdown
+    try:
+        from app.api.parser import drain_background_tasks
+        await drain_background_tasks()
+    except Exception as e:
+        logger.warning(f"Background task drain skipped: {e}")
+    try:
+        from app.core.redis_client import close_redis
+        await close_redis()
+    except Exception:
+        pass
     await engine.dispose()
 
 app = FastAPI(
@@ -235,7 +314,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
             "img-src 'self' data: blob: https:",
             "media-src 'self' https:",
-            "connect-src 'self' " + " ".join(settings.BACKEND_CORS_ORIGINS) if settings.BACKEND_CORS_ORIGINS else "connect-src 'self'",
+            ("connect-src 'self' " + " ".join(settings.BACKEND_CORS_ORIGINS)) if settings.BACKEND_CORS_ORIGINS else "connect-src 'self'",
             "font-src 'self' data:",
             "frame-ancestors 'none'",
         ]
@@ -258,31 +337,39 @@ app.add_middleware(RateLimitMiddleware, enabled=(settings.ENV == "production"))
 app.include_router(auth.router,        prefix=f"{settings.API_V1_STR}/auth",        tags=["auth"])
 app.include_router(parser.router,      prefix=f"{settings.API_V1_STR}/parser",      tags=["parser"])
 app.include_router(ielts_parser.router, prefix=f"{settings.API_V1_STR}/parser",     tags=["ielts"])
+app.include_router(ielts_audio.router,  prefix=f"{settings.API_V1_STR}/parser",     tags=["ielts"])
 app.include_router(questions.router,   prefix=f"{settings.API_V1_STR}/questions",   tags=["questions"])
 app.include_router(generator.router,   prefix=f"{settings.API_V1_STR}/generate",    tags=["generator"])
+app.include_router(ielts_generator.router, prefix=f"{settings.API_V1_STR}/generate", tags=["ielts"])
 app.include_router(dashboard.router,   prefix=f"{settings.API_V1_STR}/dashboard",   tags=["dashboard"])
 app.include_router(export.router,      prefix=f"{settings.API_V1_STR}/export",      tags=["export"])
 app.include_router(classes.router,     prefix=f"{settings.API_V1_STR}/classes",     tags=["classroom"])
-# NOTE: file naming is swapped — submissions.py contains assignment CRUD code,
-#       assignments.py contains submission/XP/leaderboard code.
-#       Routers are mounted with correct semantic prefixes here.
-app.include_router(submissions.router, prefix=f"{settings.API_V1_STR}/assignments", tags=["classroom"])
-app.include_router(assignments.router, prefix=f"{settings.API_V1_STR}/submissions", tags=["classroom"])
-app.include_router(game.router,        prefix=f"{settings.API_V1_STR}/game",        tags=["game"])
+# 2026-07-10: đã đổi tên file khớp nội dung — assignments.py = Assignment CRUD,
+# submissions.py = Submission records (dormant, teacher-only pivot).
+app.include_router(assignments.router, prefix=f"{settings.API_V1_STR}/assignments", tags=["classroom"])
+app.include_router(submissions.router, prefix=f"{settings.API_V1_STR}/submissions", tags=["classroom"])
 app.include_router(analytics.router,   prefix=f"{settings.API_V1_STR}/analytics",   tags=["analytics"])
 app.include_router(curriculum.router,  prefix=f"{settings.API_V1_STR}/curriculum",  tags=["curriculum"])
 app.include_router(subjects.router,   prefix=f"{settings.API_V1_STR}/subjects",   tags=["subjects"])
-app.include_router(chat.router,          prefix=f"{settings.API_V1_STR}/chat",          tags=["chat"])
-app.include_router(notifications.router, prefix=f"{settings.API_V1_STR}/notifications", tags=["notifications"])
-app.include_router(live.router,          prefix=f"{settings.API_V1_STR}/live",          tags=["live"])
 app.include_router(quizzes.router,       prefix=f"{settings.API_V1_STR}/quizzes",      tags=["quiz"])
 app.include_router(quiz_attempts.router, prefix=f"{settings.API_V1_STR}/quiz-attempts", tags=["quiz"])
+app.include_router(ielts_writing.router, prefix=f"{settings.API_V1_STR}/quiz-attempts", tags=["ielts"])
 app.include_router(media.router,         prefix=f"{settings.API_V1_STR}/media",         tags=["media"])
 app.include_router(pages.router,         prefix=f"{settings.API_V1_STR}/pages",         tags=["pages"])
+app.include_router(lesson_plans.router,  prefix=f"{settings.API_V1_STR}/lesson-plans",  tags=["lesson-plans"])
+
+# Tuân thủ pháp lý: nhật ký đồng ý + quyền chủ thể dữ liệu (Luật BVDLCN 91/2025)
+from app.api import consents, me as me_api
+app.include_router(consents.router,      prefix=f"{settings.API_V1_STR}/consents",      tags=["compliance"])
+app.include_router(me_api.router,        prefix=f"{settings.API_V1_STR}/me",            tags=["compliance"])
 
 # Admin APIs
 from app.api import admin
 app.include_router(admin.router,         prefix=f"{settings.API_V1_STR}/admin",         tags=["admin"])
+
+# K12 OCR admin endpoint (replaces the old OCR benchmark FE flow)
+from app.api import k12_ocr
+app.include_router(k12_ocr.router,       prefix=f"{settings.API_V1_STR}/admin",         tags=["admin"])
 
 # Serve uploaded media files (images, audio)
 import os

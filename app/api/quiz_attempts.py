@@ -290,6 +290,19 @@ async def submit_attempt(
 
     await db.commit()
 
+    # ── Kick off IELTS Writing AI grading (async, non-blocking) ──
+    # Only for IELTS quizzes containing essay-type questions. Errors here
+    # must not affect the submit response.
+    try:
+        if (quiz.subject_code or "").lower() == "ielts" and any(
+            qq.type == "essay" for qq in questions_map.values()
+        ):
+            import asyncio as _asyncio
+            from app.services.ielts_writing_grader import grade_writing_for_attempt
+            _asyncio.create_task(grade_writing_for_attempt(attempt.id))
+    except Exception as _e:
+        logger.warning(f"Skip IELTS writing grade scheduler: {_e}")
+
     # Reload with answers
     result = await db.execute(
         select(QuizAttempt)

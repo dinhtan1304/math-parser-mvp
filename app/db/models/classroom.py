@@ -1,6 +1,6 @@
 """
-Classroom models for the MathPlay teacher/student system.
-Covers: Class, ClassMember, Assignment, Submission, AnswerDetail, StudentXP, Badge.
+Classroom models for the MathPlay teacher system.
+Covers: Class, ClassMember, Assignment, Submission, AnswerDetail.
 """
 
 import random
@@ -108,6 +108,15 @@ class Assignment(Base):
 # ─────────────────────────────────────────────────────────────
 
 class Submission(Base):
+    """Bài làm của học sinh.
+
+    ⚠️ NGUYÊN TẮC THU THẬP TỐI THIỂU DỮ LIỆU HỌC SINH (Luật BVDLCN 91/2025).
+    Bảng này CHỈ được chứa: định danh nội bộ, kết quả làm bài và mốc thời gian.
+    TUYỆT ĐỐI KHÔNG thêm cột định danh cá nhân của học sinh — ngày sinh, số điện
+    thoại, email, địa chỉ, ảnh chân dung. Học sinh là người chưa thành niên; app
+    chỉ xử lý dữ liệu theo yêu cầu của giáo viên và giữ ở mức tối thiểu.
+    Ràng buộc này được kiểm tra tự động: tests/test_student_data_minimal.py
+    """
     id            = Column(Integer, primary_key=True, index=True)
     assignment_id = Column(Integer, ForeignKey("assignment.id", ondelete="CASCADE"), nullable=False)
     student_id    = Column(Integer, ForeignKey("user.id"), nullable=False)
@@ -122,6 +131,9 @@ class Submission(Base):
     xp_earned     = Column(Integer, default=0)
     submitted_at  = Column(DateTime(timezone=True), nullable=True)
     created_at    = Column(DateTime(timezone=True), default=_now)
+
+    # Mốc ẩn danh hóa theo chính sách lưu trữ (bài làm cũ → gỡ liên kết danh tính).
+    anonymized_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     student       = relationship("User", backref="submissions")
@@ -148,40 +160,4 @@ class AnswerDetail(Base):
 
     __table_args__ = (
         Index("ix_answerdetail_submission", "submission_id"),
-    )
-
-
-# ─────────────────────────────────────────────────────────────
-# StudentXP  (gamification — one row per student)
-# ─────────────────────────────────────────────────────────────
-
-class StudentXP(Base):
-    id           = Column(Integer, primary_key=True, index=True)
-    student_id   = Column(Integer, ForeignKey("user.id"), unique=True, nullable=False)
-
-    total_xp     = Column(Integer, default=0)
-    level        = Column(Integer, default=1)
-    streak_days  = Column(Integer, default=0)
-    last_active  = Column(DateTime(timezone=True), nullable=True)
-    updated_at   = Column(DateTime(timezone=True), default=_now, onupdate=_now)
-
-    student      = relationship("User", backref="xp_record")
-
-
-# ─────────────────────────────────────────────────────────────
-# Badge  (achievements earned by students)
-# ─────────────────────────────────────────────────────────────
-
-class Badge(Base):
-    id         = Column(Integer, primary_key=True, index=True)
-    student_id = Column(Integer, ForeignKey("user.id"), nullable=False)
-
-    badge_type = Column(String(100), nullable=False)  # e.g. "streak_7", "combo_10", "first_submit"
-    label      = Column(String(200), nullable=True)
-    earned_at  = Column(DateTime(timezone=True), default=_now)
-
-    student    = relationship("User", backref="badges")
-
-    __table_args__ = (
-        Index("ix_badge_student", "student_id"),
     )

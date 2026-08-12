@@ -17,12 +17,16 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from sqlalchemy import text as sa_text
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
+from app.core import content_origin
+from app.core.config import settings
 from app.api.parser import (
     _publish_progress,
+    _background_tasks,
     ParseResponse,
     UPLOAD_DIR,
 )
@@ -31,12 +35,13 @@ from app.db.models.exam import Exam
 from app.db.models.quiz import Quiz, QuizTheory, QuizTheorySection, QuizQuestion
 from app.db.models.question import Question, _question_hash
 from app.db.models.user import User
-from app.services.pipeline import step1_ocr
 from app.services.ai_parser import AIQuestionParser
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+RAG_WAIT_TIMEOUT_SECONDS = 20
 
 
 # ── Endpoint ──────────────────────────────────────────────────────────────────
@@ -45,14 +50,14 @@ router = APIRouter()
 async def parse_ielts_file_endpoint(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    use_vision: bool = Query(False, description="Force Vision mode for scanned PDFs"),
+    use_vision: bool = Query(False, description="Deprecated; Gemini Vision is disabled and local OCR is always used"),
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload IELTS exam PDF → parse → tạo Quiz tự động."""
     from app.core.config import settings
 
-    allowed_extensions = {".pdf", ".docx", ".doc", ".png", ".jpg", ".jpeg", ".txt"}
+    allowed_extensions = {".pdf", ".docx", ".doc", ".png", ".jpg", ".jpeg", ".txt", ".md"}
     file_ext = os.path.splitext(file.filename or "")[1].lower()
     if file_ext not in allowed_extensions:
         raise HTTPException(status_code=400, detail=f"File type '{file_ext}' not supported")
@@ -107,6 +112,7 @@ async def parse_ielts_file_endpoint(
         file_hash=file_hash,
         subject_code="ielts",
         status="pending",
+        origin=content_origin.OCR_IMPORT,
     )
     db.add(exam)
     try:
@@ -192,6 +198,9 @@ async def _save_ielts_to_bank(
                 question_order=idx + 1,
                 is_bank_duplicate=is_dup,
                 is_public=False,
+                # Trích xuất từ đề IELTS người dùng tải lên (OCR + AI parse).
+                origin=content_origin.OCR_IMPORT,
+                ai_model=settings.GEMINI_MODEL,
             )
             db.add(bank_q)
             bank_objects.append(bank_q)
@@ -214,6 +223,15 @@ async def process_ielts_file(exam_id: int, user_id: int, use_vision: bool = Fals
     """
     try:
         # Phase 1: đọc file_path, đặt status=processing
+        ingest_warnings: list[str] = []
+        ingest_stats: dict = {
+            "questions_saved": 0,
+            "question_embeddings": 0,
+            "document_chunks": 0,
+            "rag_index_status": "pending",
+        }
+        rag_task: asyncio.Task | None = None
+
         file_path = None
         try:
             async with AsyncSessionLocal() as db:
@@ -230,56 +248,84 @@ async def process_ielts_file(exam_id: int, user_id: int, use_vision: bool = Fals
 
         _publish_progress(exam_id, "progress", {"percent": 5, "message": "Đang trích xuất văn bản..."})
 
-        # Phase 2: OCR
+        async def _run_document_rag_branch():
+            async with AsyncSessionLocal() as rag_db:
+                from app.services.hybrid_ingest import index_document_for_rag
+                return await index_document_for_rag(
+                    rag_db,
+                    file_path=file_path,
+                    exam_id=exam_id,
+                    user_id=user_id,
+                    subject_code="ielts",
+                    grade=None,
+                )
+
+        # Phase 2: Local OCR only (Gemini Vision đã loại bỏ)
         try:
-            ocr_result = await asyncio.wait_for(
-                step1_ocr(file_path, "ielts"),
-                timeout=120,
+            from app.services.local_ocr_service import extract_local_ocr_artifact
+            from app.services.marker_ocr import _estimate_page_count
+
+            # Sprint 7.1 + hotfix: dùng real page count thay heuristic file size
+            _base = int(os.getenv("OCR_TOTAL_TIMEOUT_BASE", "180"))
+            _per_page = int(os.getenv("OCR_TOTAL_TIMEOUT_PER_PAGE", "90"))
+            _cap = int(os.getenv("OCR_TOTAL_TIMEOUT_CAP", "1800"))
+            real_pages = _estimate_page_count(file_path)
+            ocr_timeout = min(_cap, _base + _per_page * real_pages)
+            logger.info("IELTS OCR adaptive timeout: %ds (real_pages=%d)", ocr_timeout, real_pages)
+            ocr_artifact = await asyncio.wait_for(
+                extract_local_ocr_artifact(file_path, "ielts"),
+                timeout=ocr_timeout,
             )
         except asyncio.TimeoutError:
-            raise ValueError("OCR timeout sau 120s. File quá lớn hoặc bị lỗi.")
+            raise ValueError(
+                f"Local OCR timeout sau {ocr_timeout}s cho file {real_pages} trang. "
+                "Marker chay cham. Tang env OCR_TOTAL_TIMEOUT_PER_PAGE."
+            )
 
-        text = ocr_result.get("text", "") if isinstance(ocr_result, dict) else str(ocr_result)
+        text = ocr_artifact.get("text", "")
+        ingest_warnings.extend(ocr_artifact.get("warnings") or [])
+        ingest_stats.update({
+            "ocr_method": ocr_artifact.get("method"),
+            "ocr_fallbacks_used": ocr_artifact.get("fallbacks_used", []),
+            "ocr_quality_score": ocr_artifact.get("quality_score"),
+            "ocr_chars": ocr_artifact.get("char_count", 0),
+            "ocr_pages": ocr_artifact.get("page_count", 0),
+            "cache_hit": bool(ocr_artifact.get("cache_hit")),
+            "ai_text_calls": 0,
+            "ai_vision_calls": 0,
+        })
+        if file_path:
+            rag_task = asyncio.create_task(_run_document_rag_branch())
+            _background_tasks.add(rag_task)
+            rag_task.add_done_callback(_background_tasks.discard)
+            _publish_progress(exam_id, "progress", {
+                "percent": 18,
+                "branch": "rag",
+                "message": "Dang index tai lieu IELTS cho RAG tu OCR artifact...",
+            })
+        if not text.strip():
+            raise ValueError(
+                "Local OCR khong doc duoc noi dung file IELTS. Gemini Vision da tat; "
+                "hay kiem tra Marker/Pix2Text/Docling hoac thu file scan ro hon."
+            )
 
-        _publish_progress(exam_id, "progress", {"percent": 15, "message": "Đang gửi đến Gemini..."})
+        _publish_progress(exam_id, "progress", {"percent": 15, "message": "Dang chuan hoa IELTS JSON bang Gemini text..."})
 
-        # Phase 3: Gemini IELTS parse
+        # Phase 3: Gemini IELTS text parse
         parser = AIQuestionParser()
 
         async def _progress_cb(pct: int, msg: str):
             _publish_progress(exam_id, "progress", {"percent": pct, "message": msg})
 
-        text_is_short = not text or len(text.strip()) < 200
-
-        if text_is_short or use_vision:
-            # Scanned/image-based PDF (e.g. Cambridge IELTS books) — use Vision OCR
-            if text_is_short:
-                logger.info(f"IELTS exam {exam_id}: text too short ({len(text.strip())} chars), switching to Vision OCR")
-                _publish_progress(exam_id, "progress", {"percent": 15, "message": "PDF dạng ảnh, đang dùng Vision OCR..."})
-            else:
-                _publish_progress(exam_id, "progress", {"percent": 15, "message": "Đang dùng Vision OCR theo yêu cầu..."})
-
-            from app.services import file_handler as fh_module
-            fh = fh_module.FileHandler()
-            try:
-                vision_result = await asyncio.wait_for(
-                    fh.extract_text(file_path, use_vision=True),
-                    timeout=120,
-                )
-            except asyncio.TimeoutError:
-                raise ValueError("Vision OCR timeout sau 120s. File quá lớn hoặc bị lỗi.")
-
-            images = vision_result.get("images", [])
-            if not images:
-                raise ValueError("Không thể chuyển PDF sang ảnh để OCR.")
-
-            _publish_progress(exam_id, "progress", {"percent": 25, "message": f"Đang phân tích {len(images)} trang..."})
-            flat_questions = await asyncio.wait_for(
-                parser.parse_ielts_vision(images, progress_callback=_progress_cb),
-                timeout=300,
-            )
-        else:
-            flat_questions = await parser.parse_ielts(text, progress_callback=_progress_cb)
+        flat_questions = await parser.parse_ielts(text, progress_callback=_progress_cb)
+        try:
+            usage = getattr(parser, "_token_usage", {}) or {}
+            ingest_stats["ai_text_calls"] = int(usage.get("calls") or 0)
+            ingest_stats["estimated_input_tokens"] = int(usage.get("input") or 0)
+            ingest_stats["estimated_output_tokens"] = int(usage.get("output") or 0)
+            ingest_stats["ai_vision_calls"] = 0
+        except Exception:
+            pass
 
         if not flat_questions:
             raise ValueError("Gemini không trích xuất được câu hỏi nào từ đề thi.")
@@ -293,6 +339,20 @@ async def process_ielts_file(exam_id: int, user_id: int, use_vision: bool = Fals
         bank_ids: list[int | None] = []
         try:
             bank_ids = await _save_ielts_to_bank(exam_id, user_id, flat_questions)
+            saved_bank_ids = [int(qid) for qid in bank_ids if qid]
+            ingest_stats["questions_saved"] = len(saved_bank_ids)
+            if saved_bank_ids:
+                try:
+                    async with AsyncSessionLocal() as emb_db:
+                        from app.services.vector_search import embed_questions
+                        await embed_questions(emb_db, saved_bank_ids)
+                        placeholders = ",".join(str(i) for i in saved_bank_ids)
+                        emb_count = (await emb_db.execute(sa_text(
+                            f"SELECT COUNT(*) FROM question_embedding WHERE question_id IN ({placeholders})"
+                        ))).scalar() or 0
+                        ingest_stats["question_embeddings"] = int(emb_count)
+                except Exception as emb_err:
+                    ingest_warnings.append(f"Tạo IELTS question embeddings thất bại: {emb_err}")
             logger.info(f"IELTS exam {exam_id}: saved {sum(1 for x in bank_ids if x)} questions to bank")
         except Exception as bank_err:
             logger.warning(f"IELTS exam {exam_id}: bank save failed (non-critical): {bank_err}")
@@ -307,6 +367,28 @@ async def process_ielts_file(exam_id: int, user_id: int, use_vision: bool = Fals
         quiz_id = None
         quiz_code = None
         total_questions = 0
+
+        if rag_task:
+            try:
+                rag_stats, rag_warnings = await asyncio.wait_for(
+                    asyncio.shield(rag_task),
+                    timeout=RAG_WAIT_TIMEOUT_SECONDS,
+                )
+                ingest_stats.update(rag_stats or {})
+                ingest_warnings.extend(rag_warnings or [])
+            except asyncio.TimeoutError:
+                ingest_stats["rag_index_status"] = "warning"
+                ingest_warnings.append(
+                    "Index tai lieu RAG dang chay nen; quiz da san sang truoc."
+                )
+                _publish_progress(exam_id, "progress", {
+                    "percent": 90,
+                    "branch": "rag",
+                    "message": "Index RAG dang chay nen, tiep tuc tao quiz...",
+                })
+            except Exception as rag_err:
+                ingest_stats["rag_index_status"] = "failed"
+                ingest_warnings.append(f"Index tài liệu IELTS RAG thất bại: {rag_err}")
 
         async with AsyncSessionLocal() as db:
             result = await db.execute(select(Exam).filter(Exam.id == exam_id))
@@ -396,6 +478,21 @@ async def process_ielts_file(exam_id: int, user_id: int, use_vision: bool = Fals
             quiz.question_count = order
             total_questions = order
             exam_obj.status = "completed"
+            from app.services.hybrid_ingest import merge_ingest_metadata, normalize_warnings
+            ingest_warnings = normalize_warnings(ingest_warnings)
+            exam_obj.result_json = merge_ingest_metadata({
+                "type": "ielts",
+                "quiz_id": quiz.id,
+                "quiz_code": quiz.code,
+                "question_count": total_questions,
+            }, warnings=ingest_warnings, ingest_stats=ingest_stats)
+            try:
+                keep_for_retry = ingest_stats.get("rag_index_status") in {"failed", "warning"}
+                if not keep_for_retry and exam_obj.file_path and os.path.exists(exam_obj.file_path):
+                    os.remove(exam_obj.file_path)
+                    exam_obj.file_path = None
+            except Exception as del_err:
+                logger.warning(f"IELTS exam {exam_id}: could not delete uploaded file: {del_err}")
             await db.commit()
             quiz_id = quiz.id
             quiz_code = quiz.code
@@ -406,6 +503,8 @@ async def process_ielts_file(exam_id: int, user_id: int, use_vision: bool = Fals
             "quiz_id": quiz_id,
             "quiz_code": quiz_code,
             "question_count": total_questions,
+            "warnings": ingest_warnings,
+            "ingest_stats": ingest_stats,
         })
 
         logger.info(f"IELTS exam {exam_id}: created Quiz {quiz_code} with {total_questions} questions")
@@ -420,6 +519,12 @@ async def process_ielts_file(exam_id: int, user_id: int, use_vision: bool = Fals
                 if exam:
                     exam.status = "failed"
                     exam.error_message = str(e)[:1000]
+                    try:
+                        if exam.file_path and os.path.exists(exam.file_path):
+                            os.remove(exam.file_path)
+                            exam.file_path = None
+                    except Exception as del_err:
+                        logger.warning(f"IELTS exam {exam_id}: could not delete failed upload: {del_err}")
                     await db.commit()
         except Exception as db_err:
             logger.error(f"IELTS exam {exam_id}: Cannot update failed status: {db_err}")

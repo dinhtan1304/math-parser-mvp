@@ -26,7 +26,9 @@ from app.schemas.quiz import (
     TheorySectionResponse,
 )
 from app.services.quiz_builder import convert_bank_questions
-from app.services.quiz_bank_sync import save_to_bank, save_to_bank_batch, _content_hash
+from app.services.quiz_bank_sync import (
+    save_to_bank, save_to_bank_batch, _content_hash, origin_from_source_type,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -245,7 +247,10 @@ async def batch_create_questions(
 
     try:
         # Batch save to bank: 1 SELECT + 1 bulk INSERT (instead of N+1)
-        bank_map = await save_to_bank_batch(db, user.id, data.questions, grade=quiz.grade)
+        bank_map = await save_to_bank_batch(
+            db, user.id, data.questions, grade=quiz.grade,
+            origin=origin_from_source_type(data.source_type),
+        )
 
         # Load existing question hashes for duplicate detection
         existing_result = await db.execute(

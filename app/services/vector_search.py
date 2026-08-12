@@ -71,6 +71,7 @@ async def init_vector_table(engine: AsyncEngine):
                         question_id INTEGER PRIMARY KEY
                             REFERENCES question(id) ON DELETE CASCADE,
                         user_id INTEGER NOT NULL,
+                        subject_code VARCHAR(30),
                         topic TEXT,
                         difficulty TEXT,
                         grade INTEGER,
@@ -82,7 +83,11 @@ async def init_vector_table(engine: AsyncEngine):
 
             # Add missing columns if upgrading from old schema
             # Each ALTER runs in a SAVEPOINT so a failure doesn't abort the whole transaction
-            for col, typedef in [("grade", "INTEGER"), ("chapter", "TEXT")]:
+            for col, typedef in [
+                ("subject_code", "VARCHAR(30)"),
+                ("grade", "INTEGER"),
+                ("chapter", "TEXT"),
+            ]:
                 try:
                     await conn.execute(text("SAVEPOINT sp_alter"))
                     await conn.execute(text(
@@ -97,6 +102,9 @@ async def init_vector_table(engine: AsyncEngine):
             # Indexes
             await conn.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_qemb_user ON question_embedding(user_id)"
+            ))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_qemb_user_subject ON question_embedding(user_id, subject_code)"
             ))
             await conn.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_qemb_user_topic ON question_embedding(user_id, topic)"
@@ -127,6 +135,7 @@ async def init_vector_table(engine: AsyncEngine):
                 CREATE TABLE IF NOT EXISTS question_embedding (
                     question_id INTEGER PRIMARY KEY,
                     user_id INTEGER NOT NULL,
+                    subject_code TEXT,
                     topic TEXT,
                     difficulty TEXT,
                     grade INTEGER,
@@ -139,8 +148,32 @@ async def init_vector_table(engine: AsyncEngine):
                 "CREATE INDEX IF NOT EXISTS ix_qemb_user ON question_embedding(user_id)"
             ))
             await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_qemb_user_subject ON question_embedding(user_id, subject_code)"
+            ))
+            await conn.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_qemb_user_topic ON question_embedding(user_id, topic)"
             ))
+
+        try:
+            await conn.execute(text("""
+                UPDATE question_embedding qe
+                SET subject_code = q.subject_code
+                FROM question q
+                WHERE qe.question_id = q.id
+                  AND (qe.subject_code IS NULL OR qe.subject_code = '')
+            """))
+        except Exception:
+            try:
+                await conn.execute(text("""
+                    UPDATE question_embedding
+                    SET subject_code = (
+                        SELECT subject_code FROM question
+                        WHERE question.id = question_embedding.question_id
+                    )
+                    WHERE subject_code IS NULL OR subject_code = ''
+                """))
+            except Exception as e:
+                logger.debug(f"question_embedding subject_code backfill skipped: {e}")
 
     logger.info("Vector embedding table initialized")
 
@@ -180,6 +213,7 @@ async def _migrate_text_to_vector(conn):
                 question_id INTEGER PRIMARY KEY
                     REFERENCES question(id) ON DELETE CASCADE,
                 user_id INTEGER NOT NULL,
+                subject_code VARCHAR(30),
                 topic TEXT,
                 difficulty TEXT,
                 grade INTEGER,
@@ -191,19 +225,19 @@ async def _migrate_text_to_vector(conn):
         # pgvector accepts '[1,2,3,...]' string format directly via ::vector cast
         await conn.execute(text("""
             INSERT INTO question_embedding
-                (question_id, user_id, topic, difficulty, embedding)
+                (question_id, user_id, subject_code, topic, difficulty, embedding)
             SELECT
-                question_id, user_id, topic, difficulty,
+                question_id, user_id, NULL, topic, difficulty,
                 embedding::vector
             FROM _question_embedding_old
             WHERE embedding IS NOT NULL
               AND LENGTH(embedding) > 10
         """))
 
-        # Backfill grade/chapter from question table
+        # Backfill subject/grade/chapter from question table
         await conn.execute(text("""
             UPDATE question_embedding qe
-            SET grade = q.grade, chapter = q.chapter
+            SET subject_code = q.subject_code, grade = q.grade, chapter = q.chapter
             FROM question q
             WHERE qe.question_id = q.id
         """))
@@ -387,7 +421,7 @@ async def embed_questions(db: AsyncSession, question_ids: list[int]):
 
     new_placeholders = ",".join(str(int(qid)) for qid in new_ids)
     result = await db.execute(text(f"""
-        SELECT id, user_id, question_text, topic, difficulty, grade, chapter
+        SELECT id, user_id, question_text, subject_code, topic, difficulty, grade, chapter
         FROM question WHERE id IN ({new_placeholders})
     """))
     questions = result.fetchall()
@@ -399,10 +433,10 @@ async def embed_questions(db: AsyncSession, question_ids: list[int]):
     texts = [
         enrich_text_for_embedding(
             question_text=q[2],
-            topic=q[3] or "",
-            grade=q[5],
-            chapter=q[6] or "",
-            difficulty=q[4] or "",
+            topic=q[4] or "",
+            grade=q[6],
+            chapter=q[7] or "",
+            difficulty=q[5] or "",
         )
         for q in questions
     ]
@@ -416,8 +450,9 @@ async def embed_questions(db: AsyncSession, question_ids: list[int]):
         if emb is not None:
             rows_to_insert.append({
                 "qid": q[0], "uid": q[1],
-                "topic": q[3] or "", "diff": q[4] or "",
-                "grade": q[5], "chapter": q[6] or "",
+                "subject_code": q[3] or "",
+                "topic": q[4] or "", "diff": q[5] or "",
+                "grade": q[6], "chapter": q[7] or "",
                 "emb": str(emb) if is_pg else json.dumps(emb),
             })
 
@@ -434,10 +469,11 @@ async def embed_questions(db: AsyncSession, question_ids: list[int]):
             # Try pgvector INSERT first (requires vector column type)
             upsert_sql = text("""
                 INSERT INTO question_embedding
-                (question_id, user_id, topic, difficulty, grade, chapter, embedding)
-                VALUES (:qid, :uid, :topic, :diff, :grade, :chapter, :emb::vector)
+                (question_id, user_id, subject_code, topic, difficulty, grade, chapter, embedding)
+                VALUES (:qid, :uid, :subject_code, :topic, :diff, :grade, :chapter, :emb::vector)
                 ON CONFLICT (question_id) DO UPDATE SET
                     user_id = EXCLUDED.user_id,
+                    subject_code = EXCLUDED.subject_code,
                     topic = EXCLUDED.topic,
                     difficulty = EXCLUDED.difficulty,
                     grade = EXCLUDED.grade,
@@ -447,10 +483,11 @@ async def embed_questions(db: AsyncSession, question_ids: list[int]):
             # Fallback: if column is still TEXT (pgvector not enabled), store as JSON string
             upsert_sql_text_fallback = text("""
                 INSERT INTO question_embedding
-                (question_id, user_id, topic, difficulty, grade, chapter, embedding)
-                VALUES (:qid, :uid, :topic, :diff, :grade, :chapter, :emb)
+                (question_id, user_id, subject_code, topic, difficulty, grade, chapter, embedding)
+                VALUES (:qid, :uid, :subject_code, :topic, :diff, :grade, :chapter, :emb)
                 ON CONFLICT (question_id) DO UPDATE SET
                     user_id = EXCLUDED.user_id,
+                    subject_code = EXCLUDED.subject_code,
                     topic = EXCLUDED.topic,
                     difficulty = EXCLUDED.difficulty,
                     grade = EXCLUDED.grade,
@@ -460,8 +497,8 @@ async def embed_questions(db: AsyncSession, question_ids: list[int]):
         else:
             upsert_sql = text("""
                 INSERT OR REPLACE INTO question_embedding
-                (question_id, user_id, topic, difficulty, grade, chapter, embedding)
-                VALUES (:qid, :uid, :topic, :diff, :grade, :chapter, :emb)
+                (question_id, user_id, subject_code, topic, difficulty, grade, chapter, embedding)
+                VALUES (:qid, :uid, :subject_code, :topic, :diff, :grade, :chapter, :emb)
             """)
             upsert_sql_text_fallback = upsert_sql
 
@@ -507,6 +544,7 @@ async def find_similar(
     db: AsyncSession,
     query_text: str,
     user_id: int,
+    subject_code: Optional[str] = None,
     topic: Optional[str] = None,
     difficulty: Optional[str] = None,
     grade: Optional[int] = None,
@@ -519,6 +557,9 @@ async def find_similar(
     """
     conditions = ["user_id = :uid"]
     params: dict = {"uid": user_id}
+    if subject_code:
+        conditions.append("subject_code = :subject_code")
+        params["subject_code"] = subject_code
     if topic:
         conditions.append("topic = :topic")
         params["topic"] = topic
@@ -542,7 +583,10 @@ async def find_similar(
 
     # Enriched query embedding
     enriched_query = enrich_text_for_embedding(
-        query_text, topic=topic or "", grade=grade, difficulty=difficulty or "",
+        query_text,
+        topic=topic or subject_code or "",
+        grade=grade,
+        difficulty=difficulty or "",
     )
     query_emb = await _generate_embedding(enriched_query)
     if query_emb is None:

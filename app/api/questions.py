@@ -21,11 +21,15 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api import deps
+from app.core import content_origin
 from app.db.session import get_db
 from app.db.models.question import Question
+from app.db.models.review import QuestionAsset
 from app.db.models.user import User
+from app.db.models.exam import Exam
 from sqlalchemy import text as sa_text
 from app.schemas.question import (
     QuestionResponse, QuestionListResponse, QuestionFilters,
@@ -35,6 +39,33 @@ from app.schemas.question import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _question_to_response(q: Question, author_email: str | None = None) -> QuestionResponse:
+    from app.services.asset_storage import get_asset_storage
+    storage = get_asset_storage()
+    q_dict = QuestionResponse.model_validate(q).model_dump()
+    q_dict["author_email"] = author_email
+    q_dict["images"] = []
+    for link in getattr(q, "asset_links", []) or []:
+        asset = getattr(link, "asset", None)
+        if not asset:
+            continue
+        try:
+            bbox = json.loads(link.bbox_json) if link.bbox_json else (
+                json.loads(asset.bbox_json) if asset.bbox_json else None
+            )
+        except Exception:
+            bbox = None
+        q_dict["images"].append({
+            "id": asset.id,
+            "url": storage.public_url(asset.storage_key),
+            "width": asset.width,
+            "height": asset.height,
+            "alt_text": link.alt_text,
+            "bbox": bbox,
+        })
+    return QuestionResponse(**q_dict)
 
 
 @router.get("", response_model=QuestionListResponse)
@@ -52,6 +83,9 @@ async def list_questions(
     visibility: Optional[str] = Query(None, description="Filter by visibility: 'public' or 'private'"),
     sort_by: Optional[str] = Query(None, description="Sort field: created_at, difficulty, question_type"),
     sort_order: Optional[str] = Query(None, description="Sort direction: asc, desc"),
+    ielts_skill: Optional[str] = Query(None, description="IELTS only: filter by skill (reading|listening|writing|speaking, comma-separated)"),
+    ielts_section: Optional[str] = Query(None, description="IELTS only: filter by section number 1-4 (comma-separated)"),
+    has_passage: Optional[bool] = Query(None, description="IELTS only: only return questions whose passage text is non-empty"),
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -111,6 +145,49 @@ async def list_questions(
             conditions.append(Question.subject_code == subj_list[0])
         elif len(subj_list) > 1:
             conditions.append(Question.subject_code.in_(subj_list))
+
+    # ── IELTS-specific filters (apply on top of subject_code='ielts') ──
+    # Question.chapter is populated with the IELTS section_title at parse-time
+    # (see ielts_parser.py:_save_ielts_to_bank). Skill is derived from prefix.
+    if ielts_skill:
+        skills = [s.strip().lower() for s in ielts_skill.split(',') if s.strip()]
+        # Map skill → chapter LIKE patterns. Use OR-of-LIKE per skill.
+        skill_patterns = {
+            "reading": ["Reading%", "reading%"],
+            "listening": ["Listening%", "listening%", "Section 1%", "Section 2%", "Section 3%", "Section 4%"],
+            "writing": ["Writing%", "writing%", "%Task 1%", "%Task 2%"],
+            "speaking": ["Speaking%", "speaking%", "Part 1%", "Part 2%", "Part 3%"],
+        }
+        ored = []
+        for sk in skills:
+            for pat in skill_patterns.get(sk, []):
+                ored.append(Question.chapter.ilike(pat))
+        if ored:
+            conditions.append(or_(*ored))
+    if ielts_section:
+        try:
+            sec_nums = [int(s.strip()) for s in ielts_section.split(',') if s.strip()]
+        except ValueError:
+            sec_nums = []
+        if sec_nums:
+            sec_ored = []
+            for n in sec_nums:
+                # Reading Passage N | Section N | Part N
+                sec_ored.extend([
+                    Question.chapter.ilike(f"%Passage {n}%"),
+                    Question.chapter.ilike(f"Section {n}%"),
+                    Question.chapter.ilike(f"Part {n}%"),
+                    Question.chapter.ilike(f"%Task {n}%"),
+                ])
+            conditions.append(or_(*sec_ored))
+    if has_passage is True:
+        # JSON-encoded extra_data: passage_text non-empty.
+        # Works on both Postgres TEXT and SQLite TEXT — extra_data is stored as
+        # a JSON string by ielts_parser.py.
+        conditions.append(Question.extra_data.isnot(None))
+        conditions.append(Question.extra_data.notlike('%"passage_text": ""%'))
+        conditions.append(Question.extra_data.like('%"passage_text":%'))
+
     if exam_id:
         conditions.append(Question.exam_id == exam_id)
     if keyword:
@@ -155,6 +232,7 @@ async def list_questions(
     data_q = (
         select(Question, User.email.label("author_email"))
         .join(User, Question.user_id == User.id, isouter=True)
+        .options(selectinload(Question.asset_links).selectinload(QuestionAsset.asset))
         .where(*conditions)
         .order_by(_order_expr)
         .offset(offset)
@@ -167,9 +245,7 @@ async def list_questions(
     for row in rows:
         q = row[0]
         author_email = row[1]
-        q_dict = QuestionResponse.model_validate(q).model_dump()
-        q_dict["author_email"] = author_email
-        items.append(QuestionResponse(**q_dict))
+        items.append(_question_to_response(q, author_email))
 
     return QuestionListResponse(
         items=items,
@@ -177,6 +253,139 @@ async def list_questions(
         page=page,
         page_size=page_size,
     )
+
+
+# ─── T3: community / shared question bank ────────────────────────────────────
+
+@router.get("/community", response_model=QuestionListResponse)
+async def community_questions(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    question_type: Optional[str] = Query(None, alias="type"),
+    difficulty: Optional[str] = Query(None),
+    grade: Optional[str] = Query(None),
+    chapter: Optional[str] = Query(None),
+    subject: Optional[str] = Query(None),
+    keyword: Optional[str] = Query(None),
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Discover PUBLIC questions shared by OTHER teachers (excludes your own).
+
+    A teacher can copy any result into their own bank via
+    ``POST /questions/{id}/clone``. Supports comma-separated multi-values.
+    """
+    conditions = [Question.is_public == True, Question.user_id != current_user.id]
+
+    def _multi(col, raw: str, caster=lambda x: x):
+        vals = [caster(v.strip()) for v in raw.split(",") if v.strip()]
+        if len(vals) == 1:
+            conditions.append(col == vals[0])
+        elif len(vals) > 1:
+            conditions.append(col.in_(vals))
+
+    if question_type:
+        _multi(Question.question_type, question_type)
+    if difficulty:
+        _multi(Question.difficulty, difficulty)
+    if chapter:
+        _multi(Question.chapter, chapter)
+    if subject:
+        _multi(Question.subject_code, subject)
+    if grade:
+        try:
+            _multi(Question.grade, grade, int)
+        except ValueError:
+            pass
+    if keyword:
+        # FTS5 (SQLite) như bank chính — ILIKE '%kw%' không index được, full scan.
+        # Postgres/FTS lỗi → fallback ILIKE như cũ.
+        keyword = keyword[:200]
+        try:
+            from app.services.fts import search_fts_public
+            fts_ids = await search_fts_public(db, keyword, current_user.id, limit=200)
+            if fts_ids:
+                conditions.append(Question.id.in_(fts_ids))
+            else:
+                conditions.append(Question.question_text.ilike(f"%{keyword}%"))
+        except Exception:
+            conditions.append(Question.question_text.ilike(f"%{keyword}%"))
+
+    total = (await db.execute(select(func.count(Question.id)).where(*conditions))).scalar() or 0
+    offset = (page - 1) * page_size
+    data_q = (
+        select(Question, User.email.label("author_email"))
+        .join(User, Question.user_id == User.id, isouter=True)
+        .options(selectinload(Question.asset_links).selectinload(QuestionAsset.asset))
+        .where(*conditions)
+        .order_by(Question.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+    rows = (await db.execute(data_q)).all()
+    items = [_question_to_response(r[0], r[1]) for r in rows]
+    return QuestionListResponse(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.post("/{question_id}/clone")
+async def clone_question(
+    question_id: int,
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Copy a PUBLIC question (from any teacher) into the current user's bank.
+
+    Deduplicated by content_hash — cloning a question you already own is a no-op
+    that points back to the existing copy.
+    """
+    src = await db.scalar(select(Question).where(Question.id == question_id))
+    if not src:
+        raise HTTPException(status_code=404, detail="Câu hỏi không tồn tại")
+    if not src.is_public and src.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Câu hỏi này không được chia sẻ công khai")
+
+    import hashlib
+    content_hash = src.content_hash or hashlib.md5(
+        (src.question_text or "").strip().encode("utf-8")
+    ).hexdigest()
+
+    existing = await db.scalar(
+        select(Question.id).where(
+            Question.user_id == current_user.id,
+            Question.content_hash == content_hash,
+        )
+    )
+    if existing:
+        return {"detail": "Câu hỏi đã có trong ngân hàng của bạn", "question_id": existing, "cloned": False}
+
+    clone = Question(
+        user_id=current_user.id,
+        exam_id=None,
+        question_text=src.question_text,
+        content_hash=content_hash,
+        subject_code=src.subject_code,
+        question_type=src.question_type,
+        topic=src.topic,
+        difficulty=src.difficulty,
+        grade=src.grade,
+        chapter=src.chapter,
+        lesson_title=src.lesson_title,
+        answer=src.answer,
+        answer_source=src.answer_source,
+        solution_steps=src.solution_steps,
+        extra_data=src.extra_data,
+        is_public=False,
+        # Bản sao giữ nguyên nhãn nguồn gốc của câu gốc — nội dung không đổi thì
+        # nhãn AI cũng không được mất đi khi sang ngân hàng người khác.
+        origin=src.origin or content_origin.HUMAN,
+        ai_model=src.ai_model,
+        reviewed_by_user=src.reviewed_by_user,
+        reviewed_at=src.reviewed_at,
+    )
+    db.add(clone)
+    await db.commit()
+    await db.refresh(clone)
+    return {"detail": "Đã thêm vào ngân hàng của bạn", "question_id": clone.id, "cloned": True}
 
 
 @router.get("/filters", response_model=QuestionFilters)
@@ -435,14 +644,16 @@ async def get_question(
 ):
     """Get a single question by ID (shared bank)."""
     result = await db.execute(
-        select(Question).where(Question.id == question_id)
+        select(Question)
+        .options(selectinload(Question.asset_links).selectinload(QuestionAsset.asset))
+        .where(Question.id == question_id)
     )
     question = result.scalars().first()
 
     if not question:
         raise HTTPException(status_code=404, detail="Question not found")
 
-    return question
+    return _question_to_response(question)
 
 
 @router.delete("/{question_id}")
@@ -545,7 +756,12 @@ async def update_question(
     _aio.create_task(_reindex())
 
     logger.info(f"Question {question_id} updated: {list(update_data.keys())}")
-    return question
+    refreshed = await db.scalar(
+        select(Question)
+        .options(selectinload(Question.asset_links).selectinload(QuestionAsset.asset))
+        .where(Question.id == question_id)
+    )
+    return _question_to_response(refreshed or question)
 
 
 # ── Bulk update visibility ──
@@ -708,6 +924,22 @@ async def bulk_create_questions(
     if len(payload.questions) > 100:
         raise HTTPException(status_code=400, detail="Maximum 100 questions per request")
 
+    # Nhãn nguồn gốc: caller khai báo, mặc định HUMAN. Không suy đoán từ dữ liệu.
+    bulk_origin = payload.origin or content_origin.HUMAN
+    if bulk_origin not in content_origin.ALL_ORIGINS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"origin không hợp lệ: {bulk_origin}. Hợp lệ: {', '.join(content_origin.ALL_ORIGINS)}",
+        )
+
+    # Validate exam ownership if caller asked to attach questions to a specific exam.
+    target_exam_id: Optional[int] = None
+    if payload.exam_id is not None:
+        exam = await db.get(Exam, payload.exam_id)
+        if exam is None or exam.user_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Exam not found")
+        target_exam_id = exam.id
+
     # Pre-compute hashes
     items_with_hash = []
     for item in payload.questions:
@@ -739,7 +971,7 @@ async def bulk_create_questions(
             continue
         q = Question(
             user_id=current_user.id,
-            exam_id=None,
+            exam_id=target_exam_id,
             question_text=item.question_text,
             content_hash=c_hash,
             subject_code=item.subject_code or "toan",
@@ -753,6 +985,8 @@ async def bulk_create_questions(
             solution_steps=item.solution_steps,
             question_order=0,
             is_public=False,
+            origin=bulk_origin,
+            ai_model=payload.ai_model,
         )
         db.add(q)
         existing_hashes.add(c_hash)  # Prevent intra-batch duplicates
@@ -860,7 +1094,7 @@ async def generate_similar_questions(
         source_questions=source_dicts,
         count=req.count,
         gemini_api_key=settings.GOOGLE_API_KEY or os.getenv("GOOGLE_API_KEY", ""),
-        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        gemini_model=settings.GEMINI_MODEL,
     )
 
     if not generated:

@@ -1,5 +1,8 @@
-from typing import Optional, List
-from pydantic import BaseModel, Field
+from typing import Optional, List, Dict
+from pydantic import BaseModel, Field, model_validator
+
+# Upper bound on total questions an exam-matrix request may ask for.
+MAX_MATRIX_TOTAL = 300
 
 
 class GenerateRequest(BaseModel):
@@ -19,6 +22,7 @@ class ExamSection(BaseModel):
 
 class ExamGenerateRequest(BaseModel):
     """Request for generating a mixed-difficulty exam."""
+    subject_code: Optional[str] = Field(default="toan", description="Mon hoc")
     topic: Optional[str] = Field(default=None, description="Chu de chinh")
     question_type: Optional[str] = Field(default=None, description="TN, TL or None for mixed")
     sections: List[ExamSection] = Field(
@@ -51,6 +55,7 @@ class GenerateResponse(BaseModel):
     questions: List[GeneratedQuestion]
     sample_count: int = 0
     message: str = ""
+    context_stats: Optional[dict] = None
 
 class PromptGenerateRequest(BaseModel):
     """RAG: Sinh đề từ mô tả tự do bằng tiếng Việt."""
@@ -73,6 +78,58 @@ class SaveAsExamRequest(BaseModel):
 class SaveAsExamResponse(BaseModel):
     exam_id: int
     question_count: int
+
+
+# ─── Ma trận đề thi (exam blueprint matrix) ──────────────────────────────────
+
+class MatrixCell(BaseModel):
+    """One chapter row of the blueprint: how many questions per difficulty."""
+    chapter: str = Field(..., min_length=1, description="Tên chương, khớp Question.chapter")
+    counts: Dict[str, int] = Field(
+        default_factory=dict,
+        description='Số câu theo mức độ, ví dụ {"NB":3,"TH":2,"VD":1,"VDC":0}',
+    )
+
+
+class ExamMatrixRequest(BaseModel):
+    """Build an exam by pulling existing bank questions matching a
+    chapter × difficulty matrix."""
+    title: str = Field(..., min_length=1, max_length=300)
+    subject_code: str = Field(default="toan")
+    grade: int = Field(..., ge=1, le=12)
+    cells: List[MatrixCell] = Field(..., min_length=1)
+    allow_partial: bool = Field(
+        default=True,
+        description="True = vẫn tạo đề dù thiếu câu; False = thiếu thì trả 400",
+    )
+    fill_from_adjacent_difficulty: bool = Field(
+        default=False,
+        description="Thiếu câu thì bù từ mức độ kề (NB↔TH, TH↔VD, VD↔VDC)",
+    )
+
+    @model_validator(mode="after")
+    def _check_total(self):
+        total = sum(
+            max(0, n) for cell in self.cells for n in cell.counts.values()
+        )
+        if total < 1:
+            raise ValueError("Ma trận phải có ít nhất 1 câu.")
+        if total > MAX_MATRIX_TOTAL:
+            raise ValueError(f"Tổng số câu vượt giới hạn {MAX_MATRIX_TOTAL}.")
+        return self
+
+
+class MatrixDeficit(BaseModel):
+    chapter: str
+    difficulty: str
+    requested: int
+    found: int
+
+
+class ExamMatrixResponse(BaseModel):
+    exam_id: int
+    question_count: int
+    deficits: List[MatrixDeficit] = []
 
 
 class ParsedCriteria(BaseModel):

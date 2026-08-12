@@ -2,15 +2,18 @@
 Dashboard API — thống kê, analytics cho trang chủ.
 
 Endpoints:
-    GET /dashboard          — Tổng quan stats
-    GET /dashboard/charts   — Dữ liệu cho charts
-    GET /dashboard/activity — Hoạt động gần đây
+    GET /dashboard              — Tổng quan stats
+    GET /dashboard/charts       — Dữ liệu cho charts
+    GET /dashboard/activity     — Hoạt động gần đây
+    GET /dashboard/token-usage  — Token consumption (Gemini)
 
 Optimizations (Sprint 1):
     - Task 3: Activity N+1 → single JOIN query (11 queries → 1)
     - Task 4: Stats 6 queries → 2 queries (conditional aggregation)
 """
 
+import json
+import logging
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends
@@ -24,6 +27,14 @@ from app.db.models.exam import Exam
 from app.db.models.user import User
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+# Pricing + token helpers live in app.core.llm_pricing (shared with parser).
+from app.core.llm_pricing import (
+    GEMINI_INPUT_USD_PER_M, GEMINI_OUTPUT_USD_PER_M,
+    cost_usd as _cost_usd,
+    extract_tokens_from_result_json as _extract_tokens,
+)
 
 
 @router.get("")
@@ -220,3 +231,110 @@ async def get_recent_activity(
     ]
 
     return {"activities": activities}
+
+
+@router.get("/token-usage")
+async def get_token_usage(
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Aggregate Gemini token consumption from completed exams.
+
+    Tokens are tracked per exam inside ``result_json.ingest_stats`` (see
+    ``hybrid_ingest.merge_ingest_metadata``). We aggregate in Python because
+    SQLite/Postgres JSON access differs and the dataset is bounded.
+
+    Returns:
+        total: lifetime input/output/total tokens + cost
+        current_month: month-to-date usage
+        last_30_days: aggregated counts (used to compute trend)
+        daily: list[{day, input, output, total, cost}] for last 30 days
+        pricing: model + USD per 1M tokens
+    """
+    uid = current_user.id
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    thirty_days_ago = now - timedelta(days=30)
+
+    rows = (await db.execute(
+        select(Exam.created_at, Exam.result_json)
+        .where(Exam.user_id == uid, Exam.result_json.isnot(None))
+    )).all()
+
+    total_in = total_out = total_calls = 0
+    month_in = month_out = month_calls = 0
+    daily_buckets: dict[str, dict[str, int]] = {}
+
+    for created_at, result_json in rows:
+        inp, out, calls = _extract_tokens(result_json)
+        if inp == 0 and out == 0:
+            continue
+
+        total_in += inp
+        total_out += out
+        total_calls += calls
+
+        if created_at is None:
+            continue
+
+        # Postgres returns aware datetimes; SQLite stores naïve UTC.
+        ts = created_at if created_at.tzinfo else created_at.replace(tzinfo=timezone.utc)
+
+        if ts >= month_start:
+            month_in += inp
+            month_out += out
+            month_calls += calls
+
+        if ts >= thirty_days_ago:
+            day_key = ts.date().isoformat()
+            bucket = daily_buckets.setdefault(
+                day_key, {"input": 0, "output": 0, "calls": 0}
+            )
+            bucket["input"] += inp
+            bucket["output"] += out
+            bucket["calls"] += calls
+
+    daily = [
+        {
+            "day": day,
+            "input": b["input"],
+            "output": b["output"],
+            "total": b["input"] + b["output"],
+            "calls": b["calls"],
+            "cost_usd": _cost_usd(b["input"], b["output"]),
+        }
+        for day, b in sorted(daily_buckets.items())
+    ]
+
+    last_30_in = sum(b["input"] for b in daily_buckets.values())
+    last_30_out = sum(b["output"] for b in daily_buckets.values())
+
+    return {
+        "total": {
+            "input_tokens": total_in,
+            "output_tokens": total_out,
+            "total_tokens": total_in + total_out,
+            "calls": total_calls,
+            "cost_usd": _cost_usd(total_in, total_out),
+        },
+        "current_month": {
+            "input_tokens": month_in,
+            "output_tokens": month_out,
+            "total_tokens": month_in + month_out,
+            "calls": month_calls,
+            "cost_usd": _cost_usd(month_in, month_out),
+            "month": month_start.date().isoformat(),
+        },
+        "last_30_days": {
+            "input_tokens": last_30_in,
+            "output_tokens": last_30_out,
+            "total_tokens": last_30_in + last_30_out,
+            "cost_usd": _cost_usd(last_30_in, last_30_out),
+        },
+        "daily": daily,
+        "pricing": {
+            "model": "gemini-2.5-flash",
+            "input_usd_per_1m": GEMINI_INPUT_USD_PER_M,
+            "output_usd_per_1m": GEMINI_OUTPUT_USD_PER_M,
+        },
+    }

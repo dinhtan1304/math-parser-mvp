@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Union
 from jose import jwt
@@ -17,9 +18,19 @@ def create_access_token(
         expire = datetime.now(timezone.utc) + timedelta(
             minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
         )
-    to_encode = {"exp": expire, "sub": str(subject)}
+    # jti: định danh token để blacklist/audit; type phân biệt với refresh token
+    # (token cũ không có type — deps chấp nhận missing để không đá phiên đang chạy).
+    to_encode = {"exp": expire, "sub": str(subject), "jti": uuid.uuid4().hex, "type": "access"}
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+
+def create_refresh_token(subject: Union[str, Any]) -> str:
+    """Refresh token sống dài (REFRESH_TOKEN_EXPIRE_DAYS) — CHỈ dùng được ở
+    POST /auth/refresh (deps từ chối type=refresh trên endpoint thường)."""
+    expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode = {"exp": expire, "sub": str(subject), "jti": uuid.uuid4().hex, "type": "refresh"}
+    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 def decode_access_token(token: str) -> Optional[int]:
     """Decode JWT and return user_id (sub), or None if invalid."""

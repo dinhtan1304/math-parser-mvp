@@ -1,180 +1,452 @@
 """
-Pipeline — OCR-first processing pipeline.
+Pipeline — tiền xử lý document trước khi Gemini parse.
 
-3 bước:
-1. step1_ocr: Chọn OCR backend theo môn, extract text + images
-2. step2_preprocess: Split câu hỏi + tìm đáp án bằng regex (không AI)
-3. step3_classify: Gửi structured JSON cho Gemini classify only
+Các phần còn active:
+- step1_5_chunk_and_embed: chunk markdown + embed cho document RAG
+- step2_preprocess: split câu hỏi + tìm đáp án bằng regex (không AI) — dùng để
+  ước lượng số câu / shadow segmentation trong process_file
 
-Gemini KHÔNG extract text — chỉ classify type/difficulty/topic.
-Giảm token ~50-60%, thời gian ~60%.
+step1_ocr (OCR routing) đã gỡ 2026-06-06; step3_classify (Gemini classify-only)
+đã gỡ 2026-07-10 — full-doc ai_parser.parse() thay thế cả hai.
 """
 
 import re
-import json
 import time
-import asyncio
 import logging
-from typing import Optional, Callable, Any
+import os
+from typing import Optional, Any
 
-from app.services.ocr_router import get_ocr_config, OCRBackend
 from app.services.answer_extractor import AnswerExtractor
-from app.services.subject_prompts import SUBJECT_TO_FAMILY
+from app.services.native_pdf import extract_native_pdf_markdown
+from app.services.pdf_detector import analyze_pdf_for_ocr, recommended_ocr_mode
 
 logger = logging.getLogger(__name__)
 
-# Pre-compiled regex for question splitting
+# Pre-compiled regex for question splitting.
+# Sprint 6 A1: lookahead `(?=\D)` thay cho `\s*[.:\)]` để match được format
+# "Câu 2 (4,0 điểm)" — đề thi HSG/Olympiad thường ghi điểm trong ngoặc.
+# Match: "Câu 1.", "Câu 2 (4,0 điểm)", "Câu 3:", "Câu 4)", "Câu 5\n", "Bài 6 ".
+# Không match: digit ngay sau "Câu N" (ví dụ "Câu 12" sẽ match cả số 12).
 _RE_QUESTION_SPLIT = re.compile(
-    r'(?:^|\n)\s*(?:Câu|câu|Bài|bài|Question)\s+(\d+)\s*[.:\)]',
+    r'(?:^|\n)\s*(?:Câu|câu|Bài|bài|Question)\s+(\d+)(?=\D|$)',
     re.IGNORECASE
 )
 
-# Fallback: numbered questions "1. " or "1) "
-_RE_NUMBERED_SPLIT = re.compile(
-    r'(?:^|\n)\s*(\d+)\s*[.)]\s+',
+# Sprint 5.1 — Markers signal start of solution/answer block trong text gốc.
+# Cắt question text TẠI điểm xuất hiện đầu tiên của bất kỳ marker nào.
+# Pattern cover trường hợp OCR có space dư giữa các ký tự (broken extraction).
+_RE_SOLUTION_MARKER = re.compile(
+    r"""(?ix)
+    (?:^|\n|\.\s|\s{2,})
+    (?:
+        L\s*ờ\s*i\s+gi\s*ả\s*i
+      | H\s*ư\s*ớ\s*ng\s+d\s*ẫ\s*n\s+gi\s*ả\s*i
+      | B\s*à\s*i\s+gi\s*ả\s*i
+      | Gi\s*ả\s*i\s*[:\.]
+      | Đ\s*á\s*p\s+á\s*n\s*[:\.]
+      | ĐÁP\s+ÁN\s*[:\.]
+      | Ch\s*ọ\s*n\s+(?:đáp\s+án\s+)?[A-D](?:[\.\s,;:)]|$)
+      | K\s*ế\s*t\s+qu\s*ả\s*[:\.]
+    )
+    """,
+)
+
+# Detect "Chọn X" / "Đáp án X" để extract answer letter từ solution block
+_RE_ANSWER_PICK = re.compile(
+    r'(?i)(?:Ch\s*ọ\s*n|Đ\s*á\s*p\s+á\s*n|ĐÁP\s+ÁN|chọn\s+đáp\s+án)\s*[:\.]?\s*([A-D])'
 )
 
 
-# ==================== STEP 1: OCR ====================
+def _strip_solution_from_question(text: str) -> tuple[str, str | None]:
+    """Cắt phần solution/answer ra khỏi question text. Trả về (question, answer or None).
 
-async def step1_ocr(file_path: str, subject_code: str) -> dict:
-    """Step 1: OCR — chọn backend theo môn học, extract text + images.
-
-    Returns:
-        {text: str, image_map: dict, method: str}
+    Backup post-process khi Gemini không chịu tách (vẫn gộp solution vào question).
     """
-    from app.services import file_handler
+    if not text:
+        return text, None
+    m = _RE_SOLUTION_MARKER.search(text)
+    if not m:
+        return text.strip(), None
+    cut_at = m.start()
+    question_only = text[:cut_at].rstrip(" .,:;\n\t")
+    solution_part = text[cut_at:]
+    # Try extract answer letter from solution part
+    answer_match = _RE_ANSWER_PICK.search(solution_part)
+    answer = answer_match.group(1) if answer_match else None
+    return question_only, answer
 
-    ocr_config = get_ocr_config(subject_code)
-    backend = ocr_config.backend
-    logger.info(
-        f"OCR routing: subject={subject_code} → backend={backend.value} | {ocr_config.reason}"
+# Fallback: numbered questions "1. " or "1) ".
+# Sprint 6 A3: yêu cầu phía sau là chữ in hoa (Latin hoặc tiếng Việt) để
+# tránh match "21 )" / "(21):" trong fraction/formula. Đề thi tiếng Việt
+# thường mở đầu bằng động từ Tính/Tìm/Cho/Giải/Chứng minh hoặc danh từ
+# Cho/Một/Tam giác → đầu chữ in hoa.
+_RE_NUMBERED_SPLIT = re.compile(
+    r'(?:^|\n)\s*(\d+)\s*[.)]\s+'
+    r'(?=[A-ZĐÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴ])',
+)
+
+# Fallback #3 (Sprint 8): relaxed numbered split — KHÔNG yêu cầu chữ in hoa sau
+# số. Bắt được "1. tính x" / "2) cho tam giác" (đề mở đầu bằng động từ thường)
+# mà `_RE_NUMBERED_SPLIT` bỏ sót → tránh gộp nhầm cả đề vào 1 câu. Chỉ dùng khi
+# 2 pattern chặt hơn đều thất bại (last resort); vẫn yêu cầu đầu dòng để giảm
+# match nhầm số trong phân số/công thức.
+_RE_NUMBERED_SPLIT_RELAXED = re.compile(r'(?:^|\n)\s*(\d+)\s*[.)]\s+(?=\S)')
+
+# Marker markdown renderer often prefixes question headings with "## " / "### ".
+_RE_MARKDOWN_QUESTION_SPLIT = re.compile(
+    r'(?:^|\n)\s*#{1,6}\s*(?:\*{1,2}\s*)?(?:Câu|câu|Bài|bài|Question)\s+(\d+)(?=\D|$)',
+    re.IGNORECASE,
+)
+
+
+def _find_question_markers(text: str) -> list[re.Match]:
+    """Find question boundaries in plain OCR or Marker markdown output."""
+    matches = list(_RE_QUESTION_SPLIT.finditer(text))
+    markdown_matches = list(_RE_MARKDOWN_QUESTION_SPLIT.finditer(text))
+    if not markdown_matches:
+        return matches
+    by_start = {m.start(): m for m in matches}
+    for m in markdown_matches:
+        by_start[m.start()] = m
+    return [by_start[k] for k in sorted(by_start)]
+
+# Sprint 6 A2 — Answer key section header.
+# Đề thi HSG/Olympiad thường có 2 phần: ĐỀ THI (trang đầu) + HƯỚNG DẪN CHẤM
+# (trang cuối). Pipeline phải tách 2 phần để không tạo Câu N duplicate
+# (Câu N đề + Câu N đáp án có cùng marker).
+_RE_ANSWER_KEY_HEADER = re.compile(
+    r'(?im)^\s*(?:'
+    r'HƯỚNG\s+DẪN\s+CHẤM'
+    r'|ĐÁP\s+ÁN\s+VÀ\s+THANG\s+ĐIỂM'
+    r'|ĐÁP\s+ÁN\s+CHI\s+TIẾT'
+    r'|BÀI\s+GIẢI\s+THAM\s+KHẢO'
+    r'|BARÊM\s+ĐIỂM'
+    r'|ĐÁP\s+ÁN(?:\s|$)'
+    r'|ĐÁP\s+SỐ'
+    r')\s*$'
+)
+
+
+_RE_ANSWER_KEY_HEADER_FUZZY = re.compile(
+    r"""(?imx)
+    ^\s*
+    (?:\#{1,6}\s*)?
+    (?:[^\n]*?\s+)?
+    (?:
+        HƯỚNG\s+DẪN\s+CH(?:Ấ|Ẩ)M
+      | ĐÁP\s+ÁN\s+VÀ\s+THANG\s+ĐIỂM
+      | ĐÁP\s+ÁN\s+CHI\s+TIẾT
+      | BÀI\s+GIẢI\s+THAM\s+KHẢO
+      | BARÊM\s+ĐIỂM
+      | ĐÁP\s+ÁN
+      | ĐÁP\s+SỐ
     )
+    [^\n]*$
+    """
+)
 
-    start = time.time()
-    result = None
+_RE_QUESTION_TRAILER = re.compile(
+    r"""(?imx)
+    ^\s*(?:
+        [—\-=_\s]*Hết[—\-=_\s]*
+      | Thí\s+sinh\s+không\s+được\s+sử\s+dụng\s+tài\s+liệu
+      | Họ\s+và\s+tên\s+thí\s+sinh
+      | Số\s+báo\s+danh
+      | \d+\s*/\s*\d+
+    ).*$
+    """
+)
 
-    # Route to the right OCR backend
-    if backend == OCRBackend.PYMUPDF:
-        result = await _ocr_pymupdf(file_handler, file_path)
-    elif backend == OCRBackend.PIX2TEXT:
-        result = await _ocr_pix2text(file_handler, file_path)
-    elif backend == OCRBackend.MINERU:
-        result = await _ocr_mineru(file_handler, file_path)
 
-    if not result or not result.get("text"):
-        # result is empty — log and try fallbacks
-        attempted = backend.value
-        result = await _ocr_with_fallback(file_handler, file_path, attempted)
+def _split_question_and_answer_key(text: str) -> tuple[str, str]:
+    """Sprint 6 A2 — tách (question_section, answer_key_section).
 
-    # Quality check: if PyMuPDF text is poor, auto-upgrade
-    if result.get("method") == "pymupdf" and _is_text_poor_quality(result.get("text", "")):
-        logger.info(f"PyMuPDF text quality poor for {subject_code}, upgrading to Pix2Text")
-        p2t_result = await _ocr_pix2text(file_handler, file_path)
-        if p2t_result and p2t_result.get("text"):
-            result = p2t_result
+    Detect markers như "HƯỚNG DẪN CHẤM", "ĐÁP ÁN VÀ THANG ĐIỂM" ở đầu dòng
+    riêng. Nếu tìm thấy → text trước = đề, text sau = answer key.
+    Nếu không có marker → trả (text, "") — coi tất cả là questions.
+    """
+    if not text:
+        return text or "", ""
+    m = _RE_ANSWER_KEY_HEADER.search(text) or _RE_ANSWER_KEY_HEADER_FUZZY.search(text)
+    if not m:
+        return text, ""
+    return text[:m.start()].rstrip(), text[m.start():].lstrip()
 
-    elapsed = time.time() - start
-    text_len = len(result.get("text", ""))
-    img_count = len(result.get("image_map", {}))
-    logger.info(
-        f"OCR complete: method={result.get('method')}, "
-        f"text={text_len} chars, images={img_count}, time={elapsed:.1f}s"
-    )
 
-    # Ensure image_map key exists
-    if "image_map" not in result:
-        result["image_map"] = {}
+def _clean_question_block(text: str) -> str:
+    """Remove exam boilerplate that often trails the final question block."""
+    if not text:
+        return text or ""
+    trailer = _RE_QUESTION_TRAILER.search(text)
+    if trailer:
+        text = text[:trailer.start()].rstrip()
+    return text.strip()
 
+
+def _parse_answer_key_by_cau_num(answer_text: str) -> dict[int, str]:
+    """Parse answer key text → {cau_num: solution_text}.
+
+    Dùng `_RE_QUESTION_SPLIT` để split answer key theo "Câu N" markers.
+    Mỗi block thuộc về Câu N gần nhất.
+    """
+    if not answer_text.strip():
+        return {}
+    matches = _find_question_markers(answer_text)
+    if not matches:
+        return {}
+    result: dict[int, str] = {}
+    for i, m in enumerate(matches):
+        cau_num = int(m.group(1))
+        start = m.end()  # bỏ qua "Câu N", lấy nội dung sau đó
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(answer_text)
+        # Strip leading punctuation (`.`, `:`, `)`) + whitespace từ "Câu N. ..." marker
+        block = answer_text[start:end].lstrip(" .:)\t\n").strip()
+        if block:
+            # Nếu cùng cau_num xuất hiện 2 lần (hiếm), nối thêm
+            if cau_num in result:
+                result[cau_num] = result[cau_num] + "\n\n" + block
+            else:
+                result[cau_num] = block
     return result
 
 
-async def _ocr_pymupdf(fh: Any, file_path: str) -> dict:
-    """OCR via PyMuPDF (fast text extraction)."""
+def _solution_to_steps(solution_text: str, max_steps: int = 30) -> list[str]:
+    """Split solution text thành list bước giải.
+
+    Heuristic: split theo blank line hoặc dòng bắt đầu bằng "•", "-", "+",
+    "a)", "b)", "Bước N:", "Vậy", v.v. Mỗi step ngắn gọn để FE render đẹp.
+    """
+    if not solution_text.strip():
+        return []
+    # Normalize newlines, split theo paragraph
+    paragraphs = re.split(r'\n\s*\n', solution_text.strip())
+    steps: list[str] = []
+    for p in paragraphs:
+        p = p.strip()
+        if not p:
+            continue
+        # Nếu paragraph dài, split tiếp theo dấu chấm câu nếu cần
+        if len(p) > 500:
+            # split theo lines còn giữ ngữ cảnh
+            for line in p.split("\n"):
+                line = line.strip()
+                if line:
+                    steps.append(line)
+        else:
+            steps.append(p)
+        if len(steps) >= max_steps:
+            break
+    return steps[:max_steps]
+
+
+def _extract_final_answer_from_solution(solution_text: str) -> str | None:
+    """Tìm đáp án cuối câu trong solution. Heuristic: dòng có "Vậy",
+    "Đáp số:", "Kết quả:", hoặc "Chọn X" cho câu trắc nghiệm.
+    """
+    if not solution_text:
+        return None
+    # Trắc nghiệm: "Chọn A/B/C/D"
+    pick = _RE_ANSWER_PICK.search(solution_text)
+    if pick:
+        return pick.group(1)
+    # Tự luận: "Vậy ... = X" hoặc "Đáp số: X"
+    final_patterns = [
+        r'Đ\s*á\s*p\s+s\s*ố\s*[:\.]?\s*([^\n]{1,100})',
+        r'K\s*ế\s*t\s+qu\s*ả\s*[:\.]?\s*([^\n]{1,100})',
+        r'V\s*ậ\s*y\s+[^\n]*?=\s*([^\n.]{1,80})',
+    ]
+    for pat in final_patterns:
+        m = re.search(pat, solution_text, re.IGNORECASE)
+        if m:
+            return m.group(1).strip().rstrip('.,;:')
+    return None
+
+# ==================== STEP 1.5: CHUNK + EMBED (Document RAG) ====================
+
+async def step1_5_chunk_and_embed(
+    db,
+    file_path: str,
+    exam_id: int,
+    user_id: int,
+    subject_code: str = None,
+    grade: int = None,
+    markdown_override: str | None = None,
+) -> int:
+    """Step 1.5: question-aware chunk + embed into pgvector.
+
+    Runs AFTER step 1 (OCR) and IN PARALLEL with step 2/3 (parse questions).
+    Chunks the OCR markdown by question boundary (preserves each Câu/Bài, never
+    splits a formula). ``markdown_override`` (set on the OCR-review resume) chunks
+    the user-EDITED markdown and re-indexes (deletes existing chunks first).
+
+    Returns:
+        Number of chunks embedded.
+    """
+    start = time.time()
+    chunks = []
+
+    # Re-index path: chunk the edited markdown, replacing the original chunks.
+    if markdown_override is not None:
+        try:
+            from app.services.docling_chunker import chunk_exam_markdown
+            from app.services.document_rag import delete_document_chunks
+
+            removed = await delete_document_chunks(db, exam_id)
+            chunks = await chunk_exam_markdown(markdown_override)
+            logger.info("Step 1.5 re-index: removed %d old chunks, %d new from edited markdown", removed, len(chunks))
+        except Exception as e:
+            logger.warning(f"Step 1.5: re-index chunking failed: {e}")
+    # Fresh path: prefer cached local OCR markdown (avoids re-OCR).
+    else:
+        try:
+            from app.services.docling_chunker import chunk_exam_markdown
+            from app.services.local_ocr_service import extract_local_ocr_artifact
+
+            artifact = await extract_local_ocr_artifact(
+                file_path,
+                subject_code,
+                use_cache=True,
+            )
+            md_text = artifact.get("markdown") or artifact.get("text") or ""
+            if artifact.get("cache_hit") and md_text:
+                chunks = await chunk_exam_markdown(md_text)
+                logger.info(f"Step 1.5: OCR artifact markdown produced {len(chunks)} chunks")
+        except Exception as e:
+            logger.warning(f"Step 1.5: OCR artifact chunking failed: {e}")
+
+    # Try Docling next (best chunking quality). Skip on re-index (file-based,
+    # would chunk the ORIGINAL PDF instead of the edited markdown).
     try:
-        extracted = await fh.extract_text(file_path, use_vision=False)
-        return {
-            "text": extracted.get("text", ""),
-            "image_map": {},
-            "method": "pymupdf",
-        }
+        from app.services.docling_chunker import chunk_document, is_available
+        if not chunks and markdown_override is None and is_available():
+            chunks = await chunk_document(file_path)
+            logger.info(f"Step 1.5: Docling produced {len(chunks)} chunks")
     except Exception as e:
-        logger.warning(f"PyMuPDF extraction failed: {e}")
-        return {"text": "", "image_map": {}, "method": "pymupdf-error"}
+        logger.warning(f"Step 1.5: Docling chunking failed: {e}")
 
+    # Fallback: chunk from Marker markdown output (if we have it cached)
+    if not chunks and markdown_override is None:
+        try:
+            from app.services.docling_chunker import chunk_markdown_text
+            from app.services.marker_ocr import extract_markdown, is_available as marker_avail
+            if marker_avail():
+                result = await extract_markdown(file_path)
+                md_text = result.get("text", "")
+                if md_text:
+                    chunks = await chunk_markdown_text(md_text)
+                    logger.info(f"Step 1.5: Markdown fallback produced {len(chunks)} chunks")
+        except Exception as e:
+            logger.warning(f"Step 1.5: Markdown chunking fallback failed: {e}")
 
-async def _ocr_pix2text(fh: Any, file_path: str) -> dict:
-    """OCR via Pix2Text (local OCR + LaTeX formula recognition)."""
-    if not fh.has_pix2text:
-        logger.warning("Pix2Text not installed, cannot use pix2text backend")
-        return {"text": "", "image_map": {}, "method": "pix2text-not-installed"}
+    if not chunks:
+        logger.info("Step 1.5: No chunks to embed")
+        return 0
 
+    # Embed and store chunks
     try:
-        extracted = await fh._extract_pdf_pix2text(file_path)
-        return {
-            "text": extracted.get("text", ""),
-            "image_map": {},
-            "method": "pix2text",
-        }
+        from app.services.document_rag import embed_document_chunks
+        stored = await embed_document_chunks(
+            db, exam_id, chunks, user_id,
+            subject_code=subject_code,
+            grade=grade,
+        )
+        elapsed = time.time() - start
+        logger.info(
+            f"Step 1.5 complete: {stored}/{len(chunks)} chunks embedded, "
+            f"time={elapsed:.1f}s"
+        )
+        return stored
     except Exception as e:
-        logger.warning(f"Pix2Text extraction failed: {e}")
-        return {"text": "", "image_map": {}, "method": "pix2text-error"}
-
-
-async def _ocr_mineru(fh: Any, file_path: str) -> dict:
-    """OCR via MinerU (layout-aware extraction)."""
-    try:
-        result = await fh._extract_pdf_mineru(file_path)
-        return result  # Already has text, image_map, method
-    except Exception as e:
-        logger.warning(f"MinerU extraction failed: {e}")
-        return {"text": "", "image_map": {}, "method": "mineru-error"}
-
-
-async def _ocr_with_fallback(fh: Any, file_path: str, attempted: str) -> dict:
-    """Fallback chain: MinerU → Pix2Text → PyMuPDF."""
-    logger.warning(f"Primary OCR ({attempted}) failed/empty, trying fallbacks...")
-
-    if attempted != "pix2text" and fh.has_pix2text:
-        result = await _ocr_pix2text(fh, file_path)
-        if result.get("text"):
-            logger.info("Fallback to Pix2Text succeeded")
-            return result
-
-    if attempted != "pymupdf":
-        result = await _ocr_pymupdf(fh, file_path)
-        if result.get("text"):
-            logger.info("Fallback to PyMuPDF succeeded")
-            return result
-
-    logger.error("All OCR backends failed")
-    return {"text": "", "image_map": {}, "method": "all-failed"}
-
-
-def _is_text_poor_quality(text: str) -> bool:
-    """Quick heuristic: check if extracted text is garbage."""
-    if not text or len(text) < 50:
-        return True
-    doc_markers = ['Câu', 'Bài', 'câu', 'bài', 'Question', '=', '+', 'sin', 'cos']
-    marker_count = sum(1 for m in doc_markers if m in text)
-    if marker_count < 2:
-        return True
-    garbled = sum(1 for c in text if ord(c) > 0xFFFF or (ord(c) < 32 and c not in '\n\r\t'))
-    if len(text) > 0 and garbled / len(text) > 0.1:
-        return True
-    return False
+        logger.warning(f"Step 1.5: Embedding failed: {e}")
+        return 0
 
 
 # ==================== STEP 2: PRE-PROCESS ====================
 
 def step2_preprocess(ocr_result: dict) -> list[dict]:
+    """Entry point for v1 segmentation rollout with legacy-safe fallback."""
+    segmentation_enabled = os.getenv("DOCUMENT_SEGMENTATION_ENABLED", "0") in {"1", "true", "True"}
+    segmentation_shadow = os.getenv("DOCUMENT_SEGMENTATION_SHADOW", "1") in {"1", "true", "True"}
+
+    segmentation_questions: list[dict] = []
+    segmentation_report: dict[str, Any] | None = None
+    if segmentation_enabled or segmentation_shadow:
+        segmentation_questions, segmentation_report = _run_document_segmentation(ocr_result)
+        ocr_result["segmentation_report"] = segmentation_report
+
+    if segmentation_enabled and segmentation_report is not None:
+        if segmentation_report["document_type"] == "no_questions":
+            ocr_result["no_questions_detected"] = True
+            return []
+        if segmentation_questions:
+            return _attach_ocr_metadata_to_questions(segmentation_questions, ocr_result)
+        segmentation_report["warnings"].append("segmentation_empty_fallback_to_legacy")
+
+    legacy = _legacy_step2_preprocess(ocr_result)
+    if segmentation_report is not None:
+        segmentation_report["legacy_question_count"] = len(legacy)
+        segmentation_report["question_count_delta_vs_legacy"] = (
+            segmentation_report["question_count"] - len(legacy)
+        )
+    return _attach_ocr_metadata_to_questions(legacy, ocr_result)
+
+
+def _attach_ocr_metadata_to_questions(questions: list[dict], ocr_result: dict) -> list[dict]:
+    if ocr_result.get("requires_latex_normalization"):
+        for question in questions:
+            question["needs_latex_normalization"] = True
+    return questions
+
+
+def _run_document_segmentation(ocr_result: dict) -> tuple[list[dict], dict[str, Any]]:
+    from app.services.block_classifier import classify_blocks
+    from app.services.document_blocks import build_document_pages
+    from app.services.document_structure import build_document_structure
+    from app.services.question_assembler import assemble_questions
+
+    pages = build_document_pages(ocr_result)
+    blocks = [block for page in pages for block in page.blocks]
+    classifications = classify_blocks(blocks)
+    parsed = build_document_structure(pages, classifications)
+    assembly = assemble_questions(
+        parsed,
+        full_text=ocr_result.get("text", ""),
+        image_map=ocr_result.get("image_map", {}),
+    )
+    warnings = list(parsed.warnings)
+    # Phase 3.11: nêu rõ SỐ câu đáp án không khớp (đáp án mất) thay vì chỉ đếm block.
+    if assembly.unmatched_answer_nums:
+        warnings.append(
+            f"unmatched_answer_nums={assembly.unmatched_answer_nums[:20]} "
+            f"(đáp án không khớp câu hỏi nào → có thể mất đáp án)"
+        )
+    if assembly.skipped_empty:
+        warnings.append(f"skipped_empty_questions={assembly.skipped_empty}")
+    report = {
+        "document_type": parsed.document_type,
+        "question_count": len(assembly.questions),
+        "section_count": parsed.section_count,
+        "warnings": warnings,
+        "confidence": parsed.confidence,
+        "unmatched_answer_blocks": assembly.unmatched_answer_blocks,
+        "unmatched_answer_nums": assembly.unmatched_answer_nums,
+        "unmatched_solution_blocks": assembly.unmatched_solution_blocks,
+        "skipped_empty": assembly.skipped_empty,
+    }
+    return assembly.questions, report
+
+
+def _legacy_step2_preprocess(ocr_result: dict) -> list[dict]:
     """Step 2: Split questions + find answers using regex. No AI.
+
+    Sprint 6 A2: tách "ĐỀ THI" và "HƯỚNG DẪN CHẤM" trước khi splitter chạy.
+    Solution từ answer key được gắn vào solution_steps của câu tương ứng.
 
     Args:
         ocr_result: {text: str, image_map: dict, method: str}
 
     Returns:
-        List of {cau_num, text, answer, answer_source, images}
+        List of {cau_num, text, answer, answer_source, images, solution_steps}
     """
     text = ocr_result.get("text", "")
     image_map = ocr_result.get("image_map", {})
@@ -184,28 +456,57 @@ def step2_preprocess(ocr_result: dict) -> list[dict]:
 
     start = time.time()
 
-    # Sub-step 1: Split text into questions
-    questions = _split_questions(text)
+    # Sprint 6 A2: tách phần đề và phần đáp án TRƯỚC khi splitter chạy.
+    # Tránh duplicate Câu N (đề) + Câu N (đáp án) bị merge thành 1 hoặc tách thành 2.
+    question_text, answer_key_text = _split_question_and_answer_key(text)
+    has_answer_key = bool(answer_key_text.strip())
+    if has_answer_key:
+        logger.info(
+            "A2: detected answer key section (%d chars), splitter chỉ chạy trên đề (%d chars)",
+            len(answer_key_text), len(question_text),
+        )
+    answer_key_map = _parse_answer_key_by_cau_num(answer_key_text) if has_answer_key else {}
+
+    # Sub-step 1: Split QUESTION TEXT (không bao gồm answer key) thành câu hỏi
+    questions = _split_questions(question_text)
 
     if not questions:
-        logger.warning("No questions found by regex splitter")
-        return []
+        # Fallback: nếu split phần đề không ra câu nào (có thể marker không khớp),
+        # thử split lại trên text gốc
+        logger.warning("No questions found in question section — falling back to full text")
+        questions = _split_questions(text)
+        if not questions:
+            logger.warning("No questions found by regex splitter on full text either")
+            return []
 
-    # Sub-step 2: Extract answers
+    # Sub-step 2: Extract answers (từ original text — answer extractor có thể tìm
+    # ở cuối đề hoặc bảng đáp án rời)
     extractor = AnswerExtractor()
     answer_map = extractor.extract(text, questions)
 
-    # Sub-step 3: Assign answers and images to questions
+    # Sub-step 3: Assign answers + solution_steps + images to questions
     result = []
     for q in questions:
         cau_num = q["cau_num"]
 
-        # Assign answer if confidence is sufficient
+        # Answer từ AnswerExtractor (regex bảng đáp án)
         answer = None
         answer_source = None
         if answer_map.confidence >= 0.6 and cau_num in answer_map.answers:
             answer = answer_map.answers[cau_num]
             answer_source = answer_map.source
+
+        # Sprint 6 A2: nếu có answer key section, lấy solution_steps + answer cuối câu
+        solution_steps: list[str] = []
+        ak_solution = answer_key_map.get(cau_num)
+        if ak_solution:
+            solution_steps = _solution_to_steps(ak_solution)
+            # Nếu chưa có answer, thử extract từ solution text
+            if not answer:
+                final_ans = _extract_final_answer_from_solution(ak_solution)
+                if final_ans:
+                    answer = final_ans
+                    answer_source = "answer_key"
 
         # Assign images: check if any image placeholder is in question text
         q_images = {}
@@ -219,13 +520,16 @@ def step2_preprocess(ocr_result: dict) -> list[dict]:
             "answer": answer,
             "answer_source": answer_source,
             "images": q_images,
+            "solution_steps": solution_steps,  # Sprint 6 A2: từ answer key
         })
 
     elapsed = time.time() - start
     has_answers = sum(1 for r in result if r.get("answer"))
+    has_solutions = sum(1 for r in result if r.get("solution_steps"))
     logger.info(
         f"Preprocess: {len(result)} questions, {has_answers} with answers "
         f"(source={answer_map.source}, confidence={answer_map.confidence:.2f}), "
+        f"{has_solutions} with solution_steps from answer key, "
         f"time={elapsed:.2f}s"
     )
 
@@ -238,14 +542,26 @@ def _split_questions(text: str) -> list[dict]:
     Tries "Câu X" / "Bài X" / "Question X" first, falls back to "X. " / "X) ".
     """
     # Try structured patterns first
-    matches = list(_RE_QUESTION_SPLIT.finditer(text))
+    matches = _find_question_markers(text)
 
     if len(matches) < 2:
-        # Fallback to numbered patterns
+        # Fallback to numbered patterns (uppercase-gated, ít false positive)
         matches = list(_RE_NUMBERED_SPLIT.finditer(text))
 
     if len(matches) < 2:
-        # Can't split — return entire text as one question
+        # Fallback #3: relaxed numbered split (động từ thường "1. tính x").
+        relaxed = list(_RE_NUMBERED_SPLIT_RELAXED.finditer(text))
+        if len(relaxed) >= 2:
+            matches = relaxed
+
+    if len(matches) < 2:
+        # Can't split — return entire text as one question. Log to surface the
+        # silent merge-to-one (đề định dạng lạ → có thể đang gộp nhầm nhiều câu).
+        logger.warning(
+            "_split_questions: no question markers matched (text_len=%d); "
+            "trả về 1 câu gộp — đề có thể dùng định dạng đánh số không chuẩn",
+            len(text),
+        )
         return [{"cau_num": 1, "text": text.strip()}]
 
     questions = []
@@ -253,252 +569,9 @@ def _split_questions(text: str) -> list[dict]:
         cau_num = int(m.group(1))
         start = m.start()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        q_text = text[start:end].strip()
+        q_text = _clean_question_block(text[start:end].strip())
 
         if q_text:
             questions.append({"cau_num": cau_num, "text": q_text})
 
     return questions
-
-
-# ==================== STEP 3: GEMINI CLASSIFY ====================
-
-# Classify prompt template — Gemini CHỈ classify, KHÔNG extract text
-_CLASSIFY_PROMPT = """Bạn là chuyên gia phân loại câu hỏi đề thi K12 Việt Nam, môn {subject_family}.
-Các câu hỏi dưới đây đã được OCR và trích xuất sẵn. Đáp án (nếu có) đã được điền.
-
-Nhiệm vụ của bạn: CHỈ classify và điền thông tin còn thiếu.
-KHÔNG thay đổi nội dung câu hỏi. KHÔNG bịa solution_steps.
-
-Với mỗi câu, trả về JSON object:
-{{
-  "cau_num": số nguyên (giữ nguyên từ input),
-  "type": "TN"|"TL"|"Chứng minh"|"Tính toán"|"Tìm x"|"Rút gọn biểu thức"|"Đọc hiểu"|"Nghị luận"|"Tập làm văn",
-  "difficulty": "NB"|"TH"|"VD"|"VDC",
-  "topic": chủ đề ngắn (ví dụ: "Giới hạn và liên tục", "Dao động cơ", "Kim loại kiềm"),
-  "grade": lớp học (số nguyên 1-12, null nếu không rõ),
-  "answer": giữ nguyên nếu đã có, tự điền nếu TN và đáp án rõ ràng từ text, null nếu TL không có đáp án,
-  "solution_steps": [các bước giải CHỈ NẾU có trong text, không được bịa, [] nếu không có]
-}}
-
-Trả về JSON array. KHÔNG markdown. KHÔNG giải thích.
-
-INPUT:
-{questions_json}"""
-
-# Schema for structured output
-_CLASSIFY_SCHEMA = {
-    "type": "ARRAY",
-    "items": {
-        "type": "OBJECT",
-        "properties": {
-            "cau_num":        {"type": "INTEGER"},
-            "type":           {"type": "STRING"},
-            "difficulty":     {"type": "STRING"},
-            "topic":          {"type": "STRING"},
-            "grade":          {"type": "INTEGER"},
-            "answer":         {"type": "STRING"},
-            "solution_steps": {"type": "ARRAY", "items": {"type": "STRING"}},
-        },
-        "required": ["cau_num", "type", "difficulty", "topic"],
-    }
-}
-
-
-async def step3_classify(
-    structured_questions: list[dict],
-    subject_hint: Optional[str] = None,
-    progress_cb: Optional[Callable[[int, int], None]] = None,
-) -> list[dict]:
-    """Step 3: Send structured questions to Gemini for classification only.
-
-    Chunks of 10 questions, max 4 parallel.
-    Returns final list with question text + classification merged.
-    """
-    from app.services import ai_parser_service as ai_parser
-
-    if not ai_parser._client:
-        raise RuntimeError(
-            "GOOGLE_API_KEY chưa được cấu hình. "
-            "Vui lòng thêm API key trong Settings → Environment Variables."
-        )
-
-    subject_family = SUBJECT_TO_FAMILY.get(subject_hint, "generic")
-
-    start = time.time()
-    ai_parser._reset_token_usage()
-
-    # Build chunks of 10
-    chunk_size = 10
-    chunks = []
-    for i in range(0, len(structured_questions), chunk_size):
-        chunks.append(structured_questions[i:i + chunk_size])
-
-    total_chunks = len(chunks)
-    completed = 0
-    semaphore = asyncio.Semaphore(4)
-
-    async def _classify_chunk(chunk: list[dict], chunk_idx: int) -> list[dict]:
-        nonlocal completed
-
-        # Build input JSON for Gemini (only send text + answer, not images)
-        input_items = []
-        for q in chunk:
-            item = {
-                "cau_num": q["cau_num"],
-                "text": q["text"][:3000],  # Truncate very long questions
-            }
-            if q.get("answer"):
-                item["answer"] = q["answer"]
-            input_items.append(item)
-
-        questions_json = json.dumps(input_items, ensure_ascii=False, indent=None)
-        prompt = _CLASSIFY_PROMPT.format(
-            subject_family=subject_family,
-            questions_json=questions_json,
-        )
-
-        async with semaphore:
-            result = await _call_gemini_classify(ai_parser, prompt)
-
-        completed += 1
-        if progress_cb:
-            progress_cb(completed, total_chunks)
-
-        return result
-
-    # Run all chunks in parallel (semaphore limits to 4)
-    tasks = [_classify_chunk(chunk, i) for i, chunk in enumerate(chunks)]
-    chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    # Merge results
-    classify_map: dict[int, dict] = {}
-    for i, res in enumerate(chunk_results):
-        if isinstance(res, Exception):
-            logger.warning(f"Classify chunk {i} failed: {res}")
-            continue
-        for item in res:
-            cau_num = item.get("cau_num")
-            if cau_num is not None:
-                classify_map[cau_num] = item
-
-    # Merge classification back into structured questions
-    final_questions = []
-    for q in structured_questions:
-        cau_num = q["cau_num"]
-        classify = classify_map.get(cau_num, {})
-
-        # Build final question dict (compatible with existing Question model fields)
-        fq = {
-            "question": q["text"],
-            "subject": subject_hint or "toan",
-            "type": classify.get("type", "TN"),
-            "difficulty": classify.get("difficulty", "TH"),
-            "topic": classify.get("topic", ""),
-            "grade": classify.get("grade"),
-            "chapter": "",
-            "lesson_title": "",
-            "answer": q.get("answer") or classify.get("answer") or "",
-            "answer_source": q.get("answer_source") or ("gemini" if classify.get("answer") else None),
-            "solution_steps": classify.get("solution_steps", []),
-        }
-
-        # Restore answers: if Gemini returned null but preprocess had high-confidence answer
-        if not fq["answer"] and q.get("answer"):
-            fq["answer"] = q["answer"]
-            fq["answer_source"] = q.get("answer_source")
-
-        final_questions.append(fq)
-
-    # Sort by cau_num (preserve original order)
-    final_questions.sort(key=lambda x: _extract_cau_num(x.get("question", "")))
-
-    elapsed = time.time() - start
-    ai_parser._log_token_summary(f"Classify ({len(final_questions)} questions, {elapsed:.1f}s)")
-
-    logger.info(
-        f"Classification complete: {len(final_questions)} questions, "
-        f"{len(classify_map)}/{len(structured_questions)} classified by Gemini, "
-        f"time={elapsed:.1f}s"
-    )
-
-    return final_questions
-
-
-def _extract_cau_num(text: str) -> int:
-    """Extract question number from text for sorting."""
-    m = re.search(r'(?:Câu|câu|Bài|bài|Question)\s+(\d+)', text)
-    if m:
-        return int(m.group(1))
-    m = re.search(r'^(\d+)', text)
-    if m:
-        return int(m.group(1))
-    return 999
-
-
-async def _call_gemini_classify(ai_parser: Any, prompt: str) -> list[dict]:
-    """Call Gemini API for classification. 3-tier fallback."""
-    from google.genai import types
-    from app.services.ai_parser import _SAFETY_SETTINGS
-
-    tiers = [
-        ("application/json", _CLASSIFY_SCHEMA, "schema"),
-        ("application/json", None,              "json"),
-        (None,               None,               "plain"),
-    ]
-
-    for mime, schema, label in tiers:
-        try:
-            cfg_kwargs = dict(
-                temperature=0,
-                max_output_tokens=8192,
-                safety_settings=[types.SafetySetting(**s) for s in _SAFETY_SETTINGS],
-            )
-            if mime:
-                cfg_kwargs["response_mime_type"] = mime
-            if schema:
-                cfg_kwargs["response_schema"] = schema
-
-            for attempt in range(2):
-                try:
-                    response = await asyncio.wait_for(
-                        ai_parser._client.aio.models.generate_content(
-                            model=ai_parser.gemini_model,
-                            contents=prompt,
-                            config=types.GenerateContentConfig(**cfg_kwargs),
-                        ),
-                        timeout=90,
-                    )
-                    ai_parser._track_tokens(response)
-                    content = ai_parser._safe_text(response)
-
-                    if content:
-                        result = ai_parser._extract_json(content)
-                        if result:
-                            logger.debug(f"Classify {label}: {len(result)} items")
-                            return result
-                    break  # Got response but bad JSON → try next tier
-
-                except asyncio.TimeoutError:
-                    logger.warning(f"Classify {label} timed out, attempt {attempt + 1}")
-                    break
-                except Exception as e:
-                    err = str(e)
-                    if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                        wait = (attempt + 1) * 5
-                        logger.warning(f"Classify {label} rate limited, wait {wait}s")
-                        await asyncio.sleep(wait)
-                        continue
-                    if "500" in err or "503" in err:
-                        wait = (attempt + 1) * 15
-                        logger.warning(f"Classify {label} server error, wait {wait}s")
-                        await asyncio.sleep(wait)
-                        continue
-                    logger.warning(f"Classify {label} failed: {e}")
-                    break
-
-        except Exception as e:
-            logger.warning(f"Classify {label} outer error: {e}")
-
-    logger.warning("All classify tiers failed, returning empty")
-    return []

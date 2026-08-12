@@ -9,13 +9,13 @@ from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, case
 
 from app.api.deps import get_current_active_user
 from app.db.session import get_db
 from app.db.models.user import User
 from app.db.models.classroom import (
-    Class, ClassMember, Assignment, Submission, AnswerDetail, StudentXP,
+    Class, ClassMember, Assignment, Submission, AnswerDetail,
 )
 from app.db.models.question import Question
 
@@ -111,49 +111,35 @@ async def class_analytics(
         .where(Assignment.class_id == class_id, Submission.status == "completed")
     )
 
-    # Per-student stats
+    # Per-student stats — 1 GROUP BY thay vì 3 query × N học sinh (N+1 cũ).
+    # avg chỉ tính submission completed (case positional — SQLAlchemy 2.x).
+    per_student_result = await db.execute(
+        select(
+            Submission.student_id,
+            func.count().label("sub_count"),
+            func.avg(
+                case((Submission.status == "completed", Submission.score))
+            ).label("avg_score"),
+            func.max(Submission.submitted_at).label("last_sub"),
+        )
+        .join(Assignment, Submission.assignment_id == Assignment.id)
+        .where(Assignment.class_id == class_id)
+        .group_by(Submission.student_id)
+    )
+    stats_by_student = {row.student_id: row for row in per_student_result.all()}
+
     student_stats: List[StudentStat] = []
     for member, user in members:
-        sub_count = await db.scalar(
-            select(func.count())
-            .select_from(Submission)
-            .join(Assignment, Submission.assignment_id == Assignment.id)
-            .where(
-                Assignment.class_id == class_id,
-                Submission.student_id == user.id,
-            )
-        )
-        avg_s = await db.scalar(
-            select(func.avg(Submission.score))
-            .join(Assignment, Submission.assignment_id == Assignment.id)
-            .where(
-                Assignment.class_id == class_id,
-                Submission.student_id == user.id,
-                Submission.status == "completed",
-            )
-        )
-        last_sub = await db.scalar(
-            select(Submission.submitted_at)
-            .join(Assignment, Submission.assignment_id == Assignment.id)
-            .where(
-                Assignment.class_id == class_id,
-                Submission.student_id == user.id,
-            )
-            .order_by(desc(Submission.submitted_at))
-            .limit(1)
-        )
-        xp_rec = await db.scalar(
-            select(StudentXP).where(StudentXP.student_id == user.id)
-        )
+        row = stats_by_student.get(user.id)
         student_stats.append(StudentStat(
             student_id=user.id,
             student_name=user.full_name or user.email,
-            total_submissions=sub_count or 0,
-            avg_score=round(avg_s, 1) if avg_s else None,
-            last_active=last_sub,
-            streak_days=xp_rec.streak_days if xp_rec else 0,
-            total_xp=xp_rec.total_xp if xp_rec else 0,
-            level=xp_rec.level if xp_rec else 1,
+            total_submissions=(row.sub_count if row else 0) or 0,
+            avg_score=round(row.avg_score, 1) if row and row.avg_score else None,
+            last_active=row.last_sub if row else None,
+            streak_days=0,
+            total_xp=0,
+            level=1,
         ))
 
     # Topic breakdown — which topics students struggle with
@@ -343,8 +329,6 @@ async def student_detail_in_class(
         for s, a in rows
     ]
 
-    xp_rec = await db.scalar(select(StudentXP).where(StudentXP.student_id == student_id))
-
     # Weak topics
     weak_result = await db.execute(
         select(
@@ -381,9 +365,9 @@ async def student_detail_in_class(
         "total_submissions": len(history),
         "avg_score": round(sum(h["score"] or 0 for h in history) / len(history), 1) if history else None,
         "xp": {
-            "total": xp_rec.total_xp if xp_rec else 0,
-            "level": xp_rec.level if xp_rec else 1,
-            "streak_days": xp_rec.streak_days if xp_rec else 0,
+            "total": 0,
+            "level": 1,
+            "streak_days": 0,
         },
         "submission_history": history,
         "weak_topics": weak_topics,

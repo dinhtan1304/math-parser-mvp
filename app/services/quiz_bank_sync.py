@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import content_origin
 from app.db.models.question import Question
 from app.schemas.quiz import QuizQuestionCreate
 
@@ -86,11 +87,22 @@ def _extract_answer_text(q_type: str, answer: Any, choices: Optional[list] = Non
     return str(answer) if answer else ""
 
 
+def origin_from_source_type(source_type: Optional[str]) -> str:
+    """Ánh xạ QuizQuestion.source_type → nhãn nguồn gốc nội dung.
+
+    Chỉ "ai_generated" mới là nội dung AI. Các nguồn còn lại (giáo viên tự nhập,
+    import từ file JSON của chính họ, lấy lại từ ngân hàng) đều là HUMAN — không
+    suy đoán thành AI.
+    """
+    return content_origin.AI_GENERATED if source_type == "ai_generated" else content_origin.HUMAN
+
+
 async def save_to_bank(
     db: AsyncSession,
     user_id: int,
     q_data: QuizQuestionCreate,
     grade: Optional[int] = None,
+    origin: str = content_origin.HUMAN,
 ) -> Question:
     """Create a bank Question from quiz question data. Returns existing if duplicate."""
     content_hash = _content_hash(q_data.question_text)
@@ -125,6 +137,7 @@ async def save_to_bank(
         topic=q_data.tags[0] if q_data.tags else "",
         is_public=False,
         content_hash=content_hash,
+        origin=origin,
     )
     db.add(bank_q)
     await db.flush()  # Get ID without committing
@@ -136,6 +149,7 @@ async def save_to_bank_batch(
     user_id: int,
     questions: List[QuizQuestionCreate],
     grade: Optional[int] = None,
+    origin: str = content_origin.HUMAN,
 ) -> Dict[str, Question]:
     """Batch save questions to bank. Returns dict: content_hash → Question.
 
@@ -184,6 +198,7 @@ async def save_to_bank_batch(
             topic=q_data.tags[0] if q_data.tags else "",
             is_public=False,
             content_hash=h,
+            origin=origin,
         )
         db.add(bank_q)
         new_questions.append(bank_q)

@@ -1,4 +1,6 @@
 import time
+import hashlib
+import logging
 import threading
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -10,26 +12,44 @@ from sqlalchemy import select
 from app.db.session import get_db
 from app.core import security
 from app.core.config import settings
+from app.core.redis_client import get_redis
 from app.db.models.user import User
 from app.schemas.user import TokenPayload
+
+logger = logging.getLogger(__name__)
 
 reusable_oauth2 = OAuth2PasswordBearer(
     tokenUrl=f"{settings.API_V1_STR}/auth/login"
 )
 
-# ── Token blacklist (in-memory with TTL cleanup) ──
-# Stores {token_jti_or_hash: expiry_timestamp}
+# ── Token blacklist ──
+# Backed by Redis when available (survives restart + multi-worker), else an
+# in-memory dict with lazy TTL cleanup. Keys are SHA-256 hashes of the token.
 _token_blacklist: dict[str, float] = {}
 _blacklist_lock = threading.Lock()
 
 
-def blacklist_token(token: str, ttl_seconds: int | None = None) -> None:
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+async def blacklist_token(token: str, ttl_seconds: int | None = None) -> None:
     """Add a token to the blacklist. Tokens auto-expire after TTL."""
-    import hashlib
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
-    expiry = time.time() + (ttl_seconds or settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60)
+    h = _token_hash(token)
+    ttl = ttl_seconds or settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+
+    r = get_redis()
+    if r is not None:
+        try:
+            await r.setex(f"bl:{h}", ttl, "1")
+            return
+        except Exception as e:
+            logger.warning("Redis blacklist set failed, using in-memory: %s", e)
+
+    # In-memory fallback
+    expiry = time.time() + ttl
     with _blacklist_lock:
-        _token_blacklist[token_hash] = expiry
+        _token_blacklist[h] = expiry
         # Cleanup expired entries periodically (every 100 additions)
         if len(_token_blacklist) % 100 == 0:
             now = time.time()
@@ -38,16 +58,24 @@ def blacklist_token(token: str, ttl_seconds: int | None = None) -> None:
                 del _token_blacklist[k]
 
 
-def is_token_blacklisted(token: str) -> bool:
+async def is_token_blacklisted(token: str) -> bool:
     """Check if a token has been blacklisted."""
-    import hashlib
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    h = _token_hash(token)
+
+    r = get_redis()
+    if r is not None:
+        try:
+            return bool(await r.exists(f"bl:{h}"))
+        except Exception as e:
+            logger.warning("Redis blacklist check failed, using in-memory: %s", e)
+
+    # In-memory fallback
     with _blacklist_lock:
-        expiry = _token_blacklist.get(token_hash)
+        expiry = _token_blacklist.get(h)
         if expiry is None:
             return False
         if expiry < time.time():
-            del _token_blacklist[token_hash]
+            del _token_blacklist[h]
             return False
         return True
 
@@ -57,7 +85,7 @@ async def get_current_user(
     token: str = Depends(reusable_oauth2)
 ) -> User:
     # Check token blacklist (logout)
-    if is_token_blacklisted(token):
+    if await is_token_blacklisted(token):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has been revoked",
@@ -81,8 +109,19 @@ async def get_current_user(
             detail="Could not validate credentials",
         )
 
-    # Async query
-    result = await db.execute(select(User).filter(User.id == int(token_data.sub)))
+    # Refresh token KHÔNG dùng được như access token (chỉ hợp lệ ở /auth/refresh).
+    # Token legacy không có type → chấp nhận (coi như access) để không đá phiên cũ.
+    if token_data.type == "refresh":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token cannot be used for API access",
+        )
+
+    # Async query — tài khoản đang chờ xóa (deleted_at) coi như không tồn tại,
+    # token đã phát hành trước đó cũng mất hiệu lực ngay.
+    result = await db.execute(
+        select(User).filter(User.id == int(token_data.sub), User.deleted_at.is_(None))
+    )
     user = result.scalars().first()
 
     if not user:
@@ -118,16 +157,18 @@ async def get_optional_user(
     """Return the current user if a valid token is present, else None."""
     if not token:
         return None
-    if is_token_blacklisted(token):
+    if await is_token_blacklisted(token):
         return None
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[security.ALGORITHM])
         token_data = TokenPayload(**payload)
     except (JWTError, ValidationError):
         return None
-    if not token_data.sub:
+    if not token_data.sub or token_data.type == "refresh":
         return None
-    result = await db.execute(select(User).filter(User.id == int(token_data.sub)))
+    result = await db.execute(
+        select(User).filter(User.id == int(token_data.sub), User.deleted_at.is_(None))
+    )
     user = result.scalars().first()
     if not user or not user.is_active:
         return None

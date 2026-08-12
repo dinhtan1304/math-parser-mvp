@@ -11,7 +11,6 @@ Priority libraries:
 
 import os
 import re
-import base64
 import asyncio
 from pathlib import Path
 from typing import Dict, Any, List
@@ -79,55 +78,41 @@ class FileHandler:
         except ImportError:
             pass
 
-        self.has_pix2text = False
         self._p2t = None  # lazy-loaded Pix2Text instance
-        try:
-            import pix2text
-            self.has_pix2text = True
+        # Probe availability with find_spec (does NOT import pix2text). Importing
+        # pix2text eagerly pulls torch, whose bundled cuDNN collides with paddle's
+        # (WinError 127) — and this FileHandler is instantiated as a module-level
+        # singleton at app startup, which would load torch before any PaddleOCR-VL
+        # request. The real import stays lazy (only when pix2text is actually used).
+        import importlib.util as _ilu
+        self.has_pix2text = _ilu.find_spec("pix2text") is not None
+        if self.has_pix2text:
             logger.info("pix2text available (OCR + math formula recognition)")
-        except ImportError:
+        else:
             logger.info("pix2text not installed. Run: pip install pix2text[multilingual]")
     
     async def extract_text(self, file_path: str, use_vision: bool = False) -> Dict[str, Any]:
+        """Extract text from file. Vision đã bị loại bỏ.
+
+        `use_vision` còn lại làm tham số nhằm giữ backward-compat với caller cũ;
+        mọi giá trị đều bị bỏ qua và đường đi luôn là local OCR.
         """
-        Extract text from file.
-        
-        Args:
-            file_path: Path to file
-            use_vision: If True, return images for Vision API
-        
-        Returns:
-            {
-                "text": str,
-                "page_count": int,
-                "file_type": str,
-                "method": str,
-                "images": List[Dict] (if use_vision)
-            }
-        """
+        del use_vision
         path = Path(file_path)
         ext = path.suffix.lower()
-        
+
         file_hash = await self._compute_hash(file_path)
-        
+
         if ext == '.pdf':
-            if use_vision:
-                result = await self._pdf_to_images(file_path)
-            else:
-                result = await self._extract_pdf(file_path)
+            result = await self._extract_pdf(file_path)
         elif ext == '.docx':
-            if use_vision:
-                # Convert DOCX to PDF first, then to images
-                result = await self._docx_to_images(file_path)
-            else:
-                result = await self._extract_docx(file_path)
+            result = await self._extract_docx(file_path)
         elif ext == '.doc':
             result = await self._extract_doc(file_path)
         elif ext in {'.txt', '.md'}:
             result = await self._extract_text_file(file_path)
         elif ext in {'.png', '.jpg', '.jpeg', '.gif', '.webp'}:
-            # Try Pix2Text first for actual text extraction from images
-            if self.has_pix2text and not use_vision:
+            if self.has_pix2text:
                 p2t_result = await self._extract_image_pix2text(file_path)
                 if p2t_result and p2t_result.get("text"):
                     result = p2t_result
@@ -136,7 +121,7 @@ class FileHandler:
             result = await self._extract_image(file_path)
         else:
             raise ValueError(f"Unsupported file type: {ext}")
-        
+
         result["file_hash"] = file_hash
         return result
     
@@ -306,159 +291,8 @@ class FileHandler:
             "method": "pypdf"
         }
     
-    async def _pdf_to_images(self, file_path: str, dpi: int = 150, max_dimension: int = 2048) -> Dict[str, Any]:
-        """Convert PDF to images for Vision API.
-        
-        Token optimization:
-          - Default DPI 150 (was 200 via zoom=2.0) — saves ~40% tokens
-          - JPEG quality 80 (was implicit ~95) — saves ~20% size
-          - Cap max dimension to 2048px — Gemini downsizes anyway
-          - Grayscale detection: if page is mostly B&W, skip color channels
-        """
-        loop = asyncio.get_running_loop()
-        
-        def convert():
-            if self.has_pymupdf:
-                import fitz
-                
-                doc = fitz.open(file_path)
-                base64_images = []
-                
-                # DPI control: zoom = dpi / 72
-                zoom = dpi / 72.0
-                matrix = fitz.Matrix(zoom, zoom)
-                
-                for page_num in range(len(doc)):
-                    page = doc[page_num]
-                    pix = page.get_pixmap(matrix=matrix)
-                    
-                    # Cap max dimension — Gemini API resizes internally anyway
-                    if max(pix.width, pix.height) > max_dimension:
-                        scale = max_dimension / max(pix.width, pix.height)
-                        new_w = int(pix.width * scale)
-                        new_h = int(pix.height * scale)
-                        small_matrix = fitz.Matrix(zoom * scale, zoom * scale)
-                        pix = page.get_pixmap(matrix=small_matrix)
-                    
-                    img_bytes = pix.tobytes("jpeg")
-                    b64 = base64.b64encode(img_bytes).decode()
-                    
-                    base64_images.append({
-                        "page": page_num + 1,
-                        "data": b64,
-                        "mime_type": "image/jpeg"
-                    })
-                
-                doc.close()
-                logger.info(f"PyMuPDF rendered {len(base64_images)} pages (DPI={dpi})")
-                return base64_images, len(base64_images)
-            
-            # Fallback: pdf2image
-            try:
-                from pdf2image import convert_from_path
-                import io
-                
-                images = convert_from_path(file_path, dpi=dpi, fmt='jpeg')
-                base64_images = []
-                
-                for i, img in enumerate(images):
-                    # Resize if too large
-                    if max(img.size) > max_dimension:
-                        ratio = max_dimension / max(img.size)
-                        new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
-                        img = img.resize(new_size)
-                    
-                    buffer = io.BytesIO()
-                    img.save(buffer, format='JPEG', quality=80)
-                    b64 = base64.b64encode(buffer.getvalue()).decode()
-                    base64_images.append({
-                        "page": i + 1,
-                        "data": b64,
-                        "mime_type": "image/jpeg"
-                    })
-                
-                logger.info(f"pdf2image rendered {len(base64_images)} pages (DPI={dpi})")
-                return base64_images, len(base64_images)
-                
-            except ImportError:
-                logger.error("Neither pymupdf nor pdf2image available!")
-                return [], 0
-        
-        images, page_count = await loop.run_in_executor(self.executor, convert)
-        
-        return {
-            "text": "",
-            "images": images,
-            "page_count": page_count,
-            "file_type": "pdf",
-            "method": "vision-pymupdf" if self.has_pymupdf else "vision-pdf2image"
-        }
-    
     # ==================== DOCX EXTRACTION ====================
-    
-    async def _docx_to_images(self, file_path: str) -> Dict[str, Any]:
-        """Convert DOCX to images via intermediate PDF using LibreOffice"""
-        loop = asyncio.get_running_loop()
-        
-        def convert():
-            import subprocess
-            import tempfile
-            
-            # Try converting DOCX → PDF → images using LibreOffice
-            try:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    result = subprocess.run(
-                        ['libreoffice', '--headless', '--convert-to', 'pdf', '--outdir', tmpdir, file_path],
-                        capture_output=True, text=True, timeout=60
-                    )
-                    
-                    if result.returncode == 0:
-                        # Find the generated PDF
-                        pdf_name = Path(file_path).stem + '.pdf'
-                        pdf_path = os.path.join(tmpdir, pdf_name)
-                        
-                        if os.path.exists(pdf_path) and self.has_pymupdf:
-                            import fitz
-                            doc = fitz.open(pdf_path)
-                            base64_images = []
-                            zoom = 2.0
-                            matrix = fitz.Matrix(zoom, zoom)
-                            
-                            for page_num in range(len(doc)):
-                                page = doc[page_num]
-                                pix = page.get_pixmap(matrix=matrix)
-                                img_bytes = pix.tobytes("jpeg")
-                                b64 = base64.b64encode(img_bytes).decode()
-                                base64_images.append({
-                                    "page": page_num + 1,
-                                    "data": b64,
-                                    "mime_type": "image/jpeg"
-                                })
-                            
-                            doc.close()
-                            logger.info(f"DOCX → PDF → {len(base64_images)} images")
-                            return base64_images, len(base64_images)
-            except Exception as e:
-                logger.warning(f"LibreOffice conversion failed: {e}")
-            
-            # Fallback: extract text instead
-            logger.warning("Cannot convert DOCX to images, falling back to text extraction")
-            return [], 0
-        
-        images, page_count = await loop.run_in_executor(self.executor, convert)
-        
-        if images:
-            return {
-                "text": "",
-                "images": images,
-                "page_count": page_count,
-                "file_type": "docx",
-                "method": "vision-libreoffice"
-            }
-        else:
-            # Fallback to text extraction
-            return await self._extract_docx(file_path)
-    
+
     async def _extract_docx(self, file_path: str) -> Dict[str, Any]:
         """Extract text from DOCX"""
         if not self.has_docx:
@@ -696,7 +530,7 @@ class FileHandler:
             }
         except Exception as e:
             logger.warning(f"Pix2Text image extraction failed: {e}")
-            return None  # caller falls back to base64 vision
+            return None  # caller chuyển sang Marker/fallback khác
 
     # ==================== MINERU (LAYOUT-AWARE OCR) ====================
 
@@ -810,21 +644,20 @@ class FileHandler:
         return {"text": "", "error": "Could not decode text file", "file_type": "text", "page_count": 0}
     
     async def _extract_image(self, file_path: str) -> Dict[str, Any]:
-        """Convert image to base64 for Vision API"""
-        with open(file_path, 'rb') as f:
-            b64 = base64.b64encode(f.read()).decode()
-        
-        ext = Path(file_path).suffix.lower()
-        mime_map = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', 
-                    '.gif': 'image/gif', '.webp': 'image/webp'}
-        mime = mime_map.get(ext, 'image/jpeg')
-        
+        """Fallback khi không có Pix2Text — trả về placeholder rỗng.
+
+        Vision đã loại bỏ. Image-only files cần Pix2Text hoặc Marker (qua
+        pipeline cascade). Trả về stub để caller biết là chưa OCR được.
+        """
+        logger.warning(
+            "Image extraction yêu cầu Pix2Text/Marker — không có engine khả dụng cho %s",
+            file_path,
+        )
         return {
             "text": "",
-            "images": [{"page": 1, "data": b64, "mime_type": mime}],
             "page_count": 1,
             "file_type": "image",
-            "method": "image"
+            "method": "image-no-ocr",
         }
     
     # ==================== UTILITIES ====================

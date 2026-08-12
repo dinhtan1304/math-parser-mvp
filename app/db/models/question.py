@@ -56,11 +56,23 @@ class Question(Base):
     # Position in original exam
     question_order = Column(Integer, default=0)
 
+    # OCR layout — bbox/page từ block-aware pipeline (NULL cho rows cũ + AI-generated)
+    page_num = Column(Integer, nullable=True)
+    bbox_json = Column(Text, nullable=True)  # JSON: [x0, y0, x1, y1] normalized 0-1
+
+    # Nhãn nguồn gốc nội dung (Điều 44 Luật CN CNS + Luật AI).
+    # Xem app/core/content_origin.py: HUMAN | AI_GENERATED | AI_ASSISTED | OCR_IMPORT
+    origin = Column(String(20), nullable=False, default="HUMAN", server_default="HUMAN")
+    ai_model = Column(String(60), nullable=True)  # vd "gemini-2.5-flash"
+    reviewed_by_user = Column(Boolean, default=False, nullable=False, server_default='false')
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     # Relationships
     exam = relationship("Exam", backref="questions")
     user = relationship("User", backref="questions")
+    asset_links = relationship("QuestionAsset", back_populates="question", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index("ix_question_user_topic", "user_id", "topic"),
@@ -80,4 +92,7 @@ class Question(Base):
         # OPT: Covering index for list_questions ORDER BY created_at DESC + user filter
         # Without this, SQLite does a full table scan on ORDER BY created_at.
         Index("ix_question_user_created", "user_id", "created_at"),
+        # Community bank: WHERE is_public=1 AND user_id != me ORDER BY created_at DESC.
+        # Các composite leading bằng user_id không phục vụ query này.
+        Index("ix_question_public_created", "is_public", "created_at"),
     )

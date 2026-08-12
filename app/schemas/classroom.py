@@ -138,35 +138,10 @@ class SubmissionResponse(BaseModel):
     attempt_no: int
     game_mode: Optional[str]
     status: str
-    xp_earned: int
     submitted_at: Optional[datetime]
     created_at: datetime
 
     model_config = {"from_attributes": True}
-
-
-# ─── StudentXP ───────────────────────────────────────────────
-
-class StudentXPResponse(BaseModel):
-    student_id: int
-    total_xp: int
-    level: int
-    streak_days: int
-    last_active: Optional[datetime]
-
-    model_config = {"from_attributes": True}
-
-
-# ─── Leaderboard ─────────────────────────────────────────────
-
-class LeaderboardEntry(BaseModel):
-    rank: int
-    student_id: int
-    student_name: str
-    total_xp: int
-    level: int
-    streak_days: int
-    is_me: bool = False
 
 
 # ─── Class Analytics (teacher view) ──────────────────────────
@@ -179,4 +154,3 @@ class ClassAnalytics(BaseModel):
     total_assignments: int
     avg_score: Optional[float]
     completion_rate: Optional[float]  # % of students who completed latest assignment
-    top_students: List[LeaderboardEntry] = []

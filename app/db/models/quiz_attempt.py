@@ -22,13 +22,22 @@ def _now() -> datetime:
 # ─────────────────────────────────────────────────────────────
 
 class QuizAttempt(Base):
+    """Một lượt làm bài của học sinh (student_id NULL = khách, làm qua link công khai).
+
+    ⚠️ NGUYÊN TẮC THU THẬP TỐI THIỂU DỮ LIỆU HỌC SINH (Luật BVDLCN 91/2025).
+    Bảng này CHỈ được chứa định danh nội bộ, kết quả và mốc thời gian. TUYỆT ĐỐI
+    KHÔNG thêm cột ngày sinh, số điện thoại, email, địa chỉ, ảnh của học sinh.
+    Ràng buộc được kiểm tra tự động: tests/test_student_data_minimal.py
+    """
     id              = Column(Integer, primary_key=True, index=True)
     quiz_id         = Column(Integer, ForeignKey("quiz.id", ondelete="CASCADE"), nullable=False)
     student_id      = Column(Integer, ForeignKey("user.id"), nullable=True)  # NULL = anonymous guest
 
     # Context — how the quiz was taken
     assignment_id   = Column(Integer, ForeignKey("assignment.id", ondelete="SET NULL"), nullable=True)
-    live_session_id = Column(Integer, ForeignKey("livesession.id", ondelete="SET NULL"), nullable=True)
+    # NOTE: live multiplayer removed in the teacher-only pivot. The legacy
+    # `live_session_id` column may still exist in older databases (orphaned,
+    # harmless); it is no longer mapped here.
 
     attempt_no      = Column(Integer, nullable=False, default=1)
     status          = Column(String(20), nullable=False, default="in_progress")  # in_progress | completed | timed_out | abandoned
@@ -55,6 +64,10 @@ class QuizAttempt(Base):
     started_at      = Column(DateTime(timezone=True), default=_now)
     submitted_at    = Column(DateTime(timezone=True), nullable=True)
     created_at      = Column(DateTime(timezone=True), default=_now)
+
+    # Mốc ẩn danh hóa theo chính sách lưu trữ — bài làm của khách được gỡ liên
+    # kết danh tính sau GUEST_ANON_MONTHS tháng (job retention).
+    anonymized_at   = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     quiz            = relationship("Quiz", backref="attempts")
