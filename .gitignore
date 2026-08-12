@@ -3,6 +3,11 @@
 .env.local
 .env.*.local
 
+# Auto-generated JWT signing key (config.py persists it here when SECRET_KEY
+# env var is absent). NEVER commit — key đã từng bị commit và phải coi là lộ;
+# production PHẢI set SECRET_KEY qua env.
+.secret_key
+
 # Python
 __pycache__/
 *.py[cod]
@@ -30,6 +35,7 @@ venv/
 ENV/
 env/
 .venv/
+.venv-gpu/
 
 # IDE/Editor
 .vscode/
@@ -61,9 +67,22 @@ coverage.xml
 # Uploads and temporary files
 uploads/*
 !uploads/.gitkeep
+benchmark_results_gpu/
 *.tmp
 *.temp
 *.log
+
+# File do người dùng tải lên + ảnh/trang do OCR sinh ra (~37MB, sinh lại được
+# từ file gốc; artifact OCR đã cache theo file_hash).
+media_uploads/
+
+# Kết quả chạy benchmark OCR — artifact đo đạc, không phải mã nguồn (~12MB).
+benchmark_out/
+benchmark_results_*.json
+
+# Artifact của công cụ dev cục bộ
+.codex-shots/
+.yolo/
 
 # OS generated files
 .DS_Store
