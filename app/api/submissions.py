@@ -1,106 +1,42 @@
 """
-/api/v1/submissions — Submission records for assignments (teacher view).
+/api/v1/submissions — Xem bài nộp của một bài tập (phía giáo viên).
 
-NOTE (teacher-only pivot): student accounts and gamification (XP/streak/badges/
-leaderboard) were removed. The submit/list endpoints are kept intact but dormant
-— there are no student users to create submissions in the current product.
+Còn ĐÚNG MỘT endpoint: GET /assignment/{assignment_id}.
+
+Các endpoint dành cho học sinh (POST nộp bài, GET /my) đã gỡ 2026-08-12 —
+chỉ app mathplay-mobile gọi chúng và app đó đã ngừng. Không còn tạo được tài
+khoản học sinh (main.py ép mọi role về 'teacher' mỗi lần boot), nên bảng
+Submission KHÔNG CÓ NGUỒN DỮ LIỆU MỚI: endpoint còn lại luôn trả rỗng với dữ
+liệu hiện tại.
+
+Giữ lại vì đây là đường đọc đúng cho phía giáo viên, và là điểm neo khi làm
+sổ điểm TT22/27 (bảng `grade_entry` sẽ cho nhập tay hoặc liên kết ngược).
 """
 
 import logging
-from datetime import datetime, timezone
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, desc
 
 from app.api.deps import get_current_active_user
 from app.db.session import get_db
 from app.db.models.user import User
-from app.db.models.classroom import (
-    Assignment, Class, ClassMember, Submission, AnswerDetail,
-)
-from app.schemas.classroom import (
-    SubmissionCreate, SubmissionResponse,
-)
+from app.db.models.classroom import Assignment, Class, Submission
+from app.schemas.classroom import SubmissionResponse
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-# ─── Submit ──────────────────────────────────────────────────
-
-@router.post("", response_model=SubmissionResponse, status_code=status.HTTP_201_CREATED)
-async def submit(
-    payload: SubmissionCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
-):
-    # Verify assignment exists and user has access
-    assignment = await db.scalar(
-        select(Assignment).where(Assignment.id == payload.assignment_id, Assignment.is_active == True)
-    )
-    if not assignment:
-        raise HTTPException(status_code=404, detail="Bài tập không tồn tại")
-
-    enrolled = await db.scalar(
-        select(ClassMember).where(
-            ClassMember.class_id == assignment.class_id,
-            ClassMember.student_id == current_user.id,
-            ClassMember.is_active == True,
-        )
-    )
-    if not enrolled:
-        raise HTTPException(status_code=403, detail="Bạn chưa tham gia lớp này")
-
-    # Check attempt limit
-    attempt_count = await db.scalar(
-        select(func.count()).where(
-            Submission.assignment_id == payload.assignment_id,
-            Submission.student_id == current_user.id,
-        )
-    )
-    if attempt_count >= assignment.max_attempts:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Bạn đã dùng hết {assignment.max_attempts} lần thử",
-        )
-
-    # Calculate score
-    answers = payload.answers
-    total_q  = len(answers)
-    correct_q = sum(1 for a in answers if a.is_correct)
-    score    = round(correct_q / total_q * 100) if total_q else 0
-
-    # Save submission
-    sub = Submission(
-        assignment_id=payload.assignment_id,
-        student_id=current_user.id,
-        score=score,
-        total_q=total_q,
-        correct_q=correct_q,
-        time_spent_s=payload.time_spent_s,
-        attempt_no=(attempt_count or 0) + 1,
-        game_mode=payload.game_mode,
-        status="completed",
-        submitted_at=datetime.now(timezone.utc),
-    )
-    db.add(sub)
-    await db.flush()
-
-    # Save answer details
-    for a in answers:
-        db.add(AnswerDetail(
-            submission_id=sub.id,
-            question_id=a.question_id,
-            given_answer=a.given_answer,
-            is_correct=a.is_correct,
-            time_ms=a.time_ms,
-        ))
-
-    await db.commit()
-    await db.refresh(sub)
-    return _sub_response(sub, current_user.full_name)
+# ─── ĐÃ GỠ: endpoint dành cho học sinh ───────────────────────
+# POST /submissions (nộp bài) đã gỡ (2026-08-12). Chỉ app mathplay-mobile gọi,
+# app đó đã ngừng; và không còn tạo được tài khoản học sinh để nộp.
+#
+# Bảng Submission + AnswerDetail GIỮ NGUYÊN (không drop) để không mất dữ liệu
+# lịch sử. Sổ điểm TT22/27 sẽ đi đường khác: bảng `grade_entry` cho phép giáo
+# viên nhập tay hoặc liên kết ngược về quizattempt.
 
 
 # ─── Teacher: view submissions for assignment ─────────────────
@@ -128,20 +64,8 @@ async def list_submissions(
     return [_sub_response(s, u.full_name) for s, u in result.all()]
 
 
-# ─── My submissions ───────────────────────────────────────────
-
-@router.get("/my", response_model=List[SubmissionResponse])
-async def my_submissions(
-    assignment_id: int | None = None,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
-):
-    q = select(Submission).where(Submission.student_id == current_user.id)
-    if assignment_id:
-        q = q.where(Submission.assignment_id == assignment_id)
-    q = q.order_by(Submission.created_at.desc())
-    result = await db.execute(q)
-    return [_sub_response(s, current_user.full_name) for s in result.scalars().all()]
+# ĐÃ GỠ (2026-08-12): GET /my — bài nộp của chính học sinh đang đăng nhập.
+# Chỉ app mathplay-mobile gọi.
 
 
 # ─── Helpers ─────────────────────────────────────────────────

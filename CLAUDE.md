@@ -1,124 +1,177 @@
 # CLAUDE.md — math-parser-mvp
 
-Nền tảng phân tích & sinh đề K12 tiếng Việt. Đầu vào là đề thi (PDF/ảnh, tiếng
-Việt + công thức toán); đầu ra là câu hỏi có cấu trúc trong ngân hàng câu hỏi,
-dùng để phân tích và ráp đề theo ma trận đặc tả (Thông tư 22).
+Backend FastAPI cho nền tảng dạy học K12 tiếng Việt, **phục vụ giáo viên**.
+Đầu vào là đề thi (PDF/ảnh, tiếng Việt + công thức toán); đầu ra là câu hỏi có
+cấu trúc trong ngân hàng, dùng để ráp đề theo ma trận đặc tả, sinh đề mới, xuất
+Word/PDF, và soạn Kế hoạch bài dạy theo CV5512.
 
-> File này mô tả **kiến trúc đích** và các **quy tắc bắt buộc**. Đọc kỹ phần
-> "Quy tắc bắt buộc" trước khi sửa bất kỳ thứ gì trong pipeline OCR / parse /
-> truy xuất — chúng tồn tại để tránh các anti-pattern đã từng gây tốn kém và
-> thiếu tin cậy.
+> File này mô tả **HIỆN TRẠNG**, không phải kiến trúc mong muốn. Nếu bạn sửa
+> code mà nó không còn đúng nữa, sửa file này cùng lúc. Phiên bản trước của
+> file này mô tả một kiến trúc đích chưa từng được xây, và đã khiến người đọc
+> đi sai suốt nhiều tháng.
 
 ---
 
-## Triết lý cốt lõi (áp cho mọi quyết định)
+## Chạy
 
-Xếp tầng theo độ khó, đắt dần:
+```bash
+# Test (không cần GPU / ML stack)
+pip install -r requirements-test.txt
+pytest tests/ -q                      # 352 passed, 7 skipped
 
-1. **Deterministic** ở đâu làm được thì làm (bóc text layer, lọc SQL, parse
-   regex, verify bằng code).
-2. **Model nhỏ chuyên dụng** cho task hẹp (PaddleOCR-VL cho OCR, classifier rẻ
-   cho phân loại).
-3. **LLM đắt (Gemini)** CHỈ ở biên: ảnh hỏng nặng, block parse lỗi, sinh câu mới.
-4. **Mọi thay đổi OCR/model phải đo qua eval harness** trước khi merge.
+# Chạy app
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+`requirements-test.txt` là tập tối thiểu, **cố ý** không kéo torch/paddleocr/
+mineru/docling. Test phụ thuộc OCR đều mock engine hoặc skip.
+
+---
+
+## Triết lý (áp cho mọi quyết định)
+
+Xếp tầng theo độ đắt, rẻ trước:
+
+1. **Deterministic** ở đâu làm được thì làm — bóc text layer, lọc SQL, regex.
+2. **Model chuyên dụng** cho task hẹp — PaddleOCR-VL cho OCR.
+3. **LLM (Gemini)** ở nơi thật sự cần — parse cấu trúc câu hỏi, sinh câu mới,
+   chấm writing.
 
 Khẩu quyết: *thử rẻ trước, chỉ leo thang khi output không đạt ngưỡng.*
 
 ---
 
-## Pipeline (các tầng và ranh giới)
+## Pipeline upload → ngân hàng câu hỏi
 
 ```
-PDF/ảnh
-  → [1] Routing OCR        → Markdown + LaTeX
-  → [2] Parse cấu trúc      → JSON câu hỏi (thiếu difficulty/topic_id)
-  → [3] Classify ngữ nghĩa  → điền difficulty + topic_id
-  → [4] Lưu ngân hàng       → bảng questions (Postgres + pgvector)
-  → [5] Truy xuất           → ráp đề (SQL) / tìm tương tự (vector)
+PDF/ảnh  →  [1] OCR  →  [2] Parse  →  [3] Người duyệt  →  [4] Ngân hàng  →  [5] Truy xuất
 ```
 
-**[1] Routing OCR.** Định tuyến theo CHẤT LƯỢNG nguồn, không chỉ theo môn:
-- PDF có text layer thật → bóc bằng PyMuPDF, **KHÔNG OCR** ($0, gần như đúng tuyệt đối).
-- Scan sạch / ảnh méo → PaddleOCR-VL (self-host, $0). Bản 1.5+ robust với ảnh chụp.
-- Handwritten / output dưới ngưỡng chất lượng → leo thang Gemini Vision (fallback, tốn phí).
-Mỗi tầng tự kiểm tra chất lượng output; kém thì leo thang, không mặc định dùng tầng đắt.
+**[1] OCR** — `services/local_ocr_service.py`, hàm vào: `extract_local_ocr_artifact`
 
-**[2] Parse cấu trúc** (`exam_parser.py`). Regex/luật, KHÔNG LLM. Tách câu, tách
-phương án, nhận diện form, ghép đáp án, gắn cờ `valid`. Block `valid=false` mới
-đẩy sang fallback (LLM rẻ parse riêng / người duyệt).
+```
+pdf_detector.analyze_pdf_for_ocr → có text layer thật?
+  ├─ CÓ  → native_pdf.extract_native_pdf_markdown (PyMuPDF, $0, KHÔNG OCR)
+  │         └─ assess_native_math_text đạt ngưỡng → DỪNG
+  └─ KHÔNG / kém → _run_ocr_cascade
+        ├─ primary  = PaddleOCR-VL 1.6   (env OCR_PRIMARY_ENGINE, mặc định paddle-vl)
+        │             local GPU hoặc hosted API (env PADDLE_VL_MODE=api)
+        └─ fallback = MinerU — CHỈ chạy khi primary rỗng/dưới ngưỡng
+                      _fallback_beats_primary() quyết định lấy kết quả nào
+```
 
-**[3] Classify ngữ nghĩa.** Gán `difficulty` (NB/TH/VD/VDC) và `topic_id`.
-Đây là phần KHÔNG suy ra được từ cấu trúc. Dùng **classifier rẻ** (embed
-`searchable_text` → đầu phân loại, fine-tune từ đề đã gán nhãn) + heuristic
-từ khóa cho topic. KHÔNG dùng Gemini parse cả trang cho việc này.
+- **Gemini Vision đã gỡ hoàn toàn.** Tham số `use_vision` còn lại là no-op giữ
+  tương thích ngược.
+- **Marker đã gỡ khỏi pipeline upload** (rủi ro giấy phép GPL-3.0). `marker_ocr.py`
+  còn tồn tại và VẪN NẰM TRÊN ĐƯỜNG PRODUCTION ở vai trò tiện ích
+  (`_estimate_page_count`) + chunk-fallback — đừng xóa file này vì tưởng Marker
+  đã đi hẳn.
+- Kết quả OCR cache theo `file_hash`; đổi logic cascade thì **bump `CACHE_VERSION`**
+  trong `local_ocr_service.py` (hiện v16).
 
-**[4]/[5] Ngân hàng & truy xuất.** Xem `question_bank_schema.sql`.
+**[2] Parse cấu trúc** — hai đường:
+- Block-aware (khi `DOCUMENT_SEGMENTATION_ENABLED=1`):
+  `document_blocks` → `block_classifier` → `document_structure` → `question_assembler`
+- `ai_parser.py` — Gemini parse chunk markdown thành JSON câu hỏi.
+  Chunk cực lớn (300K ký tự) là **cố ý**: đề + hướng dẫn chấm phải vào cùng một
+  lần gọi thì model mới map được đáp án về đúng `cau_num`.
+
+**[3] Người duyệt** — hai chốt trước khi ghi vào ngân hàng:
+- `status=ocr_review` → FE `/upload/ocr/[id]` sửa markdown → reparse
+- `QuestionDraft` → FE `/upload/review/[id]` sửa/tách/gộp → commit
+
+**[4] Ngân hàng** — bảng `question` (xem `app/db/models/question.py`).
+
+**[5] Truy xuất** — ráp đề theo ma trận là **SQL thuần** (`WHERE` + `ORDER BY
+random()`), không đụng embedding. Vector chỉ dùng cho "tìm câu tương tự" và RAG.
 
 ---
 
-## QUY TẮC BẮT BUỘC (đừng vi phạm)
+## QUY TẮC BẮT BUỘC
 
-- **KHÔNG OCR file born-digital.** Có text layer → bóc trực tiếp.
-- **KHÔNG dùng LLM cho parse cấu trúc.** Chỉ dùng cho block `valid=false`.
-- **KHÔNG dùng Gemini cho phân loại difficulty/topic.** Đó là việc của classifier.
+- **KHÔNG OCR file born-digital.** Có text layer → bóc trực tiếp bằng PyMuPDF.
 - **Một câu hỏi = một record.** KHÔNG chunk cắt ngang câu hay công thức `$...$`.
-- **KHÔNG embed LaTeX thô.** Embed `searchable_text` (mô tả tiếng Việt sạch).
-- **Truy xuất: lọc metadata TRƯỚC, vector SAU.** Chỗ nào `WHERE` đủ thì đừng RAG.
-  Ráp đề theo ma trận là SQL thuần, không đụng embedding.
 - **MASK công thức trước mọi regex cấu trúc**, rồi unmask. Tránh `A.`/`Câu`
   nằm trong công thức làm vỡ bộ tách.
-- **Mọi thay đổi engine/model OCR phải chạy eval harness** và so theo TẦNG
-  (`doc_type`/`content`), không chỉ nhìn CER trung bình.
+- **Truy xuất: lọc metadata TRƯỚC, vector SAU.** Chỗ nào `WHERE` đủ thì đừng RAG.
 - **Chuẩn hóa NFC** cho mọi text tiếng Việt khi so sánh/băm.
-- **Verify đáp án toán bằng code** (sympy), không nhờ model lớn hơn.
+- **Đổi engine/model OCR phải đo bằng `scripts/ocr_benchmark.py`** trước khi
+  merge, so theo tầng (`doc_type`), không chỉ nhìn số trung bình.
+- **KHÔNG thêm cột định danh cá nhân học sinh** vào `quizattempt` / `submission`
+  (ngày sinh, SĐT, email, địa chỉ, ảnh). Có test tự động chặn:
+  `tests/test_student_data_minimal.py`.
 
 ---
 
-## Data model (tóm tắt — chi tiết ở `question_bank_schema.sql`)
+## Bố trí mã
 
-- `topics`: taxonomy theo chương trình GDPT 2018 / TT32. Lọc theo `topic_id`
-  luôn ưu tiên hơn match text. Neo `requirement` ("yêu cầu cần đạt").
-- `source_documents`: truy vết nguồn + engine OCR + độ tin cậy.
-- `questions`: đơn vị nguyên tử. Tách **metadata để lọc**
-  (`subject/grade/topic_id/difficulty/form`) khỏi **nội dung** (`stem/choices/
-  answer/solution`, giữ LaTeX nguyên bản) và **trường tìm kiếm**
-  (`searchable_text` → `embedding vector(1024)`, `ts` tsvector).
-  Chống trùng: `content_hash` (tuyệt đối) + ngưỡng similarity ~0.95 (gần trùng).
-
-Mẫu truy xuất (xem comment trong file .sql):
-- **Ráp đề theo ma trận** = `WHERE subject/grade/topic_id/difficulty/form` + `ORDER BY usage_count, random()`.
-- **Tìm tương tự** = lọc metadata trước, rồi `ORDER BY embedding <=> $1`.
+| Đường dẫn | Vai trò |
+|---|---|
+| `app/api/` | 26 router. `parser.py` (2561 dòng) là file lớn nhất và rủi ro nhất |
+| `app/services/` | Logic nghiệp vụ. Không import ngược lên `app/api/` |
+| `app/db/models/` | 26 bảng SQLAlchemy |
+| `app/benchmark/` | 9 engine OCR để **đo đạc**. Không phải đường production… |
+| `app/services/k12_batch/` | CLI xử lý theo lô |
+| `alembic/versions/` | 2 migration: baseline `404cab2e5e0c` + compliance `b1f7c2a94e30` |
+| `scripts/ocr_benchmark.py` | Eval harness OCR |
 
 ---
 
-## Hợp đồng của parser (`exam_parser.py`)
+## Bẫy đã biết (đọc trước khi sửa)
 
-- Input: Markdown+LaTeX (đầu ra OCR). Output: `list[ParsedQuestion]`.
-- Đặt: `number, stem, form, choices, answer, points, has_figure, valid, issues`.
-- **KHÔNG đặt** `difficulty`, `topic_id` — đó là tầng [3].
-- `valid=true` → vào thẳng ngân hàng. `valid=false` → fallback.
-- Đề Việt Nam đa dạng format → khi gặp format mới làm vỡ parse, **thêm/chỉnh
-  regex**, đừng thay bằng LLM. Dùng cờ `valid` để phát hiện format lệch sớm.
+**Schema có ba nguồn, không đồng bộ.** Models + Alembic + raw SQL lúc boot.
+4 bảng runtime KHÔNG nằm trong Alembic vì tạo bằng raw SQL: `question_embedding`,
+`question_similarity`, `document_chunk`, `question_fts`. Nên `alembic upgrade head`
+trên DB trắng **không dựng đủ schema** — phải boot app một lần.
+
+**`main.py` còn ~30 `ALTER TABLE` legacy** bọc `try/except: pass`, chạy mỗi lần
+boot. Đừng thêm mục mới vào đó — thêm cột = sửa model + `alembic revision`.
+
+**`main.py:110` ép mọi role về `teacher` ở mỗi lần boot.** Không tạo được tài
+khoản học sinh. Đây là chủ ý (teacher-only pivot), nhưng nó có nghĩa
+`classmember` / `submission` / `answerdetail` **không có nguồn dữ liệu mới**.
+
+**`api/ielts_parser.py` import `_publish_progress` + `_background_tasks`
+(private, biến trạng thái toàn cục) từ `api/parser.py`.** Coupling chặt nhất
+repo, và `ielts_parser` KHÔNG có test. Sửa cơ chế SSE/background task trong
+`parser.py` sẽ làm vỡ nó âm thầm.
+
+**Vòng import `pipeline` ↔ `docling_chunker`** — cả hai chiều đều defer trong
+hàm nên Python không nổ, nhưng vẫn là vòng thật, đi qua tên private.
+
+**`local_ocr_service` phụ thuộc ngược lên `app/benchmark/`** (3 chỗ) và
+`k12_batch.pipeline._read_content_list`. Sửa engine trong `benchmark/` có thể
+làm vỡ pipeline upload thật.
+
+**Bài test end-to-end cho `process_file` đang bị skip** (7 test trong
+`tests/test_parser_pipeline.py`, lý do: "stale, asserts legacy deferred-bank-save
+flow"). Nghĩa là luồng upload trọn vẹn hiện KHÔNG có test nào phủ.
+
+**`latex_to_omml.py` (619 dòng) KHÔNG có test.** Nó quyết định chất lượng công
+thức trong file Word xuất ra. `tests/test_latex_utils.py` test module KHÁC
+(`app/benchmark/latex_utils.py`).
+
+**`.env.example` thiếu ~39 biến môi trường mà code thực sự đọc**, gồm cả
+`OCR_PRIMARY_ENGINE`, `PADDLE_VL_MODE`, `PADDLE_VL_API_KEY`, toàn bộ nhóm
+`ASSET_S3_*`, `GEMINI_MODEL`.
 
 ---
-
-## Bố trí mã & công cụ
-
-- `exam_parser.py` — parser cấu trúc (tầng 2).
-- `question_bank_schema.sql` — schema ngân hàng (tầng 4/5).
-- `ocr-eval/` — eval harness OCR. **Chạy trước khi đổi model.**
-  `python -m ocr_eval.cli run --goldset goldset --engines ...`
-- Gold set: `ocr-eval/goldset/` (đọc README ở đó cho giao thức gán nhãn).
 
 ## Tech stack
 
-FastAPI · SQLAlchemy async · Python 3.12 · PostgreSQL + pgvector (HNSW) ·
-PaddleOCR-VL (self-host, OCR chính) · Gemini Vision (CHỈ fallback) ·
-embedding BGE-M3 / multilingual-e5-large (1024-d).
+FastAPI · SQLAlchemy 2.x async · Python 3.12 · PostgreSQL (Neon) + extension
+pgvector · SQLite cho dev local · Redis (tùy chọn, degrade về in-memory) ·
+PaddleOCR-VL 1.6 (OCR chính) · MinerU (fallback) · Gemini `gemini-2.5-flash`
+(parse + sinh đề + chấm writing) · `text-embedding-004` 768 chiều.
 
-## Trạng thái hiện tại vs đích
+---
 
-- Đang chuyển OCR từ MinerU+Gemini → PaddleOCR-VL; giữ MinerU như baseline so sánh.
-- Classifier (tầng 3) và adapter fallback parse là phần đang xây.
-- Khi thêm OCR engine: thêm adapter trong `ocr-eval/ocr_eval/adapters.py`,
-  KHÔNG sửa `runner.py`.
+## Ngữ cảnh repo
+
+`e:/Edu_Smart_App/` **không phải** git repo. Ba repo độc lập bên trong:
+`math-parser-mvp/` (repo này), `mathplay-frontend/`, và trước đây có
+`mathplay-mobile/` (app học sinh, đã gỡ 2026-08-12 — còn trên GitHub).
+
+`.github/workflows/` nằm ở thư mục gốc **không được repo nào track**, viết theo
+layout monorepo → **CI chưa từng chạy**. Đừng tin là có CI đỡ lưng.

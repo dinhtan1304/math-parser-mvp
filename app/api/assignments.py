@@ -105,25 +105,9 @@ async def list_assignments(
     return [_build_assignment_response(a, cls.name, counts) for a, cls in rows]
 
 
-@router.get("/for-student", response_model=List[AssignmentResponse])
-async def assignments_for_student(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
-):
-    """All active assignments in classes the current student belongs to."""
-    rows = (await db.execute(
-        select(Assignment, Class)
-        .join(Class, Assignment.class_id == Class.id)
-        .join(ClassMember, ClassMember.class_id == Class.id)
-        .where(
-            ClassMember.student_id == current_user.id,
-            ClassMember.is_active == True,
-            Assignment.is_active == True,
-        )
-        .order_by(Assignment.created_at.desc())
-    )).all()
-    counts = await _batch_submission_counts([a.id for a, _ in rows], db)
-    return [_build_assignment_response(a, cls.name, counts) for a, cls in rows]
+# ĐÃ GỠ (2026-08-12): GET /for-student — liệt kê bài tập của học sinh đang
+# đăng nhập. Chỉ app mathplay-mobile gọi, app đó đã ngừng. Không còn tạo được
+# tài khoản học sinh nên endpoint luôn trả rỗng.
 
 
 @router.get("/{assignment_id}", response_model=AssignmentResponse)

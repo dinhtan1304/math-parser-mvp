@@ -16,7 +16,7 @@ from app.db.session import get_db
 from app.db.models.user import User
 from app.db.models.classroom import Class, ClassMember, Assignment
 from app.schemas.classroom import (
-    ClassCreate, ClassUpdate, ClassResponse, JoinClassRequest, ClassMemberResponse,
+    ClassCreate, ClassUpdate, ClassResponse, ClassMemberResponse,
 )
 
 router = APIRouter()
@@ -179,53 +179,14 @@ async def remove_member(
     await db.commit()
 
 
-# ─── Student: Join by code ────────────────────────────────────
-
-@router.post("/join", status_code=status.HTTP_201_CREATED)
-async def join_class(
-    payload: JoinClassRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
-):
-    cls = await db.scalar(
-        select(Class).where(Class.code == payload.code.upper(), Class.is_active == True)
-    )
-    if not cls:
-        raise HTTPException(status_code=404, detail="Mã lớp không hợp lệ hoặc lớp đã đóng")
-
-    existing = await db.scalar(
-        select(ClassMember).where(
-            ClassMember.class_id == cls.id,
-            ClassMember.student_id == current_user.id,
-        )
-    )
-    if existing:
-        if existing.is_active:
-            raise HTTPException(status_code=409, detail="Bạn đã là thành viên của lớp này")
-        existing.is_active = True
-        await db.commit()
-        return {"message": "Đã tham gia lại lớp", "class_id": cls.id, "class_name": cls.name}
-
-    member = ClassMember(class_id=cls.id, student_id=current_user.id)
-    db.add(member)
-    await db.commit()
-    return {"message": "Tham gia lớp thành công", "class_id": cls.id, "class_name": cls.name}
-
-
-# ─── Student: My classes ─────────────────────────────────────
-
-@router.get("/my/enrolled", response_model=List[ClassResponse])
-async def my_enrolled_classes(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
-):
-    result = await db.execute(
-        select(Class)
-        .join(ClassMember, ClassMember.class_id == Class.id)
-        .where(ClassMember.student_id == current_user.id, ClassMember.is_active == True)
-        .order_by(ClassMember.joined_at.desc())
-    )
-    return [_enrich(c, 0, 0) for c in result.scalars().all()]
+# ─── ĐÃ GỠ: endpoint dành cho học sinh ───────────────────────
+# POST /join và GET /my/enrolled đã gỡ (2026-08-12). Chỉ app mathplay-mobile
+# gọi chúng, mà app đó đã ngừng từ teacher-only pivot. Ngoài ra không thể tạo
+# học sinh nữa: main.py ép mọi role về 'teacher' ở mỗi lần boot.
+#
+# Bảng ClassMember GIỮ NGUYÊN (không drop). Khi làm sổ điểm TT22/27, đường đi
+# dự kiến là bảng `student` do giáo viên nhập + `student_enrollment`, KHÔNG
+# phải khôi phục luồng học sinh tự đăng ký này.
 
 
 # ─── Helpers ─────────────────────────────────────────────────

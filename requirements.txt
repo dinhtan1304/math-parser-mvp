@@ -1,9 +1,10 @@
 # ==================== CORE FRAMEWORK ====================
 fastapi>=0.104.0,<1.0.0          # Web framework (async)
 uvicorn[standard]>=0.24.0        # ASGI server
-jinja2>=3.1.0                    # HTML template engine
 python-multipart>=0.0.6          # Required for UploadFile / form data
 python-dotenv>=1.0.0             # Load .env variables
+# jinja2 đã gỡ 2026-08-12 — không có app/templates/, không dùng Jinja2Templates
+# hay TemplateResponse ở đâu. API trả JSON; render Word/PDF do exporter lo.
 
 # ==================== VALIDATION ====================
 pydantic[email]>=2.0.0           # EmailStr for user schemas
@@ -49,7 +50,11 @@ docling>=2.0.0                   # Docling: hierarchical chunking for document R
 
 # ==================== VECTOR SEARCH ====================
 numpy>=1.24.0                    # Vectorized cosine similarity (SQLite fallback)
-pgvector>=0.3.0                  # PostgreSQL vector similarity (pgvector extension)
+# Gói pip `pgvector` đã gỡ 2026-08-12 — code KHÔNG import nó. Vector đi qua raw
+# SQL với cast `::vector` trên chuỗi '[1,2,...]' và toán tử `<=>`, không dùng
+# register_vector của asyncpg.
+# ⚠️ EXTENSION pgvector PHÍA POSTGRES VẪN BẮT BUỘC: `CREATE EXTENSION vector;`
+#    Đây là thứ khác với gói pip vừa gỡ.
 
 # ==================== K12 BATCH CLI (scripts/ocr_k12_batch.py) ====================
 latex2mathml>=3.77               # LaTeX → MathML validation in formula_validator
