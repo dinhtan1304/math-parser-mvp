@@ -23,7 +23,14 @@ router = APIRouter()
 MEDIA_DIR = "media_uploads"
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}
+# ".svg" ĐÃ GỠ 2026-08-13 — lỗ hổng stored XSS.
+# File tải lên được phục vụ bằng StaticFiles tại /media/... trên chính origin
+# của backend, mà CSP cho phép `script-src 'self' 'unsafe-inline'`. Một file
+# .svg chứa <script> khi mở trực tiếp sẽ CHẠY script đó trên origin của API.
+# Không mất tính năng nào: frontend không dùng SVG từ media, ảnh câu hỏi do OCR
+# sinh ra đều là PNG. Muốn nhận lại SVG thì phải kèm: ép Content-Disposition
+# attachment, hoặc phục vụ từ domain sandbox riêng, hoặc làm sạch XML trước khi lưu.
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".m4a"}
 ALLOWED_EXTENSIONS = IMAGE_EXTENSIONS | AUDIO_EXTENSIONS
 

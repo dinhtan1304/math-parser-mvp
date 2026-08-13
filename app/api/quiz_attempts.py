@@ -283,10 +283,20 @@ async def submit_attempt(
             else:
                 attempt.passed = float(attempt.score) >= passing_score
 
-    # Calculate time spent
+    # Calculate time spent.
+    # `submitted_at` vừa gán bằng _now() nên LUÔN có múi giờ, còn `started_at`
+    # đọc ngược từ DB: PostgreSQL trả về có múi giờ, SQLite trả về KHÔNG. Trừ
+    # thẳng hai kiểu này ném TypeError → toàn bộ luồng nộp bài sập 500 khi chạy
+    # trên SQLite (cấu hình dev mặc định trong .env.example). Chuẩn hóa về UTC
+    # trước khi trừ để đúng trên cả hai.
     if attempt.started_at:
-        delta = attempt.submitted_at - attempt.started_at
-        attempt.time_spent_s = int(delta.total_seconds())
+        bat_dau = attempt.started_at
+        if bat_dau.tzinfo is None:
+            bat_dau = bat_dau.replace(tzinfo=timezone.utc)
+        nop = attempt.submitted_at
+        if nop.tzinfo is None:
+            nop = nop.replace(tzinfo=timezone.utc)
+        attempt.time_spent_s = max(0, int((nop - bat_dau).total_seconds()))
 
     await db.commit()
 
