@@ -68,3 +68,35 @@ def make_teacher(client):
         token = r.json()["access_token"]
         return email, {"Authorization": f"Bearer {token}"}
     return _make
+
+
+@pytest.fixture
+def make_admin(client, make_teacher):
+    """Factory: tài khoản quản trị (role='admin'), trả về (email, headers).
+
+    KHÔNG có API nào để tự phong quản trị (đúng như vậy), nên fixture ghi thẳng
+    vào DB test rồi đăng nhập lại để token mang role mới.
+
+    Dùng sqlite3 đồng bộ thay vì AsyncSessionLocal: engine async của app gắn
+    với event loop riêng, còn test ở đây chạy sync — mở kết nối riêng tránh
+    hẳn chuyện "attached to a different loop".
+    """
+    import sqlite3
+
+    def _make():
+        email, _ = make_teacher()
+
+        con = sqlite3.connect("_pytest.db")
+        try:
+            con.execute('UPDATE "user" SET role = ? WHERE email = ?', ("admin", email))
+            con.commit()
+        finally:
+            con.close()
+
+        # Đăng nhập lại: token cũ đã phát trước khi đổi role.
+        r = client.post("/api/v1/auth/login", data={
+            "username": email, "password": "Test1234",
+        })
+        return email, {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+    return _make

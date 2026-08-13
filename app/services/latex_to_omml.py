@@ -579,18 +579,23 @@ def latex_to_text(text: str) -> str:
 
 def _latex_math_to_unicode(s: str) -> str:
     """Convert LaTeX math content to Unicode text."""
+    # Super/subscripts (simple single char)
+    sup_map = str.maketrans('0123456789+-=()niab', '⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱᵃᵇ')
+    sub_map = str.maketrans('0123456789+-=()aeioux', '₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑᵢₒᵤₓ')
+
     # Fractions
     s = re.sub(r'\\frac\{([^{}]+)\}\{([^{}]+)\}', r'(\1)/(\2)', s)
     # Nested fractions (2nd pass)
     s = re.sub(r'\\frac\{([^{}]+)\}\{([^{}]+)\}', r'(\1)/(\2)', s)
 
-    # Square root
-    s = re.sub(r'\\sqrt\[(\d+)\]\{([^{}]+)\}', r'ⁿ√(\2)', s)
+    # Square root. Căn bậc n phải GIỮ bậc: \sqrt[3]{8} → ³√(8).
+    # Trước 2026-08-12 chỗ này thay bằng ký tự 'ⁿ' cứng nên mọi bậc đều ra 'ⁿ√'.
+    s = re.sub(
+        r'\\sqrt\[(\d+)\]\{([^{}]+)\}',
+        lambda m: f"{m.group(1).translate(sup_map)}√({m.group(2)})",
+        s,
+    )
     s = re.sub(r'\\sqrt\{([^{}]+)\}', r'√(\1)', s)
-
-    # Super/subscripts (simple single char)
-    sup_map = str.maketrans('0123456789+-=()niab', '⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱᵃᵇ')
-    sub_map = str.maketrans('0123456789+-=()aeioux', '₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑᵢₒᵤₓ')
 
     def _sup_repl(m):
         t = m.group(1)
@@ -605,8 +610,12 @@ def _latex_math_to_unicode(s: str) -> str:
     s = re.sub(r'_\{([^{}]+)\}', _sub_repl, s)
     s = re.sub(r'_(\w)', _sub_repl, s)
 
-    # Symbols
-    for cmd, sym in LATEX_SYMBOLS.items():
+    # Symbols — PHẢI duyệt lệnh DÀI trước lệnh NGẮN.
+    # Nếu duyệt theo thứ tự dict, lệnh ngắn ăn trước và cắt cụt lệnh dài trùng
+    # tiền tố, để lại ký tự rác: \neq → "≠q", \leftarrow → "≤ftarrow",
+    # \cdots → "⋅s", \infty → "∈fty", \leq → "≤q", \geq → "≥q".
+    for cmd in sorted(LATEX_SYMBOLS, key=len, reverse=True):
+        sym = LATEX_SYMBOLS[cmd]
         if sym:
             s = s.replace(cmd, sym)
 

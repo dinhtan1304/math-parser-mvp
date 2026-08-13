@@ -199,24 +199,61 @@ def test_latex_to_text_chuoi_rong():
 
 
 # ─────────────────────────────────────────────────────────────
-# LỖI ĐÃ BIẾT — assertion viết theo hành vi ĐÚNG, đánh dấu xfail(strict=True).
-# Khi sửa xong, test XPASS → báo đỏ → nhớ gỡ marker.
+# HỒI QUY — hai lỗi tìm ra khi viết bộ test này, đã sửa 2026-08-12.
+# Trước đó cả hai được đánh dấu xfail(strict=True) với assertion ĐÚNG; sửa
+# xong chúng XPASS và báo đỏ, buộc gỡ marker. Cơ chế đó hoạt động như thiết kế.
 # ─────────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LỖI: \\neq bị thay bằng \\ne trước, sót lại chữ 'q' → '≠q'. "
-           "Nguyên nhân: LATEX_SYMBOLS thay theo thứ tự dict, lệnh ngắn ăn "
-           "trước lệnh dài. Sửa: duyệt khóa theo độ dài giảm dần.",
-)
-def test_latex_to_text_neq_khong_duoc_sot_ky_tu():
+def test_lenh_dai_khong_bi_lenh_ngan_cat_cut():
+    """LATEX_SYMBOLS phải được duyệt theo độ dài GIẢM DẦN.
+
+    Nếu duyệt theo thứ tự dict, lệnh ngắn ăn trước và cắt cụt lệnh dài trùng
+    tiền tố, để lại ký tự rác ngay giữa công thức của giáo viên.
+    Có 6 cặp trùng tiền tố trong bảng ký hiệu — test đủ cả 6.
+    """
+    assert latex_to_text(r"$\neq$") == "≠"          # từng ra "≠q"
+    assert latex_to_text(r"$\leq$") == "≤"          # từng ra "≤q"
+    assert latex_to_text(r"$\geq$") == "≥"          # từng ra "≥q"
+    assert latex_to_text(r"$\leftarrow$") == "←"    # từng ra "≤ftarrow"
+    assert latex_to_text(r"$\cdots$") == "⋯"        # từng ra "·s"
+    assert latex_to_text(r"$\infty$") == "∞"        # từng ra "∈fty"
+
+
+def test_lenh_ngan_van_dung_sau_khi_doi_thu_tu():
+    """Sửa thứ tự duyệt không được làm hỏng chính các lệnh ngắn."""
+    assert latex_to_text(r"$\le$") == "≤"
+    assert latex_to_text(r"$\ge$") == "≥"
+    assert latex_to_text(r"$\ne$") == "≠"
+    assert latex_to_text(r"$\in$") == "∈"
+    assert latex_to_text(r"$\cdot$") == "·"   # U+00B7, khác \cdots → ⋯ (U+22EF)
+
+
+def test_hon_hop_lenh_dai_va_ngan_trong_mot_cong_thuc():
     assert latex_to_text(r"$\le \ge \neq$") == "≤ ≥ ≠"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LỖI: \\sqrt[n]{x} luôn ra 'ⁿ√' bất kể n. Chỉ số bậc bị bỏ qua "
-           "vì regex thay bằng ký tự 'ⁿ' cứng thay vì chuyển \\1 sang superscript.",
-)
-def test_latex_to_text_can_bac_n_giu_dung_bac():
+def test_can_bac_n_giu_dung_bac():
+    """\\sqrt[n]{x} phải giữ bậc n, không phải luôn ra 'ⁿ√'."""
     assert latex_to_text(r"$\sqrt[3]{8}$") == "³√(8)"
+    assert latex_to_text(r"$\sqrt[4]{16}$") == "⁴√(16)"
+
+
+def test_can_bac_hai_khong_bi_anh_huong():
+    assert latex_to_text(r"$\sqrt{16}$") == "√(16)"
+
+
+def test_khong_con_lenh_nao_bi_tien_to_nuot():
+    """Canh gác: thêm ký hiệu mới trùng tiền tố cũng phải an toàn.
+
+    Duyệt mọi cặp (ngắn, dài) trùng tiền tố trong bảng và khẳng định lệnh dài
+    dịch ra ĐÚNG ký hiệu của nó, không sót đuôi.
+    """
+    from app.services.latex_to_omml import LATEX_SYMBOLS
+
+    co_ky_hieu = {k: v for k, v in LATEX_SYMBOLS.items() if v}
+    for ngan in co_ky_hieu:
+        for dai in co_ky_hieu:
+            if dai != ngan and dai.startswith(ngan):
+                assert latex_to_text(f"${dai}$") == co_ky_hieu[dai], (
+                    f"{dai!r} bị {ngan!r} cắt cụt"
+                )
