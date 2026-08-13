@@ -17,15 +17,19 @@ Word/PDF, và soạn Kế hoạch bài dạy theo CV5512.
 ```bash
 # Test (không cần GPU / ML stack)
 pip install -r requirements-test.txt
-pytest tests/ -q                      # 352 passed, 7 skipped
+pytest tests/ -q                      # 626 passed, 29 skipped
 
-# Chạy app
+# Chạy app — PHẢI chạy từ thư mục này, không phải từ thư mục cha.
+# config.py ghi .secret_key theo CWD, chạy sai chỗ sẽ sinh khóa mồ côi.
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
 `requirements-test.txt` là tập tối thiểu, **cố ý** không kéo torch/paddleocr/
 mineru/docling. Test phụ thuộc OCR đều mock engine hoặc skip.
+
+CI chạy đúng hai lệnh trên: `.github/workflows/tests.yml` (trong repo này —
+bản cũ nằm ở thư mục cha nên GitHub không thấy, chưa từng chạy).
 
 ---
 
@@ -157,6 +161,27 @@ thức trong file Word xuất ra. `tests/test_latex_utils.py` test module KHÁC
 `ASSET_S3_*`, `GEMINI_MODEL`.
 
 ---
+
+## Tính năng đã xong backend, CHƯA nối FE (việc dễ, giá trị cao)
+
+Audit 2026-08-11 gắn nhãn các endpoint này là "mồ côi" vì không nơi nào ở FE
+gọi. Xem kỹ thì chúng KHÔNG phải code chết — đều đã cài đặt xong và chạy được,
+chỉ thiếu nút bấm. Giữ lại có chủ ý; nối FE là việc rẻ.
+
+| Endpoint | Làm gì | Thiếu gì |
+|---|---|---|
+| `POST /export/docx-split` | Xuất ZIP: đề riêng, đáp án riêng | Nút ở trang xuất |
+| `POST /auth/forgot-password`<br>`POST /auth/reset-password` | Luồng quên mật khẩu (có `services/email.py`) | 2 trang FE + bật `EMAIL_ENABLED` |
+| `GET /quiz-attempts/{id}/writing-grades`<br>`POST .../retry/{qid}` | Đọc điểm + nhận xét bài viết IELTS do AI chấm | Màn hình xem kết quả. **Hiện chấm xong, ghi DB, rồi không ai đọc** |
+| `POST /assignments/send-to-classes` | Giao 1 đề cho nhiều lớp một lần | FE đang lặp `POST /assignments` từng lớp |
+| `GET /parser/{exam_id}/similar` | Câu tương tự trong ngân hàng cho đề vừa tải lên | Khối gợi ý sau khi parse |
+| `POST /quizzes/{id}/reconcile` | Tính lại `question_count`/`total_points` bị lệch | Công cụ chữa dữ liệu — gọi tay khi cần |
+| `POST /parser/admin/reindex` | Sinh lại embedding toàn ngân hàng | Vận hành — gọi tay sau khi bật pgvector/đổi model |
+
+Chết thật (khác nhóm trên): `GET /quizzes/{id}/deliver` — bản đề cho học sinh
+làm bài. Trang `/quizzes/[id]/play` đã gỡ ở teacher-only pivot, còn luồng IELTS
+dùng `GET /quizzes/by-code/{code}`. Giữ vì chỉ là lớp mỏng quanh
+`_build_delivery_response` mà `by-code` cũng dùng.
 
 ## Tech stack
 

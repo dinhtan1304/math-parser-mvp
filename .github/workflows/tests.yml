@@ -1,0 +1,39 @@
+name: Tests
+
+# LƯU Ý VỀ VỊ TRÍ FILE NÀY
+# Bản trước đặt ở `e:/Edu_Smart_App/.github/workflows/` — thư mục gốc KHÔNG
+# phải git repo, nên GitHub không bao giờ thấy nó và CI CHƯA TỪNG CHẠY. Bản
+# này nằm trong chính repo math-parser-mvp và bỏ `working-directory`.
+
+on:
+  push:
+    branches: [main, 'tandv_**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  backend:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: requirements-test.txt
+
+      # requirements-test.txt là tập tối thiểu, CỐ Ý không kéo ML stack
+      # (torch, marker-pdf, mineru, paddleocr, docling). Test phụ thuộc OCR
+      # đều mock engine hoặc skip, nên suite vẫn chạy đủ trên runner không GPU.
+      - name: Install test dependencies
+        run: pip install -r requirements-test.txt
+
+      - name: Run pytest
+        run: pytest tests/ -q
+        env:
+          ENV: development
+          DATABASE_URL: sqlite+aiosqlite:///./_ci.db
+          GOOGLE_API_KEY: dummy
+          REDIS_URL: ''

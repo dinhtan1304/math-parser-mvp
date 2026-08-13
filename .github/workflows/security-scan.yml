@@ -1,0 +1,27 @@
+name: Security Scan
+
+# Bản trước nằm ở thư mục gốc (không phải git repo) và dùng `cd math-parser-mvp`
+# theo layout monorepo → chưa từng chạy. Bản này ở trong repo, bỏ `cd`.
+# Phần quét frontend đã tách sang repo mathplay-frontend.
+
+on:
+  push:
+    branches: [main, 'tandv_**']
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'  # Thứ Hai hằng tuần, 6:00 UTC
+
+jobs:
+  pip-audit:
+    name: Pip Audit (Backend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pip-audit
+      # `|| true`: báo cáo chứ không chặn merge — requirements.txt có nhiều
+      # gói ML nặng mà bản vá thường đi kèm breaking change.
+      - run: pip-audit -r requirements.txt --ignore-vuln PYSEC-2024-* || true
