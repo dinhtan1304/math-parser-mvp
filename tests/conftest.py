@@ -34,6 +34,9 @@ def client():
     Used as a context manager so the app lifespan (table creation, subject /
     curriculum seeding) runs against the throwaway SQLite database.
     """
+    import shutil
+    import tempfile
+
     from starlette.testclient import TestClient
 
     db_path = pathlib.Path("_pytest.db")
@@ -41,9 +44,27 @@ def client():
         db_path.unlink()
 
     from app.main import app
+    from app.api import parser as parser_mod
+
+    # Chuyển thư mục markdown-review sang chỗ tạm trong suốt phiên test.
+    #
+    # LÝ DO: `_pytest.db` bị xóa mỗi phiên nên exam_id luôn chạy lại từ 1, trong
+    # khi `uploads/ocr_review/*.md` thì KHÔNG bị dọn. Một file `1.md` còn sót từ
+    # lần chạy trước (hoặc từ lúc dev thật) làm process_file tưởng đang "resume"
+    # bản markdown đã sửa → BỎ QUA bước duyệt và chạy thẳng tới cùng. Test khi đó
+    # đỏ/xanh tùy thứ tự chạy và tùy rác trên máy.
+    #
+    # Dùng thư mục tạm thay vì xóa uploads/ocr_review/ để không đụng vào bản
+    # markdown đang sửa dở của người dev.
+    review_dir_that = parser_mod.OCR_REVIEW_DIR
+    review_dir_tam = tempfile.mkdtemp(prefix="pytest_ocr_review_")
+    parser_mod.OCR_REVIEW_DIR = review_dir_tam
 
     with TestClient(app) as c:
         yield c
+
+    parser_mod.OCR_REVIEW_DIR = review_dir_that
+    shutil.rmtree(review_dir_tam, ignore_errors=True)
 
     # Best-effort cleanup (file may stay briefly locked on Windows)
     try:

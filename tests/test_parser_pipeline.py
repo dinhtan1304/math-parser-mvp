@@ -930,9 +930,19 @@ class TestAnswerKeySeparation:
         result = _extract_final_answer_from_solution("Bước 1...\n\nĐáp số: 180000 đồng")
         assert result is not None and "180000" in result
 
-    @pytest.mark.skip(reason="stale: end-to-end mock expects pre-direct-save pipeline shape; needs rewrite")
-    def test_full_pipeline_integration(self):
-        """End-to-end: text giả lập đề HSG → expect 5 câu + answer key matched."""
+    def test_tach_de_khoi_phan_huong_dan_cham(self):
+        """Đề HSG thường gồm 2 phần: ĐỀ THI rồi HƯỚNG DẪN CHẤM ở cuối.
+
+        `step2_preprocess` phải tách được đúng số câu và KHÔNG để phần hướng dẫn
+        chấm lẫn vào nội dung câu hỏi — nếu lẫn, mỗi câu sẽ xuất hiện hai lần
+        trong ngân hàng (một bản đề, một bản đáp án).
+
+        LƯU Ý VỀ PHẠM VI (test này từng bị tắt vì hiểu sai chỗ này): việc GẮN
+        lời giải/đáp án vào từng câu KHÔNG còn nằm ở step2_preprocess mà đã
+        chuyển lên `process_file` (khối "Map lời giải/đáp án ... theo cau_num").
+        Nên ở đây chỉ khẳng định phần tách; phần gắn được phủ ở
+        tests/test_upload_end_to_end.py.
+        """
         from app.services.pipeline import step2_preprocess
         text = """Câu 1 (5,0 điểm)
 Tính giá trị A = 1+2.
@@ -954,15 +964,18 @@ Vì p lẻ nên p²-1 chia hết cho 8.
 Câu 3
 Đáp số: kết quả X."""
         result = step2_preprocess({"text": text, "image_map": {}})
-        assert len(result) == 3
-        cau_nums = [q['cau_num'] for q in result]
-        assert cau_nums == [1, 2, 3]
-        # Mỗi câu phải có solution_steps từ answer key
-        for q in result:
-            assert q.get("solution_steps"), f"Câu {q['cau_num']} phải có solution_steps"
-        # question text KHÔNG được chứa "HƯỚNG DẪN CHẤM"
+
+        assert len(result) == 3, (
+            f"tách được {len(result)} câu — nếu ra 6 thì phần hướng dẫn chấm "
+            f"đã bị tính thành câu hỏi"
+        )
+        assert [q["cau_num"] for q in result] == [1, 2, 3]
+
         for q in result:
             assert "HƯỚNG DẪN CHẤM" not in q["text"]
+            assert "Đáp số" not in q["text"], (
+                f"Câu {q['cau_num']}: nội dung đáp án lẫn vào đề bài"
+            )
 
 
 class TestSmokeTest:
@@ -1192,245 +1205,3 @@ class TestSSEProgressPublish:
 
         await parser_mod._unsubscribe(exam_id, q)
 
-
-# ══════════════════════════════════════════════
-# Integration: process_file (mocked DB + AI)
-# ══════════════════════════════════════════════
-
-@pytest.mark.skip(reason="stale: asserts legacy needs_review/deferred-bank-save flow; process_file now saves to bank directly. Needs rewrite for current pipeline.")
-class TestProcessFileIntegration:
-    """End-to-end flow with all external services mocked."""
-
-    def _make_exam(self, exam_id=1):
-        exam = MagicMock()
-        exam.id = exam_id
-        exam.user_id = 42
-        exam.file_path = "/fake/exam.pdf"
-        exam.file_hash = None
-        exam.status = "pending"
-        exam.result_json = None
-        exam.error_message = None
-        return exam
-
-    def _fake_questions(self):
-        return [{
-            "question": "Tính $2^5$",
-            "type": "TN",
-            "topic": "TOÁN 6 — C1.Số tự nhiên",
-            "difficulty": "NB",
-            "grade": 6,
-            "chapter": "C1",
-            "lesson_title": "Lũy thừa",
-            "answer": "32",
-            "solution_steps": ["$2^5 = 32$"],
-        }]
-
-    def _make_db_context(self, exam):
-        """
-        Build a mock DB context that handles two different query shapes:
-        - Exam lookup:  .scalars().first() → exam
-        - Cache lookup: .scalar()           → None  (simulate cache miss)
-        """
-        # Result object that handles both .scalars().first() and .scalar()
-        exam_result = MagicMock()
-        exam_result.scalars.return_value.first.return_value = exam
-        exam_result.scalar.return_value = None  # no cache hit
-
-        mock_db = AsyncMock()
-        mock_db.execute = AsyncMock(return_value=exam_result)
-        mock_db.commit = AsyncMock()
-        mock_db.refresh = AsyncMock()
-        mock_db.rollback = AsyncMock()
-
-        cm = AsyncMock()
-        cm.__aenter__ = AsyncMock(return_value=mock_db)
-        cm.__aexit__ = AsyncMock(return_value=False)
-        return cm
-
-    @pytest.mark.asyncio
-    async def test_successful_parse_sets_needs_review(self):
-        exam = self._make_exam()
-        cm = self._make_db_context(exam)
-
-        with (
-            patch("app.api.parser.AsyncSessionLocal", return_value=cm),
-            patch("app.api.parser.file_handler") as mock_fh,
-            patch("app.api.parser.ai_parser") as mock_ai,
-            patch("app.services.local_ocr_service.extract_local_ocr_artifact", new_callable=AsyncMock) as mock_ocr,
-            patch("app.api.parser.step2_preprocess") as mock_preprocess,
-            patch("app.api.parser.step3_classify", new_callable=AsyncMock) as mock_classify,
-            patch("app.api.parser._is_text_poor_quality", return_value=False),
-            patch("app.api.parser._parser_for_speed") as mock_parser_factory,
-            patch("app.api.parser._save_questions_to_bank", new_callable=AsyncMock, return_value=(1, 0, 0)),
-            patch("app.api.parser._publish_progress"),
-            patch("os.path.exists", return_value=False),
-        ):
-            mock_fh.extract_text = AsyncMock(return_value={
-                "text": "Câu 1: Tính $2^5$ = ?\n" * 5,
-                "images": [],
-                "file_hash": "abc123",
-            })
-            mock_ocr.return_value = {"text": "CÃ¢u 1: TÃ­nh $2^5$ = ?\n" * 5, "method": "pymupdf"}
-            mock_preprocess.return_value = [{"cau_num": 1, "text": "CÃ¢u 1: TÃ­nh $2^5$ = ?"}]
-            mock_classify.return_value = self._fake_questions()
-            mock_ai._client = True
-            mock_parser_factory.return_value = mock_ai
-            mock_ai.parse = AsyncMock(return_value=self._fake_questions())
-
-            await parser_mod.process_file(exam_id=1, speed="balanced", use_vision=False)
-
-        assert exam.status == "needs_review"
-        assert exam.result_json is not None
-
-    @pytest.mark.asyncio
-    async def test_extraction_failure_sets_failed(self):
-        exam = self._make_exam()
-        cm = self._make_db_context(exam)
-
-        with (
-            patch("app.api.parser.AsyncSessionLocal", return_value=cm),
-            patch("app.api.parser.file_handler") as mock_fh,
-            patch("app.api.parser.ai_parser") as mock_ai,
-            patch("app.services.local_ocr_service.extract_local_ocr_artifact", new_callable=AsyncMock, side_effect=RuntimeError("Corrupt PDF")),
-            patch("app.api.parser._parser_for_speed") as mock_parser_factory,
-            patch("app.api.parser._publish_progress"),
-            patch("os.path.exists", return_value=False),
-        ):
-            mock_fh.extract_text = AsyncMock(side_effect=RuntimeError("Corrupt PDF"))
-            mock_ai._client = True
-            mock_parser_factory.return_value = mock_ai
-
-            await parser_mod.process_file(exam_id=1, speed="balanced", use_vision=False)
-
-        assert exam.status == "failed"
-        assert "Corrupt PDF" in (exam.error_message or "")
-
-    @pytest.mark.asyncio
-    async def test_bank_save_is_deferred_until_review_commit(self):
-        """Parsing produces drafts; bank save no longer happens before review."""
-        exam = self._make_exam()
-        cm = self._make_db_context(exam)
-
-        with (
-            patch("app.api.parser.AsyncSessionLocal", return_value=cm),
-            patch("app.api.parser.file_handler") as mock_fh,
-            patch("app.api.parser.ai_parser") as mock_ai,
-            patch("app.services.local_ocr_service.extract_local_ocr_artifact", new_callable=AsyncMock) as mock_ocr,
-            patch("app.api.parser.step2_preprocess") as mock_preprocess,
-            patch("app.api.parser.step3_classify", new_callable=AsyncMock) as mock_classify,
-            patch("app.api.parser._is_text_poor_quality", return_value=False),
-            patch("app.api.parser._parser_for_speed") as mock_parser_factory,
-            patch("app.api.parser._save_questions_to_bank",
-                  new_callable=AsyncMock, side_effect=RuntimeError("DB crash")),
-            patch("app.api.parser._publish_progress"),
-            patch("os.path.exists", return_value=False),
-        ):
-            mock_fh.extract_text = AsyncMock(return_value={
-                "text": "Câu 1: Tính $2^5$\n" * 5,
-                "images": [],
-                "file_hash": "xyz",
-            })
-            mock_fh._compute_hash = AsyncMock(return_value="xyz")
-            mock_ocr.return_value = {"text": "Question 1: 2^5 = ?\n" * 5, "method": "pymupdf"}
-            mock_preprocess.return_value = [{"cau_num": 1, "text": "Question 1: 2^5 = ?"}]
-            mock_classify.return_value = self._fake_questions()
-            mock_ai._client = True
-            mock_parser_factory.return_value = mock_ai
-            mock_ai.parse = AsyncMock(return_value=self._fake_questions())
-
-            await parser_mod.process_file(exam_id=1, speed="balanced", use_vision=False)
-
-        assert exam.status == "needs_review"
-        assert not mock_ai.parse_images.called
-
-    @pytest.mark.asyncio
-    async def test_ai_returns_no_questions_sets_failed(self):
-        """If AI returns empty list → ValueError → exam fails."""
-        exam = self._make_exam()
-        cm = self._make_db_context(exam)
-
-        with (
-            patch("app.api.parser.AsyncSessionLocal", return_value=cm),
-            patch("app.api.parser.file_handler") as mock_fh,
-            patch("app.api.parser.ai_parser") as mock_ai,
-            patch("app.services.local_ocr_service.extract_local_ocr_artifact", new_callable=AsyncMock) as mock_ocr,
-            patch("app.api.parser.step2_preprocess") as mock_preprocess,
-            patch("app.api.parser.step3_classify", new_callable=AsyncMock) as mock_classify,
-            patch("app.api.parser._is_text_poor_quality", return_value=False),
-            patch("app.api.parser._parser_for_speed") as mock_parser_factory,
-            patch("app.api.parser._publish_progress"),
-            patch("os.path.exists", return_value=False),
-        ):
-            mock_fh.extract_text = AsyncMock(return_value={
-                "text": "Câu 1: Tính $2^5$\n" * 5,
-                "images": [],
-                "file_hash": "abc",
-            })
-            mock_fh._compute_hash = AsyncMock(return_value="abc")
-            mock_ocr.return_value = {"text": "Question 1: 2^5 = ?\n" * 5, "method": "pymupdf"}
-            mock_preprocess.return_value = [{"cau_num": 1, "text": "Question 1: 2^5 = ?"}]
-            mock_classify.return_value = []
-            mock_ai._client = True
-            mock_parser_factory.return_value = mock_ai
-            mock_ai.parse = AsyncMock(return_value=[])  # AI found nothing
-
-            await parser_mod.process_file(exam_id=1, speed="balanced", use_vision=False)
-
-        assert exam.status == "failed"
-        assert exam.error_message is not None
-
-    @pytest.mark.asyncio
-    async def test_zero_bank_save_result_is_irrelevant_before_review_commit(self):
-        exam = self._make_exam()
-        cm = self._make_db_context(exam)
-
-        with (
-            patch("app.api.parser.AsyncSessionLocal", return_value=cm),
-            patch("app.api.parser.file_handler") as mock_fh,
-            patch("app.api.parser.ai_parser") as mock_ai,
-            patch("app.services.local_ocr_service.extract_local_ocr_artifact", new_callable=AsyncMock) as mock_ocr,
-            patch("app.api.parser.step2_preprocess") as mock_preprocess,
-            patch("app.api.parser.step3_classify", new_callable=AsyncMock) as mock_classify,
-            patch("app.api.parser._is_text_poor_quality", return_value=False),
-            patch("app.api.parser._parser_for_speed") as mock_parser_factory,
-            patch("app.api.parser._save_questions_to_bank", new_callable=AsyncMock, return_value=(0, 0, 0)),
-            patch("app.api.parser._publish_progress"),
-            patch("os.path.exists", return_value=False),
-        ):
-            mock_fh._compute_hash = AsyncMock(return_value="abc")
-            mock_ocr.return_value = {"text": "Question 1: 2^5 = ?\n" * 5, "method": "pymupdf"}
-            mock_preprocess.return_value = [{"cau_num": 1, "text": "Question 1: 2^5 = ?"}]
-            mock_classify.return_value = self._fake_questions()
-            mock_ai._client = True
-            mock_parser_factory.return_value = mock_ai
-
-            await parser_mod.process_file(exam_id=1, speed="balanced", use_vision=False)
-
-        assert exam.status == "needs_review"
-
-    @pytest.mark.asyncio
-    async def test_use_vision_is_ignored_and_never_calls_parse_images(self):
-        exam = self._make_exam()
-        cm = self._make_db_context(exam)
-
-        with (
-            patch("app.api.parser.AsyncSessionLocal", return_value=cm),
-            patch("app.api.parser.file_handler") as mock_fh,
-            patch("app.api.parser.ai_parser") as mock_ai,
-            patch("app.services.local_ocr_service.extract_local_ocr_artifact", new_callable=AsyncMock) as mock_ocr,
-            patch("app.api.parser._parser_for_speed") as mock_parser_factory,
-            patch("app.api.parser._publish_progress"),
-            patch("os.path.exists", return_value=False),
-        ):
-            mock_fh._compute_hash = AsyncMock(return_value="abc")
-            mock_fh.extract_text = AsyncMock(return_value={"text": "", "images": []})
-            mock_ocr.return_value = {"text": "", "method": "local-ocr", "file_hash": "abc"}
-            mock_ai._client = True
-            mock_ai.parse_images = AsyncMock(return_value=self._fake_questions())
-            mock_parser_factory.return_value = mock_ai
-
-            await parser_mod.process_file(exam_id=1, speed="balanced", use_vision=True)
-
-        assert exam.status == "failed"
-        mock_fh.extract_text.assert_not_called()
-        mock_ai.parse_images.assert_not_called()
